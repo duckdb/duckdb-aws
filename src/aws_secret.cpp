@@ -60,7 +60,7 @@ static unique_ptr<KeyValueSecret> ConstructBaseS3Secret(vector<string> &prefix_p
 class DuckDBCustomAWSCredentialsProviderChain : public Aws::Auth::AWSCredentialsProviderChain {
 public:
 	explicit DuckDBCustomAWSCredentialsProviderChain(const string &credential_chain, const string &profile = "",
-	                                                 const string &assume_role_arn = "") {
+	                                                 const string &assume_role_arn = "", const string &external_id = "") {
 		auto chain_list = StringUtil::Split(credential_chain, ';');
 
 		for (const auto &item : chain_list) {
@@ -73,7 +73,12 @@ public:
 				if (!profile.empty()) {
 					AddProvider(std::make_shared<Aws::Auth::STSProfileCredentialsProvider>(profile));
 				} else if (!assume_role_arn.empty()) {
-					AddProvider(std::make_shared<Aws::Auth::STSAssumeRoleCredentialsProvider>(assume_role_arn, Aws::String(), Aws::String(), Aws::Auth::DEFAULT_CREDS_LOAD_FREQ_SECONDS, sts_client));
+					if (!external_id.empty()) {
+                        AddProvider(std::make_shared<Aws::Auth::STSAssumeRoleCredentialsProvider>(
+                            assume_role_arn, Aws::String(), external_id, Aws::Auth::DEFAULT_CREDS_LOAD_FREQ_SECONDS, sts_client));
+					} else {
+						AddProvider(std::make_shared<Aws::Auth::STSAssumeRoleCredentialsProvider>(assume_role_arn, Aws::String(), Aws::String(), Aws::Auth::DEFAULT_CREDS_LOAD_FREQ_SECONDS, sts_client));
+					}
 				} else {
 					// TODO: I don't think this does anything
 					AddProvider(std::make_shared<Aws::Auth::STSAssumeRoleWebIdentityCredentialsProvider>());
@@ -120,11 +125,12 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 
 	string profile = TryGetStringParam(input, "profile");
 	string assume_role = TryGetStringParam(input, "assume_role_arn");
+	string external_id = TryGetStringParam(input, "external_id");
 
 	if (input.options.find("chain") != input.options.end()) {
 		chain = TryGetStringParam(input, "chain");
 
-		DuckDBCustomAWSCredentialsProviderChain provider(chain, profile, assume_role);
+		DuckDBCustomAWSCredentialsProviderChain provider(chain, profile, assume_role, external_id);
 		credentials = provider.GetAWSCredentials();
 	} else {
 		if (input.options.find("profile") != input.options.end()) {
@@ -252,6 +258,7 @@ void CreateAwsSecretFunctions::Register(DatabaseInstance &instance) {
 		cred_chain_function.named_parameters["url_compatibility_mode"] = LogicalType::BOOLEAN;
 
 		cred_chain_function.named_parameters["assume_role_arn"] = LogicalType::VARCHAR;
+		cred_chain_function.named_parameters["external_id"] = LogicalType::VARCHAR;
 
 		cred_chain_function.named_parameters["refresh"] = LogicalType::VARCHAR;
 
