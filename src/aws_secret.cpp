@@ -74,8 +74,7 @@ public:
 					AddProvider(std::make_shared<Aws::Auth::STSProfileCredentialsProvider>(profile));
 				} else if (!assume_role_arn.empty()) {
 					if (!external_id.empty()) {
-                        AddProvider(std::make_shared<Aws::Auth::STSAssumeRoleCredentialsProvider>(
-                            assume_role_arn, Aws::String(), external_id, Aws::Auth::DEFAULT_CREDS_LOAD_FREQ_SECONDS, sts_client));
+						AddProvider(std::make_shared<Aws::Auth::STSAssumeRoleCredentialsProvider>(assume_role_arn, Aws::String(), external_id, Aws::Auth::DEFAULT_CREDS_LOAD_FREQ_SECONDS, sts_client));
 					} else {
 						AddProvider(std::make_shared<Aws::Auth::STSAssumeRoleCredentialsProvider>(assume_role_arn, Aws::String(), Aws::String(), Aws::Auth::DEFAULT_CREDS_LOAD_FREQ_SECONDS, sts_client));
 					}
