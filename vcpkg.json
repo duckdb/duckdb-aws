@@ -1,10 +1,16 @@
 {
   "dependencies": [
+    "vcpkg-cmake",
     "zlib",
     {
       "name": "aws-sdk-cpp",
       "features": [ "sso", "sts" , "identity-management"]
     },
     "openssl"
-  ]
+  ],
+  "vcpkg-configuration": {
+    "overlay-ports": [
+      "./vcpkg_ports"
+    ]
+  }
 }
