@@ -10,7 +10,7 @@ defaults:
 jobs:
   minio-tests:
     name: Minio Tests
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     strategy:
       matrix:
         duckdb_version: [ '<submodule_version>' ]
