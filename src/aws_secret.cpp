@@ -93,7 +93,11 @@ public:
 			} else if (item == "instance") {
 				AddProvider(std::make_shared<Aws::Auth::InstanceProfileCredentialsProvider>());
 			} else if (item == "process") {
-				AddProvider(std::make_shared<Aws::Auth::ProcessCredentialsProvider>());
+				if (profile.empty()) {
+					AddProvider(std::make_shared<Aws::Auth::ProcessCredentialsProvider>());
+				} else {
+					AddProvider(std::make_shared<Aws::Auth::ProcessCredentialsProvider>(profile.c_str()));
+				}
 			} else if (item == "config") {
 				if (profile.empty()) {
 					AddProvider(std::make_shared<Aws::Auth::ProfileConfigFileAWSCredentialsProvider>());
