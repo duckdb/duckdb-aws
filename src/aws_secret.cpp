@@ -223,7 +223,7 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 
 	// Set endpoint defaults TODO: move to consumer side of secret
 	auto url_style_lu = result->secret_map.find("url_style");
-	if (url_style_lu == result->secret_map.end() || endpoint_lu->second.ToString().empty()) {
+	if (url_style_lu == result->secret_map.end() || url_style_lu->second.ToString().empty()) {
 		if (input.type == "gcs" || input.type == "r2") {
 			result->secret_map["url_style"] = "path";
 		}
