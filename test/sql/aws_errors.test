@@ -2,7 +2,7 @@
 # description: test aws extension
 # group: [sql]
 
-require no_extension_autoloading "EXPECTED: Test relies on explcit INSTALL and LOAD"
+require no_extension_autoloading "EXPECTED: Test relies on explicit INSTALL and LOAD"
 
 # Before we load the extension, the credential_chain provider does not exist
 statement error
