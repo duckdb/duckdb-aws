@@ -2,7 +2,7 @@
 This is a DuckDB extension that provides features that depend on the AWS SDK.
 
 ## Supported architectures
-The extension is tested & distributed for Linux (x64, arm64), MacOS (x64, arm64) and Windows (x64)
+The extension is tested & distributed for Linux (x64, arm64), macOS (x64, arm64) and Windows (x64)
 
 ## Documentation
 
