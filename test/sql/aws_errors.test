@@ -2,7 +2,7 @@
 # description: test aws extension
 # group: [aws]
 
-require no_extension_autoloading "EXPECTED: Test relies on explcit INSTALL and LOAD"
+require no_extension_autoloading "EXPECTED: Test relies on explicit INSTALL and LOAD"
 
 # Before we load the extension, this will fail
 statement error

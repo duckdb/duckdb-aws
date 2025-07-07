@@ -13,7 +13,7 @@ add_library(${EXTENSION_NAME} STATIC ${EXTENSION_SOURCES})
 set(PARAMETERS "-warnings")
 build_loadable_extension(${TARGET_NAME} ${PARAMETERS} ${EXTENSION_SOURCES})
 
-# Weirdly we need to manually to this, otherwise linking against
+# Weirdly we need to manually do this; otherwise, linking against
 # ${AWSSDK_LINK_LIBRARIES} fails for some reason
 find_package(ZLIB REQUIRED)
 find_package(AWSSDK REQUIRED COMPONENTS core sso sts identity-management)
