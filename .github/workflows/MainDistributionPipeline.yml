@@ -17,19 +17,19 @@ jobs:
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@main
     with:
       extension_name: aws
-      duckdb_version: v1.3.1
-      ci_tools_version: v1.3.1
+      duckdb_version: v1.3.2
+      ci_tools_version: v1.3.2
       exclude_archs: 'wasm_mvp;wasm_eh;wasm_threads;windows_amd64_rtools;windows_amd64_mingw' # Doesn't work anyway: env local file or env access possible
 
   duckdb-stable-deploy:
     name: Deploy extension binaries
     needs: duckdb-stable-build
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_deploy.yml@v1.3.1
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_deploy.yml@v1.3.2
     secrets: inherit
     with:
       extension_name: aws
-      duckdb_version: v1.3.1
-      ci_tools_version: v1.3.1
+      duckdb_version: v1.3.2
+      ci_tools_version: v1.3.2
       exclude_archs: 'wasm_mvp;wasm_eh;wasm_threads;windows_amd64_rtools;windows_amd64_mingw' # Doesn't work anyway: env local file or env access possible
       deploy_latest: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}
       deploy_versioned: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}
