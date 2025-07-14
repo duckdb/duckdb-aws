@@ -25,9 +25,9 @@ static string SELECTED_CURL_CERT_PATH;
 static string certFileLocations[] = {
 	// Arch, Debian-based, Gentoo
 	"/etc/ssl/certs/ca-certificates.crt",
-	// RedHat 7 based
+	// Red Hat 7 based
 	"/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
-	// Redhat 6 based
+	// Red Hat 6 based
 	"/etc/pki/tls/certs/ca-bundle.crt",
 	// OpenSUSE
 	"/etc/ssl/ca-bundle.pem",
