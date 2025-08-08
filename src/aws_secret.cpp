@@ -3,11 +3,14 @@
 #include "duckdb/common/case_insensitive_map.hpp"
 #include "duckdb/main/extension_util.hpp"
 
+#include <unistd.h>
 #include <aws/core/Aws.h>
 #include <aws/core/auth/AWSCredentialsProviderChain.h>
 #include <aws/core/auth/SSOCredentialsProvider.h>
 #include <aws/core/auth/STSCredentialsProvider.h>
 #include <aws/core/client/ClientConfiguration.h>
+#include <aws/core/config/AWSConfigFileProfileConfigLoader.h>
+#include <aws/core/config/AWSProfileConfigLoaderBase.h>
 #include <aws/identity-management/auth/STSAssumeRoleCredentialsProvider.h>
 #include <aws/identity-management/auth/STSProfileCredentialsProvider.h>
 #include <aws/sts/STSClient.h>
@@ -23,17 +26,16 @@ static string SELECTED_CURL_CERT_PATH;
 // place curl will look. But not every distro has this file in the same location, so we search a
 // number of common locations and use the first one we find.
 static string certFileLocations[] = {
-	// Arch, Debian-based, Gentoo
-	"/etc/ssl/certs/ca-certificates.crt",
-	// RedHat 7 based
-	"/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
-	// Redhat 6 based
-	"/etc/pki/tls/certs/ca-bundle.crt",
-	// OpenSUSE
-	"/etc/ssl/ca-bundle.pem",
-	// Alpine
-	"/etc/ssl/cert.pem"
-};
+    // Arch, Debian-based, Gentoo
+    "/etc/ssl/certs/ca-certificates.crt",
+    // RedHat 7 based
+    "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
+    // Redhat 6 based
+    "/etc/pki/tls/certs/ca-bundle.crt",
+    // OpenSUSE
+    "/etc/ssl/ca-bundle.pem",
+    // Alpine
+    "/etc/ssl/cert.pem"};
 
 //! Parse and set the remaining options
 static void ParseCoreS3Config(CreateSecretInput &input, KeyValueSecret &secret) {
@@ -56,39 +58,65 @@ static unique_ptr<KeyValueSecret> ConstructBaseS3Secret(vector<string> &prefix_p
 	return return_value;
 }
 
+static Aws::Config::Profile GetProfile(const string &profile_name) {
+	Aws::Config::Profile selected_profile;
+	auto credentials_file_path = Aws::Auth::ProfileConfigFileAWSCredentialsProvider::GetCredentialsProfileFilename();
+	// get the profile
+	Aws::Map<Aws::String, Aws::Config::Profile> profiles;
+	Aws::Config::AWSConfigFileProfileConfigLoader loader(credentials_file_path);
+	if (loader.Load()) {
+		profiles = loader.GetProfiles();
+		for (const auto &entry : profiles) {
+			const Aws::String &profileName = entry.first;
+			if (profileName == profile_name) {
+				selected_profile = entry.second;
+				auto &url = selected_profile.GetValue("endpoint");
+				return selected_profile;
+			}
+		}
+	} else {
+		throw InvalidInputException("Failed to load credentials file %s", credentials_file_path);
+	}
+	throw InvalidConfigurationException("Failed to load profile %s in credentials file %s", profile_name,
+	                                    credentials_file_path);
+}
+
 //! Generate a custom credential provider chain for authentication
 class DuckDBCustomAWSCredentialsProviderChain : public Aws::Auth::AWSCredentialsProviderChain {
 public:
 	explicit DuckDBCustomAWSCredentialsProviderChain(const string &credential_chain, const string &profile = "",
-	                                                 const string &assume_role_arn = "", const string &external_id = "") {
+	                                                 const string &assume_role_arn = "",
+	                                                 const string &external_id = "") {
 		auto chain_list = StringUtil::Split(credential_chain, ';');
 
+		// For every item in the chain, we get the profiles.
+		// Once we find the profile, we add a provider credential based on the provider.
+		// STS is technically a provider chain, but a profile that uses STS can be found in other chains.
 		for (const auto &item : chain_list) {
+			// could not find the profile in the name
 			if (item == "sts") {
-				Aws::Client::ClientConfiguration clientConfig;
-				if (!SELECTED_CURL_CERT_PATH.empty()) {
-					clientConfig.caFile = SELECTED_CURL_CERT_PATH;   // Set the CA file
+				// STS chain in Create Secret statement.
+				Aws::Config::Profile aws_profile;
+				if (assume_role_arn.empty()) {
+					throw InvalidConfigurationException(
+					    "Chain value 'STS' is only supported with an ASSUME_ROLE_ARN value");
 				}
-				auto sts_client = std::make_shared<Aws::STS::STSClient>(clientConfig);
-				if (!profile.empty()) {
-					AddProvider(std::make_shared<Aws::Auth::STSProfileCredentialsProvider>(profile));
-				} else if (!assume_role_arn.empty()) {
-					if (!external_id.empty()) {
-						AddProvider(std::make_shared<Aws::Auth::STSAssumeRoleCredentialsProvider>(assume_role_arn, Aws::String(), external_id, Aws::Auth::DEFAULT_CREDS_LOAD_FREQ_SECONDS, sts_client));
-					} else {
-						AddProvider(std::make_shared<Aws::Auth::STSAssumeRoleCredentialsProvider>(assume_role_arn, Aws::String(), Aws::String(), Aws::Auth::DEFAULT_CREDS_LOAD_FREQ_SECONDS, sts_client));
-					}
-				} else {
-					// TODO: I don't think this does anything
-					AddProvider(std::make_shared<Aws::Auth::STSAssumeRoleWebIdentityCredentialsProvider>());
-				}
-			} else if (item == "sso") {
+				aws_profile.SetName(profile);
+				aws_profile.SetRoleArn(assume_role_arn);
+				aws_profile.SetExternalId(external_id);
+				AddSTSProvider(aws_profile);
+			}
+			if (item == "sso") {
 				if (profile.empty()) {
 					AddProvider(std::make_shared<Aws::Auth::SSOCredentialsProvider>());
 				} else {
-					AddProvider(std::make_shared<Aws::Auth::SSOCredentialsProvider>(profile));
+					AddProvider(std::make_shared<Aws::Auth::SSOCredentialsProvider>(profile.c_str()));
 				}
 			} else if (item == "env") {
+				/**
+				 * Reads AWS credentials from the Environment variables AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY and
+				 * AWS_SESSION_TOKEN if they exist. If they are not found, empty credentials are returned.
+				 */
 				AddProvider(std::make_shared<Aws::Auth::EnvironmentAWSCredentialsProvider>());
 			} else if (item == "instance") {
 				AddProvider(std::make_shared<Aws::Auth::InstanceProfileCredentialsProvider>());
@@ -99,15 +127,38 @@ public:
 					AddProvider(std::make_shared<Aws::Auth::ProcessCredentialsProvider>(profile.c_str()));
 				}
 			} else if (item == "config") {
-				if (profile.empty()) {
-					AddProvider(std::make_shared<Aws::Auth::ProfileConfigFileAWSCredentialsProvider>());
-				} else {
-					AddProvider(std::make_shared<Aws::Auth::ProfileConfigFileAWSCredentialsProvider>(profile.c_str()));
-				}
+				AddConfigProvider(profile);
 			} else {
 				throw InvalidInputException("Unknown provider found while parsing AWS credential chain string: '%s'",
 				                            item);
 			}
+		}
+	}
+
+	void AddConfigProvider(const string &profile_name) {
+		auto profile = GetProfile(profile_name);
+		const string &assume_role_arn = profile.GetRoleArn();
+		if (!assume_role_arn.empty()) {
+			AddSTSProvider(profile);
+		} else {
+			AddProvider(std::make_shared<Aws::Auth::ProfileConfigFileAWSCredentialsProvider>(profile_name.c_str()));
+		}
+	}
+
+	void AddSTSProvider(const Aws::Config::Profile &profile) {
+		string assume_role_arn = profile.GetRoleArn();
+		string external_id = profile.GetExternalId();
+		Aws::Client::ClientConfiguration clientConfig;
+		if (!SELECTED_CURL_CERT_PATH.empty()) {
+			clientConfig.caFile = SELECTED_CURL_CERT_PATH; // Set the CA file
+		}
+		auto sts_client = std::make_shared<Aws::STS::STSClient>(clientConfig);
+		if (!external_id.empty()) {
+			AddProvider(std::make_shared<Aws::Auth::STSAssumeRoleCredentialsProvider>(
+			    assume_role_arn, Aws::String(), external_id, Aws::Auth::DEFAULT_CREDS_LOAD_FREQ_SECONDS, sts_client));
+		} else {
+			AddProvider(std::make_shared<Aws::Auth::STSAssumeRoleCredentialsProvider>(
+			    assume_role_arn, Aws::String(), Aws::String(), Aws::Auth::DEFAULT_CREDS_LOAD_FREQ_SECONDS, sts_client));
 		}
 	}
 };
@@ -132,12 +183,12 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 
 	if (input.options.find("chain") != input.options.end()) {
 		chain = TryGetStringParam(input, "chain");
-
-		DuckDBCustomAWSCredentialsProviderChain provider(chain, profile, assume_role, external_id);
+		DuckDBCustomAWSCredentialsProviderChain provider(chain, profile);
 		credentials = provider.GetAWSCredentials();
 	} else {
 		if (input.options.find("profile") != input.options.end()) {
-			Aws::Auth::ProfileConfigFileAWSCredentialsProvider provider(profile.c_str());
+			// default to config if there is a profile
+			DuckDBCustomAWSCredentialsProviderChain provider(profile, "config");
 			credentials = provider.GetAWSCredentials();
 		} else {
 			Aws::Auth::DefaultAWSCredentialsProviderChain provider;
@@ -178,6 +229,8 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 
 	// Only auto is supported
 	string refresh = TryGetStringParam(input, "refresh");
+	auto key_id = Value(credentials.GetAWSAccessKeyId()).ToString();
+	auto secret_id = Value(credentials.GetAWSSecretKey()).ToString();
 
 	// We have sneaked in this special handling where if you set the STS chain, you automatically enable refresh
 	// TODO: remove this once refresh is set to auto by default for all credential_chain provider created secrets.
@@ -233,7 +286,7 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 }
 
 void CreateAwsSecretFunctions::InitializeCurlCertificates(DatabaseInstance &db) {
-	for (string& caFile : certFileLocations) {
+	for (string &caFile : certFileLocations) {
 		struct stat buf;
 		if (stat(caFile.c_str(), &buf) == 0) {
 			SELECTED_CURL_CERT_PATH = caFile;
