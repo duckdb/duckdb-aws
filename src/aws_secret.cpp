@@ -213,20 +213,14 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 	string assume_role = TryGetStringParam(input, "assume_role_arn");
 	string external_id = TryGetStringParam(input, "external_id");
 	string chain = TryGetStringParam(input, "chain");
+	chain = chain.empty() ? "config" : chain;
 
-	if (input.options.find("chain") != input.options.end()) {
-		DuckDBCustomAWSCredentialsProviderChain provider(chain, profile, assume_role, external_id);
+	if (profile.empty()) {
+		Aws::Auth::DefaultAWSCredentialsProviderChain provider;
 		credentials = provider.GetAWSCredentials();
 	} else {
-		chain = "config";
-		if (input.options.find("profile") != input.options.end()) {
-			// default to config if there is a profile and no chain
-			DuckDBCustomAWSCredentialsProviderChain provider(chain, profile, assume_role, external_id);
-			credentials = provider.GetAWSCredentials();
-		} else {
-			Aws::Auth::DefaultAWSCredentialsProviderChain provider;
-			credentials = provider.GetAWSCredentials();
-		}
+		DuckDBCustomAWSCredentialsProviderChain provider(chain, profile, assume_role, external_id);
+		credentials = provider.GetAWSCredentials();
 	}
 
 	if (credentials.IsEmpty()) {
