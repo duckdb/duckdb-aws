@@ -106,7 +106,7 @@ public:
 				aws_profile.SetExternalId(external_id);
 				AddSTSProvider(aws_profile);
 			}
-			if (item == "sso") {
+			else if (item == "sso") {
 				if (profile.empty()) {
 					AddProvider(std::make_shared<Aws::Auth::SSOCredentialsProvider>());
 				} else {
@@ -127,7 +127,11 @@ public:
 					AddProvider(std::make_shared<Aws::Auth::ProcessCredentialsProvider>(profile.c_str()));
 				}
 			} else if (item == "config") {
-				AddConfigProvider(profile);
+				if (profile.empty()) {
+					AddProvider(std::make_shared<Aws::Auth::ProfileConfigFileAWSCredentialsProvider>());
+				} else {
+					AddConfigProvider(profile);
+				}
 			} else {
 				throw InvalidInputException("Unknown provider found while parsing AWS credential chain string: '%s'",
 				                            item);
@@ -180,19 +184,33 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 	string profile = TryGetStringParam(input, "profile");
 	string assume_role = TryGetStringParam(input, "assume_role_arn");
 	string external_id = TryGetStringParam(input, "external_id");
+	string profile_error = StringUtil::Format("and profile '%s'", profile);
+	if (profile.empty()) {
+		profile_error = "";
+	}
+	string error_message_prefix = "Could not create AWS credentials";
 
 	if (input.options.find("chain") != input.options.end()) {
 		chain = TryGetStringParam(input, "chain");
-		DuckDBCustomAWSCredentialsProviderChain provider(chain, profile);
+		DuckDBCustomAWSCredentialsProviderChain provider(chain, profile, assume_role, external_id);
 		credentials = provider.GetAWSCredentials();
+		if (credentials.IsEmpty()) {
+			throw InvalidInputException("%s with credential chain '%s' %s", error_message_prefix, chain, profile_error);
+		}
 	} else {
 		if (input.options.find("profile") != input.options.end()) {
-			// default to config if there is a profile
-			DuckDBCustomAWSCredentialsProviderChain provider(profile, "config");
+			// default to config if there is a profile and no chain
+			DuckDBCustomAWSCredentialsProviderChain provider("config", profile);
 			credentials = provider.GetAWSCredentials();
+			if (credentials.IsEmpty()) {
+				throw InvalidInputException("%s with credential chain '%s' %s", error_message_prefix, "config", profile_error);
+			}
 		} else {
 			Aws::Auth::DefaultAWSCredentialsProviderChain provider;
 			credentials = provider.GetAWSCredentials();
+			if (credentials.IsEmpty()) {
+				throw InvalidInputException("%s with credential using default provider chain");
+			}
 		}
 	}
 
