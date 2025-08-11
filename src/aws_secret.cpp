@@ -105,8 +105,7 @@ public:
 				aws_profile.SetRoleArn(assume_role_arn);
 				aws_profile.SetExternalId(external_id);
 				AddSTSProvider(aws_profile);
-			}
-			else if (item == "sso") {
+			} else if (item == "sso") {
 				if (profile.empty()) {
 					AddProvider(std::make_shared<Aws::Auth::SSOCredentialsProvider>());
 				} else {
@@ -115,7 +114,8 @@ public:
 			} else if (item == "env") {
 				AddProvider(std::make_shared<Aws::Auth::EnvironmentAWSCredentialsProvider>());
 			} else if (item == "instance") {
-				/* Credentials provider implementation that loads credentials from the Amazon EC2 Instance Metadata Service. */
+				/* Credentials provider implementation that loads credentials from the Amazon EC2 Instance Metadata
+				 * Service. */
 				AddProvider(std::make_shared<Aws::Auth::InstanceProfileCredentialsProvider>());
 			} else if (item == "process") {
 				if (profile.empty()) {
@@ -139,10 +139,14 @@ public:
 	void AddConfigProvider(const string &profile_name, const string &assume_role_arn, const string &external_id) {
 		auto profile = GetProfile(profile_name);
 		if (!profile.GetRoleArn().empty() && !assume_role_arn.empty()) {
-			throw InvalidInputException("Ambiguous role arn. Role_arn '%s' defined in profile. Role_arn '%s' defined in secret statement", profile_name, profile.GetRoleArn(), assume_role_arn);
+			throw InvalidInputException(
+			    "Ambiguous role arn. Role_arn '%s' defined in profile. Role_arn '%s' defined in secret statement",
+			    profile_name, profile.GetRoleArn(), assume_role_arn);
 		}
 		if (!profile.GetExternalId().empty() && !external_id.empty()) {
-			throw InvalidInputException("Ambiguous external id. external_id '%s' defined in profile. external_id '%s' defined in secret statement", profile_name, profile.GetExternalId(), external_id);
+			throw InvalidInputException("Ambiguous external id. external_id '%s' defined in profile. external_id '%s' "
+			                            "defined in secret statement",
+			                            profile_name, profile.GetExternalId(), external_id);
 		}
 		if (profile.GetRoleArn().empty() && !assume_role_arn.empty()) {
 			profile.SetRoleArn(assume_role_arn);
