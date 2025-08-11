@@ -144,9 +144,10 @@ public:
 			    profile.GetRoleArn(), profile_name, assume_role_arn);
 		}
 		if (!profile.GetExternalId().empty() && !external_id.empty()) {
-			throw InvalidInputException("Ambiguous external id. external_id '%s' defined in profile '%s'. external_id '%s' "
-			                            "defined in secret statement",
-			                            profile.GetExternalId(), profile_name,  external_id);
+			throw InvalidInputException(
+			    "Ambiguous external id. external_id '%s' defined in profile '%s'. external_id '%s' "
+			    "defined in secret statement",
+			    profile.GetExternalId(), profile_name, external_id);
 		}
 		if (profile.GetRoleArn().empty() && !assume_role_arn.empty()) {
 			profile.SetRoleArn(assume_role_arn);
