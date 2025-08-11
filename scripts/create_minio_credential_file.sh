@@ -28,6 +28,12 @@ aws_session_token=completelybogussessiontoken
 source_profile = default
 role_arn = arn:aws:iam::840140254803:role/pyiceberg-etl-role
 region = us-east-2
+
+[assume-role-arn-external-id]
+source_profile = default
+role_arn = arn:aws:iam::840140254803:role/pyiceberg-etl-role
+region = us-east-2
+external_id = 128289344
 "
 
 # Write the credentials configuration to the file

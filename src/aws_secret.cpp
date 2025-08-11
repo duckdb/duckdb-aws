@@ -140,13 +140,13 @@ public:
 		auto profile = GetProfile(profile_name);
 		if (!profile.GetRoleArn().empty() && !assume_role_arn.empty()) {
 			throw InvalidInputException(
-			    "Ambiguous role arn. Role_arn '%s' defined in profile. Role_arn '%s' defined in secret statement",
-			    profile_name, profile.GetRoleArn(), assume_role_arn);
+			    "Ambiguous role arn. Role_arn '%s' defined in profile '%s'. Role_arn '%s' defined in secret statement",
+			    profile.GetRoleArn(), profile_name, assume_role_arn);
 		}
 		if (!profile.GetExternalId().empty() && !external_id.empty()) {
-			throw InvalidInputException("Ambiguous external id. external_id '%s' defined in profile. external_id '%s' "
+			throw InvalidInputException("Ambiguous external id. external_id '%s' defined in profile '%s'. external_id '%s' "
 			                            "defined in secret statement",
-			                            profile_name, profile.GetExternalId(), external_id);
+			                            profile.GetExternalId(), profile_name,  external_id);
 		}
 		if (profile.GetRoleArn().empty() && !assume_role_arn.empty()) {
 			profile.SetRoleArn(assume_role_arn);
@@ -188,17 +188,19 @@ static string TryGetStringParam(CreateSecretInput &input, const string &param_na
 	}
 }
 
-static string ConstructErrorMessage(string chain, string profile, string assume_role) {
+static string ConstructErrorMessage(string chain, string profile, string assume_role, string external_id) {
 	string verb = "create";
 	// these chains "generate" new aws keys. See their documentation in the header file
 	// https://github.com/aws/aws-sdk-cpp/blob/main/src/aws-cpp-sdk-core/include/aws/core/auth/AWSCredentialsProvider.h
-	if (chain == "sts" || chain == "sso" || chain == "instance" || chain == "process") {
+	// if a roll is assumed, secrets are also "generated"
+	if (chain == "sts" || chain == "sso" || chain == "instance" || chain == "process" || !assume_role.empty()) {
 		verb = "generate";
 	}
 	string prefix = StringUtil::Format("Failed to %s secret using the following:\n", verb);
-	prefix = profile.empty() ? prefix : prefix + "Profile: " + profile + "\n";
-	prefix = chain.empty() ? prefix : prefix + "Credential Chain: " + chain + "\n";
-	prefix = assume_role.empty() ? prefix : prefix + "Role-arn: " + assume_role + "\n";
+	prefix = profile.empty() ? prefix : prefix + StringUtil::Format("Profile: '%s'\n", profile);
+	prefix = chain.empty() ? prefix : prefix + StringUtil::Format("Credential Chain: '%s'\n", chain);
+	prefix = assume_role.empty() ? prefix : prefix + StringUtil::Format("Role-arn: '%s'\n", assume_role);
+	prefix = external_id.empty() ? prefix : prefix + StringUtil::Format("External-id: '%s'\n", external_id);
 	return prefix;
 }
 
@@ -215,9 +217,10 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 		DuckDBCustomAWSCredentialsProviderChain provider(chain, profile, assume_role, external_id);
 		credentials = provider.GetAWSCredentials();
 	} else {
+		chain = "config";
 		if (input.options.find("profile") != input.options.end()) {
 			// default to config if there is a profile and no chain
-			DuckDBCustomAWSCredentialsProviderChain provider("config", profile);
+			DuckDBCustomAWSCredentialsProviderChain provider(chain, profile, assume_role, external_id);
 			credentials = provider.GetAWSCredentials();
 		} else {
 			Aws::Auth::DefaultAWSCredentialsProviderChain provider;
@@ -226,7 +229,7 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 	}
 
 	if (credentials.IsEmpty()) {
-		throw InvalidInputException(ConstructErrorMessage(chain, profile, assume_role));
+		throw InvalidInputException(ConstructErrorMessage(chain, profile, assume_role, external_id));
 	}
 
 	//! If the profile is set we specify a specific profile
