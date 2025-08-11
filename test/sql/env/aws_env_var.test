@@ -1,6 +1,6 @@
-# name: test/sql/aws_env_var.test
+# name: test/sql/env/aws_env_var.test
 # description: test aws extension with the s3 env vars set
-# group: [aws]
+# group: [env]
 
 require aws
 
