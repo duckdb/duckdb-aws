@@ -113,12 +113,9 @@ public:
 					AddProvider(std::make_shared<Aws::Auth::SSOCredentialsProvider>(profile.c_str()));
 				}
 			} else if (item == "env") {
-				/**
-				 * Reads AWS credentials from the Environment variables AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY and
-				 * AWS_SESSION_TOKEN if they exist. If they are not found, empty credentials are returned.
-				 */
 				AddProvider(std::make_shared<Aws::Auth::EnvironmentAWSCredentialsProvider>());
 			} else if (item == "instance") {
+				/* Credentials provider implementation that loads credentials from the Amazon EC2 Instance Metadata Service. */
 				AddProvider(std::make_shared<Aws::Auth::InstanceProfileCredentialsProvider>());
 			} else if (item == "process") {
 				if (profile.empty()) {
@@ -130,7 +127,7 @@ public:
 				if (profile.empty()) {
 					AddProvider(std::make_shared<Aws::Auth::ProfileConfigFileAWSCredentialsProvider>());
 				} else {
-					AddConfigProvider(profile);
+					AddConfigProvider(profile, assume_role_arn, external_id);
 				}
 			} else {
 				throw InvalidInputException("Unknown provider found while parsing AWS credential chain string: '%s'",
@@ -139,10 +136,21 @@ public:
 		}
 	}
 
-	void AddConfigProvider(const string &profile_name) {
+	void AddConfigProvider(const string &profile_name, const string &assume_role_arn, const string &external_id) {
 		auto profile = GetProfile(profile_name);
-		const string &assume_role_arn = profile.GetRoleArn();
-		if (!assume_role_arn.empty()) {
+		if (!profile.GetRoleArn().empty() && !assume_role_arn.empty()) {
+			throw InvalidInputException("Ambiguous role arn. Role_arn '%s' defined in profile. Role_arn '%s' defined in secret statement", profile_name, profile.GetRoleArn(), assume_role_arn);
+		}
+		if (!profile.GetExternalId().empty() && !external_id.empty()) {
+			throw InvalidInputException("Ambiguous external id. external_id '%s' defined in profile. external_id '%s' defined in secret statement", profile_name, profile.GetExternalId(), external_id);
+		}
+		if (profile.GetRoleArn().empty() && !assume_role_arn.empty()) {
+			profile.SetRoleArn(assume_role_arn);
+		}
+		if (profile.GetExternalId().empty() && !external_id.empty()) {
+			profile.SetExternalId(external_id);
+		}
+		if (!profile.GetRoleArn().empty()) {
 			AddSTSProvider(profile);
 		} else {
 			AddProvider(std::make_shared<Aws::Auth::ProfileConfigFileAWSCredentialsProvider>(profile_name.c_str()));
@@ -176,42 +184,45 @@ static string TryGetStringParam(CreateSecretInput &input, const string &param_na
 	}
 }
 
+static string ConstructErrorMessage(string chain, string profile, string assume_role) {
+	string verb = "create";
+	// these chains "generate" new aws keys. See their documentation in the header file
+	// https://github.com/aws/aws-sdk-cpp/blob/main/src/aws-cpp-sdk-core/include/aws/core/auth/AWSCredentialsProvider.h
+	if (chain == "sts" || chain == "sso" || chain == "instance" || chain == "process") {
+		verb = "generate";
+	}
+	string prefix = StringUtil::Format("Failed to %s secret using the following:\n", verb);
+	prefix = profile.empty() ? prefix : prefix + "Profile: " + profile + "\n";
+	prefix = chain.empty() ? prefix : prefix + "Credential Chain: " + chain + "\n";
+	prefix = assume_role.empty() ? prefix : prefix + "Role-arn: " + assume_role + "\n";
+	return prefix;
+}
+
 //! This is the actual callback function
 static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &context, CreateSecretInput &input) {
 	Aws::Auth::AWSCredentials credentials;
-	string chain;
 
 	string profile = TryGetStringParam(input, "profile");
 	string assume_role = TryGetStringParam(input, "assume_role_arn");
 	string external_id = TryGetStringParam(input, "external_id");
-	string profile_error = StringUtil::Format("and profile '%s'", profile);
-	if (profile.empty()) {
-		profile_error = "";
-	}
-	string error_message_prefix = "Could not create AWS credentials";
+	string chain = TryGetStringParam(input, "chain");
 
 	if (input.options.find("chain") != input.options.end()) {
-		chain = TryGetStringParam(input, "chain");
 		DuckDBCustomAWSCredentialsProviderChain provider(chain, profile, assume_role, external_id);
 		credentials = provider.GetAWSCredentials();
-		if (credentials.IsEmpty()) {
-			throw InvalidInputException("%s with credential chain '%s' %s", error_message_prefix, chain, profile_error);
-		}
 	} else {
 		if (input.options.find("profile") != input.options.end()) {
 			// default to config if there is a profile and no chain
 			DuckDBCustomAWSCredentialsProviderChain provider("config", profile);
 			credentials = provider.GetAWSCredentials();
-			if (credentials.IsEmpty()) {
-				throw InvalidInputException("%s with credential chain '%s' %s", error_message_prefix, "config", profile_error);
-			}
 		} else {
 			Aws::Auth::DefaultAWSCredentialsProviderChain provider;
 			credentials = provider.GetAWSCredentials();
-			if (credentials.IsEmpty()) {
-				throw InvalidInputException("%s with credential using default provider chain");
-			}
 		}
+	}
+
+	if (credentials.IsEmpty()) {
+		throw InvalidInputException(ConstructErrorMessage(chain, profile, assume_role));
 	}
 
 	//! If the profile is set we specify a specific profile
