@@ -77,7 +77,7 @@ static Aws::Config::Profile GetProfile(const string &profile_name) {
 	} else {
 		throw InvalidInputException("Failed to load credentials file %s", credentials_file_path);
 	}
-	throw InvalidConfigurationException("Failed to load profile %s in credentials file %s", profile_name,
+	throw InvalidConfigurationException("Failed to load profile '%s' in credentials file %s", profile_name,
 	                                    credentials_file_path);
 }
 
@@ -215,7 +215,7 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 	string chain = TryGetStringParam(input, "chain");
 	chain = chain.empty() ? "config" : chain;
 
-	if (profile.empty()) {
+	if (profile.empty() && external_id.empty() && chain.empty()) {
 		Aws::Auth::DefaultAWSCredentialsProviderChain provider;
 		credentials = provider.GetAWSCredentials();
 	} else {
