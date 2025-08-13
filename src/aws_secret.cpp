@@ -3,7 +3,6 @@
 #include "duckdb/common/case_insensitive_map.hpp"
 #include "duckdb/main/extension_util.hpp"
 
-#include <unistd.h>
 #include <aws/core/Aws.h>
 #include <aws/core/auth/AWSCredentialsProviderChain.h>
 #include <aws/core/auth/SSOCredentialsProvider.h>
@@ -12,7 +11,6 @@
 #include <aws/core/config/AWSConfigFileProfileConfigLoader.h>
 #include <aws/core/config/AWSProfileConfigLoaderBase.h>
 #include <aws/identity-management/auth/STSAssumeRoleCredentialsProvider.h>
-#include <aws/identity-management/auth/STSProfileCredentialsProvider.h>
 #include <aws/sts/STSClient.h>
 
 #include <sys/stat.h>
