@@ -258,8 +258,6 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 
 	// Only auto is supported
 	string refresh = TryGetStringParam(input, "refresh");
-	auto key_id = Value(credentials.GetAWSAccessKeyId()).ToString();
-	auto secret_id = Value(credentials.GetAWSSecretKey()).ToString();
 
 	// We have sneaked in this special handling where if you set the STS chain, you automatically enable refresh
 	// TODO: remove this once refresh is set to auto by default for all credential_chain provider created secrets.
