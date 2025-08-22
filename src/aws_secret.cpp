@@ -58,8 +58,10 @@ static unique_ptr<KeyValueSecret> ConstructBaseS3Secret(vector<string> &prefix_p
 
 static Aws::Config::Profile GetProfile(const string &profile_name) {
 	Aws::Config::Profile selected_profile;
+	// get file path where aws credentials are stored.
+	// comes from AWS_CONFIG_FILE or AWS_SHARED_CREDENTIALS_FILE
 	auto credentials_file_path = Aws::Auth::ProfileConfigFileAWSCredentialsProvider::GetCredentialsProfileFilename();
-	// get the profile
+	// get the profile from within that file
 	Aws::Map<Aws::String, Aws::Config::Profile> profiles;
 	Aws::Config::AWSConfigFileProfileConfigLoader loader(credentials_file_path);
 	if (loader.Load()) {
@@ -86,10 +88,11 @@ public:
 	                                                 const string &assume_role_arn = "",
 	                                                 const string &external_id = "") {
 		auto chain_list = StringUtil::Split(credential_chain, ';');
+		// if the chain list is empty, check the default config.
+		if (chain_list.empty()) {
+			chain_list.push_back("config");
+		}
 
-		// For every item in the chain, we get the profiles.
-		// Once we find the profile, we add a provider credential based on the provider.
-		// STS is technically a provider chain, but a profile that uses STS can be found in other chains.
 		for (const auto &item : chain_list) {
 			// could not find the profile in the name
 			if (item == "sts") {
@@ -211,7 +214,6 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 	string assume_role = TryGetStringParam(input, "assume_role_arn");
 	string external_id = TryGetStringParam(input, "external_id");
 	string chain = TryGetStringParam(input, "chain");
-	chain = chain.empty() ? "config" : chain;
 
 	if (profile.empty() && external_id.empty() && chain.empty()) {
 		Aws::Auth::DefaultAWSCredentialsProviderChain provider;
