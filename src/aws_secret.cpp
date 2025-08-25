@@ -96,7 +96,8 @@ public:
 				Aws::Config::Profile aws_profile;
 				if (assume_role_arn.empty()) {
 					throw InvalidConfigurationException(
-					    "Chain value 'STS' is only supported with an ASSUME_ROLE_ARN value");
+					    "Chain value 'STS' is only supported with an ASSUME_ROLE_ARN value. "
+					    "If the selected profile uses STS, add \"CHAIN 'config'\"");
 				}
 				aws_profile.SetName(profile);
 				aws_profile.SetRoleArn(assume_role_arn);
