@@ -212,6 +212,9 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 	string external_id = TryGetStringParam(input, "external_id");
 	string chain = TryGetStringParam(input, "chain");
 
+	if (!assume_role.empty() && chain.empty()) {
+		throw InvalidConfigurationException("Must pass CHAIN value when passing ASSUME_ROLE_ARN");
+	}
 	if (!chain.empty()) {
 		DuckDBCustomAWSCredentialsProviderChain provider(chain, profile, assume_role, external_id);
 		credentials = provider.GetAWSCredentials();
