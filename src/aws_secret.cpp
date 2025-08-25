@@ -59,7 +59,7 @@ static unique_ptr<KeyValueSecret> ConstructBaseS3Secret(vector<string> &prefix_p
 static Aws::Config::Profile GetProfile(const string &profile_name) {
 	Aws::Config::Profile selected_profile;
 	// get file path where aws credentials are stored.
-	// comes from AWS_CONFIG_FILE or AWS_SHARED_CREDENTIALS_FILE
+	// comes from AWS_SHARED_CREDENTIALS_FILE
 	auto credentials_file_path = Aws::Auth::ProfileConfigFileAWSCredentialsProvider::GetCredentialsProfileFilename();
 	// get the profile from within that file
 	Aws::Map<Aws::String, Aws::Config::Profile> profiles;
@@ -88,10 +88,6 @@ public:
 	                                                 const string &assume_role_arn = "",
 	                                                 const string &external_id = "") {
 		auto chain_list = StringUtil::Split(credential_chain, ';');
-		// if the chain list is empty, check the default config.
-		if (chain_list.empty()) {
-			chain_list.push_back("config");
-		}
 
 		for (const auto &item : chain_list) {
 			// could not find the profile in the name
@@ -215,10 +211,26 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 	string external_id = TryGetStringParam(input, "external_id");
 	string chain = TryGetStringParam(input, "chain");
 
-	if (profile.empty() && external_id.empty() && chain.empty()) {
-		Aws::Auth::DefaultAWSCredentialsProviderChain provider;
+	if (!chain.empty()) {
+		DuckDBCustomAWSCredentialsProviderChain provider(chain, profile, assume_role, external_id);
 		credentials = provider.GetAWSCredentials();
 	} else {
+		if (input.options.find("profile") != input.options.end()) {
+			Aws::Auth::ProfileConfigFileAWSCredentialsProvider provider(profile.c_str());
+			credentials = provider.GetAWSCredentials();
+		} else {
+			Aws::Auth::DefaultAWSCredentialsProviderChain provider;
+			credentials = provider.GetAWSCredentials();
+		}
+	}
+
+	if (credentials.IsEmpty() && chain.empty()) {
+		// handle case where requested profile uses STS, but no chain was declared. In this case,
+		// The aws-spp-sdk pick up credentials via sts. Why? I'm not sure.
+		// Instead we need to find the profile and grab the arn&external_id using "config" chain.
+		// Then we create the credentials using an sts provider. This (should) be the default behavior of the SDK
+		// see https://docs.aws.amazon.com/sdk-for-cpp/v1/developer-guide/credproviders.html
+		chain = "config";
 		DuckDBCustomAWSCredentialsProviderChain provider(chain, profile, assume_role, external_id);
 		credentials = provider.GetAWSCredentials();
 	}
