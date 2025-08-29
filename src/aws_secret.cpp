@@ -230,7 +230,7 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 
 	if (credentials.IsEmpty() && chain.empty()) {
 		// handle case where requested profile uses STS, but no chain was declared. In this case,
-		// The aws-spp-sdk pick up credentials via sts. Why? I'm not sure.
+		// The aws-spp-sdk will not pick up credentials via sts. Unclear why.
 		// Instead we need to find the profile and grab the arn&external_id using "config" chain.
 		// Then we create the credentials using an sts provider. This (should) be the default behavior of the SDK
 		// see https://docs.aws.amazon.com/sdk-for-cpp/v1/developer-guide/credproviders.html
