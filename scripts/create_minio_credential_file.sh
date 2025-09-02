@@ -23,6 +23,17 @@ aws_secret_access_key=minio_duckdb_user_2_password
 aws_access_key_id=minio_duckdb_user_invalid
 aws_secret_access_key=thispasswordiscompletelywrong
 aws_session_token=completelybogussessiontoken
+
+[assume-role-arn]
+source_profile = default
+role_arn = arn:aws:iam::840140254803:role/pyiceberg-etl-role
+region = us-east-2
+
+[assume-role-arn-external-id]
+source_profile = default
+role_arn = arn:aws:iam::840140254803:role/pyiceberg-etl-role
+region = us-east-2
+external_id = 128289344
 "
 
 # Write the credentials configuration to the file
