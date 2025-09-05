@@ -6,7 +6,8 @@
       "name": "aws-sdk-cpp",
       "features": [ "sso", "sts" , "identity-management"]
     },
-    "openssl"
+    "openssl",
+    "curl"
   ],
   "vcpkg-configuration": {
     "registries": [
