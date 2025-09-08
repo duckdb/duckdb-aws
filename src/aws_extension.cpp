@@ -1,12 +1,10 @@
-#define DUCKDB_EXTENSION_MAIN
-
 #include "aws_secret.hpp"
 #include "aws_extension.hpp"
 
 #include "duckdb.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/catalog/catalog.hpp"
-#include "duckdb/main/extension_util.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 #include <duckdb/parser/parsed_data/create_scalar_function_info.hpp>
 #include <aws/core/Aws.h>
 #include <aws/core/auth/AWSCredentialsProviderChain.h>
@@ -117,11 +115,11 @@ static void LoadAWSCredentialsFun(ClientContext &context, TableFunctionInput &da
 
 	data.finished = true;
 }
-static void LoadInternal(DuckDB &db) {
+static void LoadInternal(ExtensionLoader &loader) {
 	Aws::SDKOptions options;
 	Aws::InitAPI(options);
 
-	CreateAwsSecretFunctions::InitializeCurlCertificates(*db.instance);
+	CreateAwsSecretFunctions::InitializeCurlCertificates(loader.GetDatabaseInstance());
 
 	TableFunctionSet function_set("load_aws_credentials");
 	auto base_fun = TableFunction("load_aws_credentials", {}, LoadAWSCredentialsFun, LoadAWSCredentialsBind);
@@ -136,13 +134,13 @@ static void LoadInternal(DuckDB &db) {
 	function_set.AddFunction(base_fun);
 	function_set.AddFunction(profile_fun);
 
-	ExtensionUtil::RegisterFunction(*db.instance, function_set);
+	loader.RegisterFunction(function_set);
 
-	CreateAwsSecretFunctions::Register(*db.instance);
+	CreateAwsSecretFunctions::Register(loader);
 }
 
-void AwsExtension::Load(DuckDB &db) {
-	LoadInternal(db);
+void AwsExtension::Load(ExtensionLoader &loader) {
+	LoadInternal(loader);
 }
 std::string AwsExtension::Name() {
 	return "aws";
@@ -152,16 +150,8 @@ std::string AwsExtension::Name() {
 
 extern "C" {
 
-DUCKDB_EXTENSION_API void aws_init(duckdb::DatabaseInstance &db) {
-	duckdb::DuckDB db_wrapper(db);
-	db_wrapper.LoadExtension<duckdb::AwsExtension>();
+DUCKDB_CPP_EXTENSION_ENTRY(aws, loader) {
+	duckdb::LoadInternal(loader);
 }
 
-DUCKDB_EXTENSION_API const char *aws_version() {
-	return duckdb::DuckDB::LibraryVersion();
 }
-}
-
-#ifndef DUCKDB_EXTENSION_MAIN
-#error DUCKDB_EXTENSION_MAIN not defined
-#endif

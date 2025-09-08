@@ -13,7 +13,7 @@ struct AwsSetCredentialsResult {
 
 class AwsExtension : public Extension {
 public:
-	void Load(DuckDB &db) override;
+	void Load(ExtensionLoader &db) override;
 	std::string Name() override;
 };
 

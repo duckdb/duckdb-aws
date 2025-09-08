@@ -1,7 +1,7 @@
 #include "aws_secret.hpp"
 
 #include "duckdb/common/case_insensitive_map.hpp"
-#include "duckdb/main/extension_util.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 
 #include <aws/core/Aws.h>
 #include <aws/core/auth/AWSCredentialsProviderChain.h>
@@ -341,7 +341,7 @@ void CreateAwsSecretFunctions::InitializeCurlCertificates(DatabaseInstance &db) 
 	}
 }
 
-void CreateAwsSecretFunctions::Register(DatabaseInstance &instance) {
+void CreateAwsSecretFunctions::Register(ExtensionLoader &loader) {
 	vector<string> types = {"s3", "r2", "gcs", "aws"};
 
 	for (const auto &type : types) {
@@ -373,7 +373,7 @@ void CreateAwsSecretFunctions::Register(DatabaseInstance &instance) {
 		// Params for configuring the credential loading
 		cred_chain_function.named_parameters["profile"] = LogicalType::VARCHAR;
 
-		ExtensionUtil::RegisterFunction(instance, cred_chain_function);
+		loader.RegisterFunction(cred_chain_function);
 	}
 }
 
