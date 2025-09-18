@@ -220,7 +220,9 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 		credentials = provider.GetAWSCredentials();
 	} else {
 		if (input.options.find("profile") != input.options.end()) {
-			Aws::Auth::ProfileConfigFileAWSCredentialsProvider provider(profile.c_str());
+			Aws::Client::ClientConfiguration::CredentialProviderConfiguration config;
+  			config.profile = profile.c_str()
+			Aws::Auth::DefaultAWSCredentialsProviderChain provider(config);
 			credentials = provider.GetAWSCredentials();
 		} else {
 			Aws::Auth::DefaultAWSCredentialsProviderChain provider;

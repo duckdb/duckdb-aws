@@ -19,7 +19,9 @@ static AwsSetCredentialsResult TrySetAwsCredentials(DBConfig &config, const stri
 	if (!profile.empty()) {
 		// The user has specified a specific profile they want to use instead of the current profile specified by the
 		// system
-		Aws::Auth::ProfileConfigFileAWSCredentialsProvider provider(profile.c_str());
+		Aws::Client::ClientConfiguration::CredentialProviderConfiguration config;
+  		config.profile = profile.c_str()
+		Aws::Auth::DefaultAWSCredentialsProviderChain provider(config);
 		credentials = provider.GetAWSCredentials();
 	} else {
 		Aws::Auth::DefaultAWSCredentialsProviderChain provider;
