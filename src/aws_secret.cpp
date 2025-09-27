@@ -2,6 +2,7 @@
 
 #include "duckdb/common/case_insensitive_map.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
+#include "duckdb/main/settings.hpp"
 
 #include <aws/core/Aws.h>
 #include <aws/core/auth/AWSCredentialsProviderChain.h>
@@ -215,6 +216,7 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 	if (!assume_role.empty() && chain.empty()) {
 		throw InvalidConfigurationException("Must pass CHAIN value when passing ASSUME_ROLE_ARN");
 	}
+
 	if (!chain.empty()) {
 		DuckDBCustomAWSCredentialsProviderChain provider(chain, profile, assume_role, external_id);
 		credentials = provider.GetAWSCredentials();
@@ -239,7 +241,13 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 		credentials = provider.GetAWSCredentials();
 	}
 
-	if (credentials.IsEmpty()) {
+	bool require_secret = string(SecretValidationSetting::DefaultValue) != "none";
+	Value setting;
+	if (context.TryGetCurrentSetting(SecretValidationSetting::Name, setting)) {
+		require_secret = StringValue::Get(setting) != "none";
+	}
+
+	if (credentials.IsEmpty() && require_secret) {
 		throw InvalidInputException(ConstructErrorMessage(chain, profile, assume_role, external_id));
 	}
 
