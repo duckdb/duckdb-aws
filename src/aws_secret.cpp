@@ -44,9 +44,9 @@ static struct {
 
 //! Parse and set the remaining options
 static void ParseCoreS3Config(CreateSecretInput &input, KeyValueSecret &secret) {
-	vector<string> options = {"key_id",    "secret",        "region",
-	                          "endpoint",  "session_token", "endpoint",
-	                          "url_style", "use_ssl",       "s3_url_compatibility_mode"};
+	vector<string> options = {"key_id",   "secret",        "region",
+	                          "endpoint", "session_token", "url_style",
+	                          "use_ssl",  "s3_url_compatibility_mode"};
 	for (const auto &val : options) {
 		auto set_region_param = input.options.find(val);
 		if (set_region_param != input.options.end()) {
@@ -312,7 +312,6 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 		result->secret_map["refresh_info"] = Value::STRUCT(struct_fields);
 	}
 
-	AwsSetCredentialsResult ret;
 	if (!credentials.IsExpiredOrEmpty()) {
 		result->secret_map["key_id"] = Value(credentials.GetAWSAccessKeyId());
 		result->secret_map["secret"] = Value(credentials.GetAWSSecretKey());
