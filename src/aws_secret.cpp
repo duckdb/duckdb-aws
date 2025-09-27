@@ -65,26 +65,25 @@ static unique_ptr<KeyValueSecret> ConstructBaseS3Secret(vector<string> &prefix_p
 
 static Aws::Config::Profile GetProfile(const string &profile_name, const bool require_profile) {
 	Aws::Config::Profile selected_profile;
-	// get file path where aws credentials are stored.
-	// comes from AWS_SHARED_CREDENTIALS_FILE
-	auto credentials_file_path = Aws::Auth::ProfileConfigFileAWSCredentialsProvider::GetCredentialsProfileFilename();
+	// get file path where aws config is stored.
+	// comes from AWS_CONFIG_FILE
+	auto config_file_path = Aws::Auth::GetConfigProfileFilename();
 	// get the profile from within that file
 	Aws::Map<Aws::String, Aws::Config::Profile> profiles;
-	Aws::Config::AWSConfigFileProfileConfigLoader loader(credentials_file_path);
+	Aws::Config::AWSConfigFileProfileConfigLoader loader(config_file_path, true);
 	if (loader.Load()) {
 		profiles = loader.GetProfiles();
 		for (const auto &entry : profiles) {
 			const Aws::String &profileName = entry.first;
 			if (profileName == profile_name) {
 				selected_profile = entry.second;
-				auto &url = selected_profile.GetValue("endpoint");
 				return selected_profile;
 			}
 		}
 	}
 	if (require_profile) {
-		throw InvalidConfigurationException("Secret Validation Failure: no profile '%s' found in credentials file %s",
-		                                    profile_name, credentials_file_path);
+		throw InvalidConfigurationException("Secret Validation Failure: no profile '%s' found in config file %s",
+		                                    profile_name, config_file_path);
 	}
 	return selected_profile; // empty profile
 }
@@ -356,7 +355,7 @@ void CreateAwsSecretFunctions::InitializeCurlCertificates(DatabaseInstance &db) 
 		struct stat buf;
 		if (stat(caFile.c_str(), &buf) == 0) {
 			SELECTED_CURL_CERT_PATH = caFile;
-			DUCKDB_LOG_DEBUG(db, "aws.CaCertificateDetection", "CA path: %s", SELECTED_CURL_CERT_PATH);
+			DUCKDB_LOG_DEBUG(db, "aws.CaCertificateDetection: CA path: %s", SELECTED_CURL_CERT_PATH);
 			return;
 		}
 	}
