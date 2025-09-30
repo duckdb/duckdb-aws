@@ -31,7 +31,7 @@ static AwsSetCredentialsResult TrySetAwsCredentials(DBConfig &config, const stri
 	auto s3_config = Aws::Client::ClientConfiguration(profile.c_str());
 	auto region = s3_config.region;
 
-	// TODO: We would also like to get the endpoint here, but it's currently not supported by the AWS SDK:
+	// TODO: We would also like to get the endpoint here, but it's currently not supported by the AWS Sdk:
 	// 		 https://github.com/aws/aws-sdk-cpp/issues/2587
 
 	AwsSetCredentialsResult ret;
