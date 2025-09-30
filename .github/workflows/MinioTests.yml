@@ -61,12 +61,7 @@ jobs:
       - name: Start S3/HTTP test server
         shell: bash
         run: |
-          cd duckdb
-          mkdir data/attach_test
-          touch data/attach_test/attach.db
-          sudo ./scripts/install_s3_test_server.sh
-          source ./scripts/run_s3_test_server.sh
-          sleep 30
+          ./scripts/install_and_run_httpfs_s3_test_server.sh
 
       - name: Write AWS credentials file
         shell: bash
