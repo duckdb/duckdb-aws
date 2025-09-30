@@ -35,6 +35,12 @@ static string certFileLocations[] = {
     // Alpine
     "/etc/ssl/cert.pem"};
 
+// enumerate create secret VALIDATION options without making a formal enum
+static struct {
+	const set<string> options = {"exists", "none"};
+	const string default_ = "exists";
+} CreateAwsSecretValidation;
+
 //! Parse and set the remaining options
 static void ParseCoreS3Config(CreateSecretInput &input, KeyValueSecret &secret) {
 	vector<string> options = {"key_id",    "secret",        "region",
@@ -211,10 +217,22 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 	string assume_role = TryGetStringParam(input, "assume_role_arn");
 	string external_id = TryGetStringParam(input, "external_id");
 	string chain = TryGetStringParam(input, "chain");
+	string validation = StringUtil::Lower(TryGetStringParam(input, "validation"));
 
 	if (!assume_role.empty() && chain.empty()) {
 		throw InvalidConfigurationException("Must pass CHAIN value when passing ASSUME_ROLE_ARN");
 	}
+
+	bool require_credentials = true; // aka default != "none"
+	if (!validation.empty()) {
+		if (CreateAwsSecretValidation.options.find(validation) == CreateAwsSecretValidation.options.end()) {
+			throw InvalidConfigurationException("Unknown AWS VALIDATION option: `%s`", validation);
+		}
+		if (validation == "none") {
+			require_credentials = false;
+		}
+	}
+
 	if (!chain.empty()) {
 		DuckDBCustomAWSCredentialsProviderChain provider(chain, profile, assume_role, external_id);
 		credentials = provider.GetAWSCredentials();
@@ -239,7 +257,7 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 		credentials = provider.GetAWSCredentials();
 	}
 
-	if (credentials.IsEmpty()) {
+	if (credentials.IsEmpty() && require_credentials) {
 		throw InvalidInputException(ConstructErrorMessage(chain, profile, assume_role, external_id));
 	}
 
@@ -372,6 +390,7 @@ void CreateAwsSecretFunctions::Register(ExtensionLoader &loader) {
 
 		// Params for configuring the credential loading
 		cred_chain_function.named_parameters["profile"] = LogicalType::VARCHAR;
+		cred_chain_function.named_parameters["validation"] = LogicalType::VARCHAR;
 
 		loader.RegisterFunction(cred_chain_function);
 	}
