@@ -123,18 +123,6 @@ static void LoadInternal(ExtensionLoader &loader) {
 	Aws::SDKOptions options;
 	Aws::InitAPI(options);
 
-	{
-		// What the process env says:
-		std::cout << "ENV AWS_SHARED_CREDENTIALS_FILE=" << Aws::Environment::GetEnv("AWS_SHARED_CREDENTIALS_FILE")
-		          << "\n";
-		std::cout << "ENV AWS_CONFIG_FILE=" << Aws::Environment::GetEnv("AWS_CONFIG_FILE") << "\n";
-
-		// What the SDK resolved to (post-init):
-		std::cout << "SDK credentials file path="
-		          << Aws::Auth::ProfileConfigFileAWSCredentialsProvider::GetCredentialsProfileFilename() << "\n";
-		std::cout << "SDK config file path=" << Aws::Auth::GetConfigProfileFilename() << "\n";
-	}
-
 	CreateAwsSecretFunctions::InitializeCurlCertificates(loader.GetDatabaseInstance());
 
 	TableFunctionSet function_set("load_aws_credentials");
@@ -158,6 +146,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 void AwsExtension::Load(ExtensionLoader &loader) {
 	LoadInternal(loader);
 }
+
 std::string AwsExtension::Name() {
 	return "aws";
 }
