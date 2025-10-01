@@ -8,7 +8,6 @@ defaults:
     shell: bash
 
 jobs:
-  # TODO: significantly reduce this -- it currently dups httpfs tests which need data; these only need enough for crednetial tests
   minio-tests:
     name: Minio Tests
     runs-on: ubuntu-latest
@@ -23,7 +22,6 @@ jobs:
       VCPKG_TARGET_TRIPLET: x64-linux
       VCPKG_TOOLCHAIN_PATH: ${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
       DONT_STATIC_LINK_DUCKDB: 1 # fixes oom while linking
-      CORE_EXTENSIONS: "parquet;json;tpch"
 
     steps:
       - uses: actions/checkout@v4
