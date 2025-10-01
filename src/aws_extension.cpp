@@ -5,14 +5,10 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
-#include <aws/core/auth/AWSCredentialsProvider.h>
 #include <duckdb/parser/parsed_data/create_scalar_function_info.hpp>
 #include <aws/core/Aws.h>
 #include <aws/core/auth/AWSCredentialsProviderChain.h>
 #include <aws/core/client/ClientConfiguration.h>
-#include <aws/core/platform/Environment.h>
-
-#include <iostream>
 
 namespace duckdb {
 
@@ -146,7 +142,6 @@ static void LoadInternal(ExtensionLoader &loader) {
 void AwsExtension::Load(ExtensionLoader &loader) {
 	LoadInternal(loader);
 }
-
 std::string AwsExtension::Name() {
 	return "aws";
 }
@@ -158,4 +153,5 @@ extern "C" {
 DUCKDB_CPP_EXTENSION_ENTRY(aws, loader) {
 	duckdb::LoadInternal(loader);
 }
+
 }

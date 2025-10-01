@@ -6,7 +6,8 @@
 }
 
 set -xv
+mkdir -p test/test_data
+touch test/test_data/attach.db
 sudo ./scripts/install_s3_test_server.sh
-source ./scripts/generate_presigned_url.sh
 source ./scripts/run_s3_test_server.sh
 sleep 30
