@@ -1,6 +1,7 @@
 #include "aws_secret.hpp"
 
 #include "duckdb/common/case_insensitive_map.hpp"
+#include "duckdb/common/exception.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 
 #include <aws/core/Aws.h>
@@ -82,8 +83,8 @@ static Aws::Config::Profile GetProfile(const string &profile_name, const bool re
 		}
 	}
 	if (require_profile) {
-		throw InvalidConfigurationException("Failed to load profile '%s' in credentials file %s", profile_name,
-		                                    credentials_file_path);
+		throw InvalidConfigurationException("Secret Validation Failure: no profile '%s' found in credentials file %s",
+		                                    profile_name, credentials_file_path);
 	}
 	return selected_profile; // empty profile
 }
@@ -203,7 +204,7 @@ static string ConstructErrorMessage(string chain, string profile, string assume_
 	if (chain == "sts" || chain == "sso" || chain == "instance" || chain == "process" || !assume_role.empty()) {
 		verb = "generate";
 	}
-	string prefix = StringUtil::Format("Failed to %s secret using the following:\n", verb);
+	string prefix = StringUtil::Format("Secret Validation Failure: during `%s` using the following:\n", verb);
 	prefix = profile.empty() ? prefix : prefix + StringUtil::Format("Profile: '%s'\n", profile);
 	prefix = chain.empty() ? prefix : prefix + StringUtil::Format("Credential Chain: '%s'\n", chain);
 	prefix = assume_role.empty() ? prefix : prefix + StringUtil::Format("Role-arn: '%s'\n", assume_role);
@@ -228,7 +229,7 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 	bool require_credentials = true; // aka default != "none"
 	if (!validation.empty()) {
 		if (CreateAwsSecretValidation.options.find(validation) == CreateAwsSecretValidation.options.end()) {
-			throw InvalidConfigurationException("Unknown AWS VALIDATION option: `%s`", validation);
+			throw InvalidInputException("Unknown AWS validation mode: `%s`", validation);
 		}
 		if (validation == "none") {
 			require_credentials = false;
@@ -260,7 +261,7 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 	}
 
 	if (credentials.IsEmpty() && require_credentials) {
-		throw InvalidInputException(ConstructErrorMessage(chain, profile, assume_role, external_id));
+		throw InvalidConfigurationException(ConstructErrorMessage(chain, profile, assume_role, external_id));
 	}
 
 	//! If the profile is set we specify a specific profile
