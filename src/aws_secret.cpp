@@ -62,7 +62,7 @@ static unique_ptr<KeyValueSecret> ConstructBaseS3Secret(vector<string> &prefix_p
 	return return_value;
 }
 
-static Aws::Config::Profile GetProfile(const string &profile_name) {
+static Aws::Config::Profile GetProfile(const string &profile_name, const bool require_profile) {
 	Aws::Config::Profile selected_profile;
 	// get file path where aws credentials are stored.
 	// comes from AWS_SHARED_CREDENTIALS_FILE
@@ -80,18 +80,19 @@ static Aws::Config::Profile GetProfile(const string &profile_name) {
 				return selected_profile;
 			}
 		}
-	} else {
-		throw InvalidInputException("Failed to load credentials file %s", credentials_file_path);
 	}
-	throw InvalidConfigurationException("Failed to load profile '%s' in credentials file %s", profile_name,
-	                                    credentials_file_path);
+	if (require_profile) {
+		throw InvalidConfigurationException("Failed to load profile '%s' in credentials file %s", profile_name,
+		                                    credentials_file_path);
+	}
+	return selected_profile; // empty profile
 }
 
 //! Generate a custom credential provider chain for authentication
 class DuckDBCustomAWSCredentialsProviderChain : public Aws::Auth::AWSCredentialsProviderChain {
 public:
-	explicit DuckDBCustomAWSCredentialsProviderChain(const string &credential_chain, const string &profile = "",
-	                                                 const string &assume_role_arn = "",
+	explicit DuckDBCustomAWSCredentialsProviderChain(const string &credential_chain, const bool require_credentials,
+	                                                 const string &profile = "", const string &assume_role_arn = "",
 	                                                 const string &external_id = "") {
 		auto chain_list = StringUtil::Split(credential_chain, ';');
 
@@ -131,7 +132,7 @@ public:
 				if (profile.empty()) {
 					AddProvider(std::make_shared<Aws::Auth::ProfileConfigFileAWSCredentialsProvider>());
 				} else {
-					AddConfigProvider(profile, assume_role_arn, external_id);
+					AddConfigProvider(require_credentials, profile, assume_role_arn, external_id);
 				}
 			} else {
 				throw InvalidInputException("Unknown provider found while parsing AWS credential chain string: '%s'",
@@ -140,8 +141,9 @@ public:
 		}
 	}
 
-	void AddConfigProvider(const string &profile_name, const string &assume_role_arn, const string &external_id) {
-		auto profile = GetProfile(profile_name);
+	void AddConfigProvider(const bool require_credentials, const string &profile_name, const string &assume_role_arn,
+	                       const string &external_id) {
+		auto profile = GetProfile(profile_name, require_credentials);
 		if (!profile.GetRoleArn().empty() && !assume_role_arn.empty()) {
 			throw InvalidInputException(
 			    "Ambiguous role arn. Role_arn '%s' defined in profile '%s'. Role_arn '%s' defined in secret statement",
@@ -234,7 +236,7 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 	}
 
 	if (!chain.empty()) {
-		DuckDBCustomAWSCredentialsProviderChain provider(chain, profile, assume_role, external_id);
+		DuckDBCustomAWSCredentialsProviderChain provider(chain, require_credentials, profile, assume_role, external_id);
 		credentials = provider.GetAWSCredentials();
 	} else {
 		if (input.options.find("profile") != input.options.end()) {
@@ -253,7 +255,7 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 		// Then we create the credentials using an sts provider. This (should) be the default behavior of the SDK
 		// see https://docs.aws.amazon.com/sdk-for-cpp/v1/developer-guide/credproviders.html
 		chain = "config";
-		DuckDBCustomAWSCredentialsProviderChain provider(chain, profile, assume_role, external_id);
+		DuckDBCustomAWSCredentialsProviderChain provider(chain, require_credentials, profile, assume_role, external_id);
 		credentials = provider.GetAWSCredentials();
 	}
 

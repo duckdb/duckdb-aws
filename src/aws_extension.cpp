@@ -5,10 +5,14 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
+#include <aws/core/auth/AWSCredentialsProvider.h>
 #include <duckdb/parser/parsed_data/create_scalar_function_info.hpp>
 #include <aws/core/Aws.h>
 #include <aws/core/auth/AWSCredentialsProviderChain.h>
 #include <aws/core/client/ClientConfiguration.h>
+#include <aws/core/platform/Environment.h>
+
+#include <iostream>
 
 namespace duckdb {
 
@@ -119,6 +123,18 @@ static void LoadInternal(ExtensionLoader &loader) {
 	Aws::SDKOptions options;
 	Aws::InitAPI(options);
 
+	{
+		// What the process env says:
+		std::cout << "ENV AWS_SHARED_CREDENTIALS_FILE=" << Aws::Environment::GetEnv("AWS_SHARED_CREDENTIALS_FILE")
+		          << "\n";
+		std::cout << "ENV AWS_CONFIG_FILE=" << Aws::Environment::GetEnv("AWS_CONFIG_FILE") << "\n";
+
+		// What the SDK resolved to (post-init):
+		std::cout << "SDK credentials file path="
+		          << Aws::Auth::ProfileConfigFileAWSCredentialsProvider::GetCredentialsProfileFilename() << "\n";
+		std::cout << "SDK config file path=" << Aws::Auth::GetConfigProfileFilename() << "\n";
+	}
+
 	CreateAwsSecretFunctions::InitializeCurlCertificates(loader.GetDatabaseInstance());
 
 	TableFunctionSet function_set("load_aws_credentials");
@@ -153,5 +169,4 @@ extern "C" {
 DUCKDB_CPP_EXTENSION_ENTRY(aws, loader) {
 	duckdb::LoadInternal(loader);
 }
-
 }
