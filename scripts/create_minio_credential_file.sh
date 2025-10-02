@@ -24,6 +24,11 @@ aws_access_key_id=minio_duckdb_user_invalid
 aws_secret_access_key=thispasswordiscompletelywrong
 aws_session_token=completelybogussessiontoken
 
+[minio-testing-empty]
+aws_access_key_id=
+aws_secret_access_key=
+aws_session_token=
+
 [assume-role-arn]
 source_profile = default
 role_arn = arn:aws:iam::840140254803:role/pyiceberg-etl-role
@@ -48,7 +53,11 @@ region=eu-west-1
 
 [profile minio-testing-invalid]
 region=the-moon-123
+
+[minio-testing-empty]
+region=
 "
 
 # Write the config to the file
-echo "$config_str" > "$config_file"
+echo "$config_str" >"$config_file"
+

@@ -1,0 +1,8 @@
+#!/bin/sh
+
+MINIO_CONFIG="$HOME/.minio"
+exec env \
+    "MINIO_CONFIG=$MINIO_CONFIG" \
+    "AWS_CONFIG_FILE=$MINIO_CONFIG/config" \
+    "AWS_SHARED_CREDENTIALS_FILE=$MINIO_CONFIG/credentials" \
+    "$@"
