@@ -19,7 +19,9 @@ static AwsSetCredentialsResult TrySetAwsCredentials(DBConfig &config, const stri
 	if (!profile.empty()) {
 		// The user has specified a specific profile they want to use instead of the current profile specified by the
 		// system
-		Aws::Auth::ProfileConfigFileAWSCredentialsProvider provider(profile.c_str());
+		Aws::Client::ClientConfiguration::CredentialProviderConfiguration config;
+  		config.profile = profile.c_str()
+		Aws::Auth::DefaultAWSCredentialsProviderChain provider(config);
 		credentials = provider.GetAWSCredentials();
 	} else {
 		Aws::Auth::DefaultAWSCredentialsProviderChain provider;
@@ -29,7 +31,7 @@ static AwsSetCredentialsResult TrySetAwsCredentials(DBConfig &config, const stri
 	auto s3_config = Aws::Client::ClientConfiguration(profile.c_str());
 	auto region = s3_config.region;
 
-	// TODO: We would also like to get the endpoint here, but it's currently not supported by the AWS SDK:
+	// TODO: We would also like to get the endpoint here, but it's currently not supported by the AWS Sdk:
 	// 		 https://github.com/aws/aws-sdk-cpp/issues/2587
 
 	AwsSetCredentialsResult ret;
