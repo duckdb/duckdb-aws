@@ -14,21 +14,21 @@ concurrency:
 jobs:
   duckdb-stable-build:
     name: Build extension binaries
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.4.0
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@main
     with:
       extension_name: aws
-      duckdb_version: v1.4.0
+      duckdb_version: 75a25b5404700262f965129571a1995fb802242d
       ci_tools_version: main
       exclude_archs: 'wasm_mvp;wasm_eh;wasm_threads;windows_amd64_rtools;windows_amd64_mingw' # Doesn't work anyway: env local file or env access possible
 
   duckdb-stable-deploy:
     name: Deploy extension binaries
     needs: duckdb-stable-build
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_deploy.yml@v1.4.0
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_deploy.yml@main
     secrets: inherit
     with:
       extension_name: aws
-      duckdb_version: v1.4.0
+      duckdb_version: 75a25b5404700262f965129571a1995fb802242d
       ci_tools_version: main
       exclude_archs: 'wasm_mvp;wasm_eh;wasm_threads;windows_amd64_rtools;windows_amd64_mingw' # Doesn't work anyway: env local file or env access possible
       deploy_latest: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}

@@ -1,6 +1,7 @@
 #include "aws_secret.hpp"
 
 #include "duckdb/common/case_insensitive_map.hpp"
+#include "duckdb/common/exception.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 
 #include <aws/core/Aws.h>
@@ -35,11 +36,17 @@ static string certFileLocations[] = {
     // Alpine
     "/etc/ssl/cert.pem"};
 
+// enumerate create secret VALIDATION options without making a formal enum
+static struct {
+	const set<string> options = {"exists", "none"};
+	const string default_ = "exists";
+} CreateAwsSecretValidation;
+
 //! Parse and set the remaining options
 static void ParseCoreS3Config(CreateSecretInput &input, KeyValueSecret &secret) {
-	vector<string> options = {"key_id",    "secret",        "region",
-	                          "endpoint",  "session_token", "endpoint",
-	                          "url_style", "use_ssl",       "s3_url_compatibility_mode"};
+	vector<string> options = {"key_id",   "secret",        "region",
+	                          "endpoint", "session_token", "url_style",
+	                          "use_ssl",  "s3_url_compatibility_mode"};
 	for (const auto &val : options) {
 		auto set_region_param = input.options.find(val);
 		if (set_region_param != input.options.end()) {
@@ -56,36 +63,36 @@ static unique_ptr<KeyValueSecret> ConstructBaseS3Secret(vector<string> &prefix_p
 	return return_value;
 }
 
-static Aws::Config::Profile GetProfile(const string &profile_name) {
+static Aws::Config::Profile GetProfile(const string &profile_name, const bool require_profile) {
 	Aws::Config::Profile selected_profile;
-	// get file path where aws credentials are stored.
-	// comes from AWS_SHARED_CREDENTIALS_FILE
-	auto credentials_file_path = Aws::Auth::ProfileConfigFileAWSCredentialsProvider::GetCredentialsProfileFilename();
+	// get file path where aws config is stored.
+	// comes from AWS_CONFIG_FILE
+	auto config_file_path = Aws::Auth::GetConfigProfileFilename();
 	// get the profile from within that file
 	Aws::Map<Aws::String, Aws::Config::Profile> profiles;
-	Aws::Config::AWSConfigFileProfileConfigLoader loader(credentials_file_path);
+	Aws::Config::AWSConfigFileProfileConfigLoader loader(config_file_path, true);
 	if (loader.Load()) {
 		profiles = loader.GetProfiles();
 		for (const auto &entry : profiles) {
 			const Aws::String &profileName = entry.first;
 			if (profileName == profile_name) {
 				selected_profile = entry.second;
-				auto &url = selected_profile.GetValue("endpoint");
 				return selected_profile;
 			}
 		}
-	} else {
-		throw InvalidInputException("Failed to load credentials file %s", credentials_file_path);
 	}
-	throw InvalidConfigurationException("Failed to load profile '%s' in credentials file %s", profile_name,
-	                                    credentials_file_path);
+	if (require_profile) {
+		throw InvalidConfigurationException("Secret Validation Failure: no profile '%s' found in config file %s",
+		                                    profile_name, config_file_path);
+	}
+	return selected_profile; // empty profile
 }
 
 //! Generate a custom credential provider chain for authentication
 class DuckDBCustomAWSCredentialsProviderChain : public Aws::Auth::AWSCredentialsProviderChain {
 public:
-	explicit DuckDBCustomAWSCredentialsProviderChain(const string &credential_chain, const string &profile = "",
-	                                                 const string &assume_role_arn = "",
+	explicit DuckDBCustomAWSCredentialsProviderChain(const string &credential_chain, const bool require_credentials,
+	                                                 const string &profile = "", const string &assume_role_arn = "",
 	                                                 const string &external_id = "") {
 		auto chain_list = StringUtil::Split(credential_chain, ';');
 
@@ -125,7 +132,7 @@ public:
 				if (profile.empty()) {
 					AddProvider(std::make_shared<Aws::Auth::ProfileConfigFileAWSCredentialsProvider>());
 				} else {
-					AddConfigProvider(profile, assume_role_arn, external_id);
+					AddConfigProvider(require_credentials, profile, assume_role_arn, external_id);
 				}
 			} else {
 				throw InvalidInputException("Unknown provider found while parsing AWS credential chain string: '%s'",
@@ -134,8 +141,9 @@ public:
 		}
 	}
 
-	void AddConfigProvider(const string &profile_name, const string &assume_role_arn, const string &external_id) {
-		auto profile = GetProfile(profile_name);
+	void AddConfigProvider(const bool require_credentials, const string &profile_name, const string &assume_role_arn,
+	                       const string &external_id) {
+		auto profile = GetProfile(profile_name, require_credentials);
 		if (!profile.GetRoleArn().empty() && !assume_role_arn.empty()) {
 			throw InvalidInputException(
 			    "Ambiguous role arn. Role_arn '%s' defined in profile '%s'. Role_arn '%s' defined in secret statement",
@@ -195,7 +203,7 @@ static string ConstructErrorMessage(string chain, string profile, string assume_
 	if (chain == "sts" || chain == "sso" || chain == "instance" || chain == "process" || !assume_role.empty()) {
 		verb = "generate";
 	}
-	string prefix = StringUtil::Format("Failed to %s secret using the following:\n", verb);
+	string prefix = StringUtil::Format("Secret Validation Failure: during `%s` using the following:\n", verb);
 	prefix = profile.empty() ? prefix : prefix + StringUtil::Format("Profile: '%s'\n", profile);
 	prefix = chain.empty() ? prefix : prefix + StringUtil::Format("Credential Chain: '%s'\n", chain);
 	prefix = assume_role.empty() ? prefix : prefix + StringUtil::Format("Role-arn: '%s'\n", assume_role);
@@ -211,12 +219,24 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 	string assume_role = TryGetStringParam(input, "assume_role_arn");
 	string external_id = TryGetStringParam(input, "external_id");
 	string chain = TryGetStringParam(input, "chain");
+	string validation = StringUtil::Lower(TryGetStringParam(input, "validation"));
 
 	if (!assume_role.empty() && chain.empty()) {
 		throw InvalidConfigurationException("Must pass CHAIN value when passing ASSUME_ROLE_ARN");
 	}
+
+	bool require_credentials = true; // aka default != "none"
+	if (!validation.empty()) {
+		if (CreateAwsSecretValidation.options.find(validation) == CreateAwsSecretValidation.options.end()) {
+			throw InvalidInputException("Unknown AWS validation mode: `%s`", validation);
+		}
+		if (validation == "none") {
+			require_credentials = false;
+		}
+	}
+
 	if (!chain.empty()) {
-		DuckDBCustomAWSCredentialsProviderChain provider(chain, profile, assume_role, external_id);
+		DuckDBCustomAWSCredentialsProviderChain provider(chain, require_credentials, profile, assume_role, external_id);
 		credentials = provider.GetAWSCredentials();
 	} else {
 		if (input.options.find("profile") != input.options.end()) {
@@ -235,12 +255,12 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 		// Then we create the credentials using an sts provider. This (should) be the default behavior of the SDK
 		// see https://docs.aws.amazon.com/sdk-for-cpp/v1/developer-guide/credproviders.html
 		chain = "config";
-		DuckDBCustomAWSCredentialsProviderChain provider(chain, profile, assume_role, external_id);
+		DuckDBCustomAWSCredentialsProviderChain provider(chain, require_credentials, profile, assume_role, external_id);
 		credentials = provider.GetAWSCredentials();
 	}
 
-	if (credentials.IsEmpty()) {
-		throw InvalidInputException(ConstructErrorMessage(chain, profile, assume_role, external_id));
+	if (credentials.IsEmpty() && require_credentials) {
+		throw InvalidConfigurationException(ConstructErrorMessage(chain, profile, assume_role, external_id));
 	}
 
 	//! If the profile is set we specify a specific profile
@@ -292,7 +312,6 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 		result->secret_map["refresh_info"] = Value::STRUCT(struct_fields);
 	}
 
-	AwsSetCredentialsResult ret;
 	if (!credentials.IsExpiredOrEmpty()) {
 		result->secret_map["key_id"] = Value(credentials.GetAWSAccessKeyId());
 		result->secret_map["secret"] = Value(credentials.GetAWSSecretKey());
@@ -335,7 +354,7 @@ void CreateAwsSecretFunctions::InitializeCurlCertificates(DatabaseInstance &db) 
 		struct stat buf;
 		if (stat(caFile.c_str(), &buf) == 0) {
 			SELECTED_CURL_CERT_PATH = caFile;
-			DUCKDB_LOG_DEBUG(db, "aws.CaCertificateDetection", "CA path: %s", SELECTED_CURL_CERT_PATH);
+			DUCKDB_LOG_DEBUG(db, "aws.CaCertificateDetection: CA path: %s", SELECTED_CURL_CERT_PATH);
 			return;
 		}
 	}
@@ -372,6 +391,7 @@ void CreateAwsSecretFunctions::Register(ExtensionLoader &loader) {
 
 		// Params for configuring the credential loading
 		cred_chain_function.named_parameters["profile"] = LogicalType::VARCHAR;
+		cred_chain_function.named_parameters["validation"] = LogicalType::VARCHAR;
 
 		loader.RegisterFunction(cred_chain_function);
 	}
