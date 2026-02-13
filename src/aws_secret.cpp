@@ -44,9 +44,8 @@ static struct {
 
 //! Parse and set the remaining options
 static void ParseCoreS3Config(CreateSecretInput &input, KeyValueSecret &secret) {
-	vector<string> options = {"key_id",   "secret",        "region",
-	                          "endpoint", "session_token", "url_style",
-	                          "use_ssl",  "s3_url_compatibility_mode"};
+	vector<string> options = {"key_id",        "secret",    "region",  "endpoint",
+	                          "session_token", "url_style", "use_ssl", "s3_url_compatibility_mode"};
 	for (const auto &val : options) {
 		auto set_region_param = input.options.find(val);
 		if (set_region_param != input.options.end()) {
@@ -122,6 +121,8 @@ public:
 				/* Credentials provider implementation that loads credentials from the Amazon EC2 Instance Metadata
 				 * Service. */
 				AddProvider(std::make_shared<Aws::Auth::InstanceProfileCredentialsProvider>());
+			} else if (item == "web_identity") {
+				AddProvider(std::make_shared<Aws::Auth::STSAssumeRoleWebIdentityCredentialsProvider>());
 			} else if (item == "process") {
 				if (profile.empty()) {
 					AddProvider(std::make_shared<Aws::Auth::ProcessCredentialsProvider>());
@@ -200,7 +201,8 @@ static string ConstructErrorMessage(string chain, string profile, string assume_
 	// these chains "generate" new aws keys. See their documentation in the header file
 	// https://github.com/aws/aws-sdk-cpp/blob/main/src/aws-cpp-sdk-core/include/aws/core/auth/AWSCredentialsProvider.h
 	// if a roll is assumed, secrets are also "generated"
-	if (chain == "sts" || chain == "sso" || chain == "instance" || chain == "process" || !assume_role.empty()) {
+	if (chain == "sts" || chain == "sso" || chain == "instance" || chain == "process" || chain == "web_identity" ||
+	    !assume_role.empty()) {
 		verb = "generate";
 	}
 	string prefix = StringUtil::Format("Secret Validation Failure: during `%s` using the following:\n", verb);
@@ -299,7 +301,7 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 
 	// We have sneaked in this special handling where if you set the STS chain, you automatically enable refresh
 	// TODO: remove this once refresh is set to auto by default for all credential_chain provider created secrets.
-	if (chain == "sts" && refresh.empty()) {
+	if ((chain == "sts" || chain == "web_identity") && refresh.empty()) {
 		refresh = "auto";
 	}
 
