@@ -7,7 +7,7 @@ duckdb_extension_load(aws
 )
 
 duckdb_extension_load(httpfs
-        GIT_URL https://github.com/duckdb/duckdb-httpfs
-        GIT_TAG 4cf8a592cda330a9acc4c39756434f0e08ed1512
-        INCLUDE_DIR extension/httpfs/include
+    GIT_URL https://github.com/duckdb/duckdb-httpfs
+    GIT_TAG c5a73542cfa9d4b2be73670e5ff0ab973f7a9b27
+    INCLUDE_DIR src/include
 )

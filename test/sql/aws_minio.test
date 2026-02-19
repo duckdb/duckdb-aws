@@ -1,6 +1,6 @@
 # name: test/sql/aws_minio.test
 # description: test aws extension with minio test server
-# group: [aws]
+# group: [sql]
 
 require aws
 

@@ -1,6 +1,6 @@
 # name: test/sql/aws_errors.test
 # description: test aws extension
-# group: [aws]
+# group: [sql]
 
 require no_extension_autoloading "EXPECTED: Test relies on explcit INSTALL and LOAD"
 
