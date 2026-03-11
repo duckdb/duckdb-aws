@@ -121,7 +121,9 @@ public:
 			} else if (item == "instance") {
 				/* Credentials provider implementation that loads credentials from the Amazon EC2 Instance Metadata
 				 * Service. */
+				setenv("AWS_EC2_METADATA_DISABLED", "false", 0);
 				AddProvider(std::make_shared<Aws::Auth::InstanceProfileCredentialsProvider>());
+				setenv("AWS_EC2_METADATA_DISABLED", "true", 0);
 			} else if (item == "process") {
 				if (profile.empty()) {
 					AddProvider(std::make_shared<Aws::Auth::ProcessCredentialsProvider>());
