@@ -44,9 +44,8 @@ static struct {
 
 //! Parse and set the remaining options
 static void ParseCoreS3Config(CreateSecretInput &input, KeyValueSecret &secret) {
-	vector<string> options = {"key_id",   "secret",        "region",
-	                          "endpoint", "session_token", "url_style",
-	                          "use_ssl",  "s3_url_compatibility_mode"};
+	vector<string> options = {"key_id",        "secret",    "region",  "endpoint",
+	                          "session_token", "url_style", "use_ssl", "s3_url_compatibility_mode"};
 	for (const auto &val : options) {
 		auto set_region_param = input.options.find(val);
 		if (set_region_param != input.options.end()) {
@@ -121,9 +120,7 @@ public:
 			} else if (item == "instance") {
 				/* Credentials provider implementation that loads credentials from the Amazon EC2 Instance Metadata
 				 * Service. */
-				setenv("AWS_EC2_METADATA_DISABLED", "false", 0);
 				AddProvider(std::make_shared<Aws::Auth::InstanceProfileCredentialsProvider>());
-				setenv("AWS_EC2_METADATA_DISABLED", "true", 0);
 			} else if (item == "process") {
 				if (profile.empty()) {
 					AddProvider(std::make_shared<Aws::Auth::ProcessCredentialsProvider>());
@@ -237,6 +234,40 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 		}
 	}
 
+	// Region MUST be set according to the SDK https://docs.aws.amazon.com/sdkref/latest/guide/feature-region.html
+	string region;
+	// Get region from secret options
+	auto region_param = input.options.find("region");
+	if (region_param != input.options.end() && !region_param->second.ToString().empty()) {
+		region = region_param->second.ToString();
+	}
+
+	// or from environment variables
+	if (region.empty()) {
+		if (const char *env = getenv("AWS_REGION")) {
+			region = env;
+		} else if (const char *env = getenv("AWS_DEFAULT_REGION")) {
+			region = env;
+		}
+	}
+
+	// or from AWS config profile
+	if (region.empty()) {
+		string profile_to_lookup = profile.empty() ? "default" : profile;
+		auto aws_profile = GetProfile(profile_to_lookup, false);
+		region = aws_profile.GetRegion();
+	}
+
+	if (region.empty()) {
+		throw InvalidConfigurationException(
+		    "No AWS region found. Please specify a region explicitly in your secret using REGION 'us-east-1', "
+		    "or set the AWS_REGION environment variable, "
+		    "or add 'region' to your AWS config file profile '%s'.",
+		    profile.empty() ? "default" : profile);
+	}
+
+	setenv("AWS_DEFAULT_REGION", region.c_str(), 1);
+
 	if (!chain.empty()) {
 		DuckDBCustomAWSCredentialsProviderChain provider(chain, require_credentials, profile, assume_role, external_id);
 		credentials = provider.GetAWSCredentials();
@@ -267,7 +298,6 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 
 	//! If the profile is set we specify a specific profile
 	auto s3_config = Aws::Client::ClientConfiguration(profile.c_str());
-	auto region = s3_config.region;
 
 	// TODO: We would also like to get the endpoint here, but it's currently not supported byq the AWS SDK:
 	// 		 https://github.com/aws/aws-sdk-cpp/issues/2587
@@ -291,10 +321,6 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 	}
 
 	auto result = ConstructBaseS3Secret(scope, input.type, input.provider, input.name);
-
-	if (!region.empty()) {
-		result->secret_map["region"] = region;
-	}
 
 	// Only auto is supported
 	string refresh = TryGetStringParam(input, "refresh");

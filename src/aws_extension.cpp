@@ -117,7 +117,6 @@ static void LoadAWSCredentialsFun(ClientContext &context, TableFunctionInput &da
 }
 static void LoadInternal(ExtensionLoader &loader) {
 	Aws::SDKOptions options;
-	setenv("AWS_EC2_METADATA_DISABLED", "true", 0);
 	Aws::InitAPI(options);
 
 	CreateAwsSecretFunctions::InitializeCurlCertificates(loader.GetDatabaseInstance());
@@ -154,5 +153,4 @@ extern "C" {
 DUCKDB_CPP_EXTENSION_ENTRY(aws, loader) {
 	duckdb::LoadInternal(loader);
 }
-
 }
