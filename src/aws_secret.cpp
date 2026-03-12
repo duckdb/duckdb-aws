@@ -266,8 +266,6 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 		    profile.empty() ? "default" : profile);
 	}
 
-	setenv("AWS_DEFAULT_REGION", region.c_str(), 1);
-
 	if (!chain.empty()) {
 		DuckDBCustomAWSCredentialsProviderChain provider(chain, require_credentials, profile, assume_role, external_id);
 		credentials = provider.GetAWSCredentials();
@@ -321,6 +319,10 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 	}
 
 	auto result = ConstructBaseS3Secret(scope, input.type, input.provider, input.name);
+
+	if (!region.empty()) {
+		result->secret_map["region"] = region;
+	}
 
 	// Only auto is supported
 	string refresh = TryGetStringParam(input, "refresh");
