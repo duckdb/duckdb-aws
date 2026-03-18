@@ -259,11 +259,14 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 	}
 
 	if (region.empty()) {
-		throw InvalidConfigurationException(
-		    "No AWS region found. Please specify a region explicitly in your secret using REGION 'us-east-1', "
-		    "or set the AWS_REGION environment variable, "
-		    "or add 'region' to your AWS config file profile '%s'.",
-		    profile.empty() ? "default" : profile);
+		DUCKDB_LOG_WARNING(context,
+		                   "No AWS region found for profile '%s'. "
+		                   "The SDK will default to us-east-1 and may contact EC2 Instance Metadata Service, "
+		                   "causing potential delays on non-EC2 machines. "
+		                   "Set region explicitly using REGION 'us-east-1', the AWS_REGION (or AWS_DEFAULT_REGION) "
+		                   "environment variable, "
+		                   "or add 'region' to your AWS config file.",
+		                   profile.empty() ? "default" : profile.c_str());
 	}
 
 	if (!chain.empty()) {
