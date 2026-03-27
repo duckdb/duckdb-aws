@@ -259,14 +259,10 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 	}
 
 	if (region.empty()) {
-		DUCKDB_LOG_WARNING(context,
-		                   "No AWS region found for profile '%s'. "
-		                   "The SDK will default to us-east-1 and may contact EC2 Instance Metadata Service, "
-		                   "causing potential delays on non-EC2 machines. "
-		                   "Set region explicitly using REGION 'us-east-1', the AWS_REGION (or AWS_DEFAULT_REGION) "
-		                   "environment variable, "
-		                   "or add 'region' to your AWS config file.",
-		                   profile.empty() ? "default" : profile.c_str());
+		DUCKDB_LOG_WARNING(
+		    context,
+		    "Set region explicitly using REGION 'us-east-1' in your CREATE SECRET statement, adding a region to your "
+		    "profile in ~/.aws/config or configure the AWS_REGION or AWS_DEFAULT_REGION environment variables.")
 	}
 
 	if (!chain.empty()) {
@@ -296,9 +292,6 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 	if (credentials.IsEmpty() && require_credentials) {
 		throw InvalidConfigurationException(ConstructErrorMessage(chain, profile, assume_role, external_id));
 	}
-
-	//! If the profile is set we specify a specific profile
-	auto s3_config = Aws::Client::ClientConfiguration(profile.c_str());
 
 	// TODO: We would also like to get the endpoint here, but it's currently not supported byq the AWS SDK:
 	// 		 https://github.com/aws/aws-sdk-cpp/issues/2587
