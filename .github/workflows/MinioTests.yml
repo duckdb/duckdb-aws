@@ -37,7 +37,7 @@ jobs:
 
       - uses: actions/setup-python@v4
         with:
-          python-version: '3.12'
+          python-version: '3.13'
 
       - name: Install Ninja
         shell: bash
@@ -82,3 +82,39 @@ jobs:
           AWS_DEFAULT_REGION: duckdb_env_testing_region
         run: |
           ./build/release/test/unittest "*/test/sql/env/*"
+
+
+      - name: Run mitmproxy
+        shell: bash
+        run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          python3 -m pip install mitmproxy==12.2.1
+          mitmdump --mode regular@8080 --flow-detail 2 > mitmproxy.log 2>&1 &
+
+      - name: Run proxy tests
+        shell: bash
+        env:
+          HTTP_PROXY_PUBLIC: localhost:8080
+          AWS_ACCESS_KEY_ID: duckdb_env_testing_id
+          AWS_SECRET_ACCESS_KEY: duckdb_env_testing_key
+          AWS_DEFAULT_REGION: duckdb_env_testing_region
+        run: |
+          ./build/release/test/unittest test/sql/env/proxy/aws_secret_http_proxy.test
+
+      - name: Run mitmproxy with username and password
+        shell: bash
+        run: |
+          pkill -f "mitmdump" || true
+          source .venv/bin/activate
+          mitmdump --mode regular@8080 --proxyauth admin:password --flow-detail 2 > mitmproxy.log 2>&1 &
+
+      - name: Run proxy tests with auth
+        shell: bash
+        env:
+          HTTP_PROXY_PUBLIC: localhost:8080
+          AWS_ACCESS_KEY_ID: duckdb_env_testing_id
+          AWS_SECRET_ACCESS_KEY: duckdb_env_testing_key
+          AWS_DEFAULT_REGION: duckdb_env_testing_region
+        run: |
+          ./build/release/test/unittest test/sql/env/proxy/aws_secret_http_proxy_with_auth.test

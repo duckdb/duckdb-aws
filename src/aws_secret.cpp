@@ -44,9 +44,17 @@ static struct {
 
 //! Parse and set the remaining options
 static void ParseCoreS3Config(CreateSecretInput &input, KeyValueSecret &secret) {
-	vector<string> options = {"key_id",   "secret",        "region",
-	                          "endpoint", "session_token", "url_style",
-	                          "use_ssl",  "s3_url_compatibility_mode"};
+	vector<string> options = {"key_id",
+	                          "secret",
+	                          "region",
+	                          "endpoint",
+	                          "session_token",
+	                          "url_style",
+	                          "use_ssl",
+	                          "s3_url_compatibility_mode",
+	                          "http_proxy",
+	                          "http_proxy_username",
+	                          "http_proxy_password"};
 	for (const auto &val : options) {
 		auto set_region_param = input.options.find(val);
 		if (set_region_param != input.options.end()) {
@@ -267,7 +275,7 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 	auto s3_config = Aws::Client::ClientConfiguration(profile.c_str());
 	auto region = s3_config.region;
 
-	// TODO: We would also like to get the endpoint here, but it's currently not supported byq the AWS SDK:
+	// TODO: We would also like to get the endpoint here, but it's currently not supported by the AWS SDK:
 	// 		 https://github.com/aws/aws-sdk-cpp/issues/2587
 
 	auto scope = input.scope;
@@ -379,6 +387,10 @@ void CreateAwsSecretFunctions::Register(ExtensionLoader &loader) {
 
 		cred_chain_function.named_parameters["assume_role_arn"] = LogicalType::VARCHAR;
 		cred_chain_function.named_parameters["external_id"] = LogicalType::VARCHAR;
+
+		cred_chain_function.named_parameters["http_proxy"] = LogicalType::VARCHAR;
+		cred_chain_function.named_parameters["http_proxy_username"] = LogicalType::VARCHAR;
+		cred_chain_function.named_parameters["http_proxy_password"] = LogicalType::VARCHAR;
 
 		cred_chain_function.named_parameters["refresh"] = LogicalType::VARCHAR;
 
