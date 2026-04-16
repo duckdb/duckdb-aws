@@ -251,6 +251,14 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 		}
 	}
 
+	// or from DuckDB settings (SET s3_region='us-east-1')
+	if (region.empty()) {
+		Value s3_region_setting;
+		if (context.TryGetCurrentSetting("s3_region", s3_region_setting)) {
+			region = s3_region_setting.ToString();
+		}
+	}
+
 	// or from AWS config profile
 	if (region.empty()) {
 		string profile_to_lookup = profile.empty() ? "default" : profile;
