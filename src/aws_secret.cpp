@@ -44,9 +44,8 @@ static struct {
 
 //! Parse and set the remaining options
 static void ParseCoreS3Config(CreateSecretInput &input, KeyValueSecret &secret) {
-	vector<string> options = {"key_id",   "secret",        "region",
-	                          "endpoint", "session_token", "url_style",
-	                          "use_ssl",  "s3_url_compatibility_mode"};
+	vector<string> options = {"key_id",        "secret",    "region",  "endpoint",
+	                          "session_token", "url_style", "use_ssl", "s3_url_compatibility_mode"};
 	for (const auto &val : options) {
 		auto set_region_param = input.options.find(val);
 		if (set_region_param != input.options.end()) {
@@ -235,6 +234,45 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 		}
 	}
 
+	// Region MUST be set according to the SDK https://docs.aws.amazon.com/sdkref/latest/guide/feature-region.html
+	string region;
+	// Get region from secret options
+	auto region_param = input.options.find("region");
+	if (region_param != input.options.end() && !region_param->second.ToString().empty()) {
+		region = region_param->second.ToString();
+	}
+
+	// or from DuckDB settings (SET s3_region='us-east-1')
+	if (region.empty()) {
+		Value s3_region_setting;
+		if (context.TryGetCurrentSetting("s3_region", s3_region_setting)) {
+			region = s3_region_setting.ToString();
+		}
+	}
+
+	// or from environment variables
+	if (region.empty()) {
+		if (const char *env = getenv("AWS_REGION")) {
+			region = env;
+		} else if (const char *env = getenv("AWS_DEFAULT_REGION")) {
+			region = env;
+		}
+	}
+
+	// or from AWS config profile
+	if (region.empty()) {
+		string profile_to_lookup = profile.empty() ? "default" : profile;
+		auto aws_profile = GetProfile(profile_to_lookup, false);
+		region = aws_profile.GetRegion();
+	}
+
+	if (region.empty()) {
+		DUCKDB_LOG_WARNING(
+		    context,
+		    "Set region explicitly using REGION 'us-east-1' in your CREATE SECRET statement, adding a region to your "
+		    "profile in ~/.aws/config or configure the AWS_REGION or AWS_DEFAULT_REGION environment variables.")
+	}
+
 	if (!chain.empty()) {
 		DuckDBCustomAWSCredentialsProviderChain provider(chain, require_credentials, profile, assume_role, external_id);
 		credentials = provider.GetAWSCredentials();
@@ -262,10 +300,6 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 	if (credentials.IsEmpty() && require_credentials) {
 		throw InvalidConfigurationException(ConstructErrorMessage(chain, profile, assume_role, external_id));
 	}
-
-	//! If the profile is set we specify a specific profile
-	auto s3_config = Aws::Client::ClientConfiguration(profile.c_str());
-	auto region = s3_config.region;
 
 	// TODO: We would also like to get the endpoint here, but it's currently not supported byq the AWS SDK:
 	// 		 https://github.com/aws/aws-sdk-cpp/issues/2587
