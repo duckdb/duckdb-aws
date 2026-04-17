@@ -242,20 +242,20 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 		region = region_param->second.ToString();
 	}
 
+	// or from DuckDB settings (SET s3_region='us-east-1')
+	if (region.empty()) {
+		Value s3_region_setting;
+		if (context.TryGetCurrentSetting("s3_region", s3_region_setting)) {
+			region = s3_region_setting.ToString();
+		}
+	}
+
 	// or from environment variables
 	if (region.empty()) {
 		if (const char *env = getenv("AWS_REGION")) {
 			region = env;
 		} else if (const char *env = getenv("AWS_DEFAULT_REGION")) {
 			region = env;
-		}
-	}
-
-	// or from DuckDB settings (SET s3_region='us-east-1')
-	if (region.empty()) {
-		Value s3_region_setting;
-		if (context.TryGetCurrentSetting("s3_region", s3_region_setting)) {
-			region = s3_region_setting.ToString();
 		}
 	}
 
