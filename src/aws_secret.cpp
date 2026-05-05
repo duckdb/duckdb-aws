@@ -92,7 +92,9 @@ class DuckDBCustomAWSCredentialsProviderChain : public Aws::Auth::AWSCredentials
 public:
 	explicit DuckDBCustomAWSCredentialsProviderChain(const string &credential_chain, const bool require_credentials,
 	                                                 const string &profile = "", const string &assume_role_arn = "",
-	                                                 const string &external_id = "") {
+	                                                 const string &external_id = "",
+	                                                 const string &web_identity_token_file = "",
+	                                                 const string &session_name = "") {
 		auto chain_list = StringUtil::Split(credential_chain, ';');
 
 		for (const auto &item : chain_list) {
@@ -121,6 +123,18 @@ public:
 				/* Credentials provider implementation that loads credentials from the Amazon EC2 Instance Metadata
 				 * Service. */
 				AddProvider(std::make_shared<Aws::Auth::InstanceProfileCredentialsProvider>());
+			} else if (item == "web_identity") {
+				Aws::Client::ClientConfiguration::CredentialProviderConfiguration config;
+				if (!assume_role_arn.empty()) {
+					config.stsCredentialsProviderConfig.roleArn = assume_role_arn;
+				}
+				if (!web_identity_token_file.empty()) {
+					config.stsCredentialsProviderConfig.tokenFilePath = web_identity_token_file;
+				}
+				if (!session_name.empty()) {
+					config.stsCredentialsProviderConfig.sessionName = session_name;
+				}
+				AddProvider(std::make_shared<Aws::Auth::STSAssumeRoleWebIdentityCredentialsProvider>(config));
 			} else if (item == "process") {
 				if (profile.empty()) {
 					AddProvider(std::make_shared<Aws::Auth::ProcessCredentialsProvider>());
@@ -194,12 +208,14 @@ static string TryGetStringParam(CreateSecretInput &input, const string &param_na
 	}
 }
 
-static string ConstructErrorMessage(string chain, string profile, string assume_role, string external_id) {
+static string ConstructErrorMessage(string chain, string profile, string assume_role, string external_id,
+                                    string web_identity_token_file, string session_name) {
 	string verb = "create";
 	// these chains "generate" new aws keys. See their documentation in the header file
 	// https://github.com/aws/aws-sdk-cpp/blob/main/src/aws-cpp-sdk-core/include/aws/core/auth/AWSCredentialsProvider.h
 	// if a roll is assumed, secrets are also "generated"
-	if (chain == "sts" || chain == "sso" || chain == "instance" || chain == "process" || !assume_role.empty()) {
+	if (chain == "sts" || chain == "sso" || chain == "instance" || chain == "process" || chain == "web_identity" ||
+	    !assume_role.empty()) {
 		verb = "generate";
 	}
 	string prefix = StringUtil::Format("Secret Validation Failure: during `%s` using the following:\n", verb);
@@ -207,6 +223,10 @@ static string ConstructErrorMessage(string chain, string profile, string assume_
 	prefix = chain.empty() ? prefix : prefix + StringUtil::Format("Credential Chain: '%s'\n", chain);
 	prefix = assume_role.empty() ? prefix : prefix + StringUtil::Format("Role-arn: '%s'\n", assume_role);
 	prefix = external_id.empty() ? prefix : prefix + StringUtil::Format("External-id: '%s'\n", external_id);
+	prefix = web_identity_token_file.empty()
+	             ? prefix
+	             : prefix + StringUtil::Format("Web Identity Token File: '%s'\n", web_identity_token_file);
+	prefix = session_name.empty() ? prefix : prefix + StringUtil::Format("Session Name: '%s'\n", session_name);
 	return prefix;
 }
 
@@ -218,6 +238,8 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 	string assume_role = TryGetStringParam(input, "assume_role_arn");
 	string external_id = TryGetStringParam(input, "external_id");
 	string chain = TryGetStringParam(input, "chain");
+	string web_identity_token_file = TryGetStringParam(input, "web_identity_token_file");
+	string session_name = TryGetStringParam(input, "session_name");
 	string validation = StringUtil::Lower(TryGetStringParam(input, "validation"));
 
 	if (!assume_role.empty() && chain.empty()) {
@@ -274,7 +296,8 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 	}
 
 	if (!chain.empty()) {
-		DuckDBCustomAWSCredentialsProviderChain provider(chain, require_credentials, profile, assume_role, external_id);
+		DuckDBCustomAWSCredentialsProviderChain provider(chain, require_credentials, profile, assume_role, external_id,
+		                                                 web_identity_token_file, session_name);
 		credentials = provider.GetAWSCredentials();
 	} else {
 		if (input.options.find("profile") != input.options.end()) {
@@ -298,7 +321,8 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 	}
 
 	if (credentials.IsEmpty() && require_credentials) {
-		throw InvalidConfigurationException(ConstructErrorMessage(chain, profile, assume_role, external_id));
+		throw InvalidConfigurationException(
+		    ConstructErrorMessage(chain, profile, assume_role, external_id, web_identity_token_file, session_name));
 	}
 
 	// TODO: We would also like to get the endpoint here, but it's currently not supported byq the AWS SDK:
@@ -333,7 +357,7 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 
 	// We have sneaked in this special handling where if you set the STS chain, you automatically enable refresh
 	// TODO: remove this once refresh is set to auto by default for all credential_chain provider created secrets.
-	if (chain == "sts" && refresh.empty()) {
+	if ((chain == "sts" || chain == "web_identity") && refresh.empty()) {
 		refresh = "auto";
 	}
 
@@ -413,6 +437,8 @@ void CreateAwsSecretFunctions::Register(ExtensionLoader &loader) {
 
 		cred_chain_function.named_parameters["assume_role_arn"] = LogicalType::VARCHAR;
 		cred_chain_function.named_parameters["external_id"] = LogicalType::VARCHAR;
+		cred_chain_function.named_parameters["web_identity_token_file"] = LogicalType::VARCHAR;
+		cred_chain_function.named_parameters["session_name"] = LogicalType::VARCHAR;
 
 		cred_chain_function.named_parameters["refresh"] = LogicalType::VARCHAR;
 
