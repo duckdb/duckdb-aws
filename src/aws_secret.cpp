@@ -12,6 +12,7 @@
 #include <aws/core/config/AWSConfigFileProfileConfigLoader.h>
 #include <aws/core/config/AWSProfileConfigLoaderBase.h>
 #include <aws/identity-management/auth/STSAssumeRoleCredentialsProvider.h>
+#include <aws/rds/RDSClient.h>
 #include <aws/sts/STSClient.h>
 
 #include <sys/stat.h>
@@ -230,6 +231,73 @@ static string ConstructErrorMessage(string chain, string profile, string assume_
 	return prefix;
 }
 
+static string GenerateRDSSecretToken(std::shared_ptr<DuckDBCustomAWSCredentialsProviderChain> &provider,
+                                     const string &user, const string &host, const string &port, const string &region) {
+	Aws::Client::ClientConfiguration config;
+	config.region = region;
+	Aws::RDS::RDSClient rds_client(provider, config);
+
+	// https://github.com/aws/aws-sdk-cpp/issues/861#issuecomment-386643571
+	// Aws::String token = rdsClient.GenerateConnectAuthToken(hostname.c_str(), aws_region.c_str(),
+	// static_cast<unsigned>(port_int), username.c_str());
+
+	uint64_t expiration_seconds = 900; // 15 min, this value is fixed, also used on consumer side
+	string host_and_port = host + ":" + port;
+	string host_and_port_with_prefix = "http://" + host_and_port;
+	string host_and_port_with_suffix = host_and_port + "/";
+	Aws::Http::URI uri(host_and_port_with_prefix.c_str());
+	uri.AddQueryStringParameter("Action", "connect");
+	uri.AddQueryStringParameter("DBUser", user.c_str());
+	auto token = rds_client.GeneratePresignedUrl(uri, Aws::Http::HttpMethod::HTTP_GET, region.c_str(), "rds-db",
+	                                             static_cast<long long>(expiration_seconds));
+	Aws::Utils::StringUtils::Replace(token, host_and_port_with_prefix.c_str(), host_and_port_with_suffix.c_str());
+
+	return string(token.c_str());
+}
+
+static unique_ptr<BaseSecret>
+CreateRDSSecretWithProvider(std::shared_ptr<DuckDBCustomAWSCredentialsProviderChain> &provider,
+                            CreateSecretInput &input, const string &region) {
+	string user = TryGetStringParam(input, "rds_user");
+	string host = TryGetStringParam(input, "rds_host");
+	string port = TryGetStringParam(input, "rds_port");
+	if (user.empty() || host.empty() || port.empty() || region.empty()) {
+		throw InvalidInputException(
+		    "Invalid RDS secret parameters, 'RDS_USER', 'RDS_HOST', 'RDS_PORT' and 'REGION' options must be specified");
+	}
+
+	vector<string> scope;
+	auto result = ConstructBaseS3Secret(scope, input.type, input.provider, input.name);
+
+	string template_secret_name = TryGetStringParam(input, "rds_template_secret_name");
+
+	// When user creates a SECRET of type "rds", resulting secret is a "template"
+	// that is used by duckdb-postgres to generate actual token. To effectively call
+	// 'CreateAWSSecretFromCredentialChain' duckdb-postgres recreated the secret with
+	// 'rds_template_secret_name' specified and reads its 'secret_token' field.
+	// To allow it to do so, we put all the input fields into the resulting "template"
+	// secret.
+	// TODO: RDS token refresh mechanics should be improved
+	bool generate_secret_token = !template_secret_name.empty();
+
+	if (!generate_secret_token) {
+		for (auto &en : input.options) {
+			result->secret_map[en.first] = en.second;
+		}
+		return result;
+	}
+
+	// "rds_template_secret_name" was specified when creting the secret,
+	// so we are generating and returning actual token in "session_token" field
+	string token = GenerateRDSSecretToken(provider, user, host, port, region);
+
+	// We do not throwing here if the resulting token was generated incorrectly,
+	// instead the consumer must do appropriate checks and report the error without
+	// including the whole input `CREATE SECRET` query into the error message.
+	result->secret_map["session_token"] = Value(token);
+	return result;
+}
+
 //! This is the actual callback function
 static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &context, CreateSecretInput &input) {
 	Aws::Auth::AWSCredentials credentials;
@@ -286,6 +354,16 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 		string profile_to_lookup = profile.empty() ? "default" : profile;
 		auto aws_profile = GetProfile(profile_to_lookup, false);
 		region = aws_profile.GetRegion();
+	}
+
+	if (input.type == "rds") {
+		if (chain.empty()) {
+			throw InvalidConfigurationException("Invalid RDS secret parameters, 'CHAIN' option must be specified");
+		}
+		auto provider = Aws::MakeShared<DuckDBCustomAWSCredentialsProviderChain>("rds", chain, require_credentials,
+		                                                                         profile, assume_role, external_id,
+		                                                                         web_identity_token_file, session_name);
+		return CreateRDSSecretWithProvider(provider, input, region);
 	}
 
 	if (region.empty()) {
@@ -419,7 +497,7 @@ void CreateAwsSecretFunctions::InitializeCurlCertificates(DatabaseInstance &db) 
 }
 
 void CreateAwsSecretFunctions::Register(ExtensionLoader &loader) {
-	vector<string> types = {"s3", "r2", "gcs", "aws"};
+	vector<string> types = {"s3", "r2", "gcs", "aws", "rds"};
 
 	for (const auto &type : types) {
 		// Register the credential_chain secret provider
@@ -444,6 +522,13 @@ void CreateAwsSecretFunctions::Register(ExtensionLoader &loader) {
 
 		if (type == "r2") {
 			cred_chain_function.named_parameters["account_id"] = LogicalType::VARCHAR;
+		}
+
+		if (type == "rds") {
+			cred_chain_function.named_parameters["rds_user"] = LogicalType::VARCHAR;
+			cred_chain_function.named_parameters["rds_host"] = LogicalType::VARCHAR;
+			cred_chain_function.named_parameters["rds_port"] = LogicalType::VARCHAR;
+			cred_chain_function.named_parameters["rds_template_secret_name"] = LogicalType::VARCHAR;
 		}
 
 		// Param for configuring the chain that is used
