@@ -43,6 +43,21 @@ static struct {
 	const string default_ = "exists";
 } CreateAwsSecretValidation;
 
+//! Build a ClientConfiguration with the detected CA file path applied (if any).
+//! This is required because libcurl is statically linked from a RHEL-based
+//! manylinux image, so its default CA path is /etc/pki/tls/certs/ca-bundle.crt,
+//! which does not exist on Debian/Ubuntu/Alpine/etc. Without this, every
+//! credentials provider that does its own HTTPS (SSO, STS, RDS, ...) fails the
+//! TLS handshake before it can fetch any credentials.
+//! See duckdb/duckdb#20652, duckdb/duckdb-aws#131.
+static Aws::Client::ClientConfiguration BuildClientConfigWithCa() {
+	Aws::Client::ClientConfiguration cfg;
+	if (!SELECTED_CURL_CERT_PATH.empty()) {
+		cfg.caFile = SELECTED_CURL_CERT_PATH;
+	}
+	return cfg;
+}
+
 //! Parse and set the remaining options
 static void ParseCoreS3Config(CreateSecretInput &input, KeyValueSecret &secret) {
 	vector<string> options = {"key_id",        "secret",    "region",  "endpoint",
@@ -113,10 +128,17 @@ public:
 				aws_profile.SetExternalId(external_id);
 				AddSTSProvider(aws_profile);
 			} else if (item == "sso") {
+				// Pass an explicit ClientConfiguration so the SSO portal HTTPS call
+				// uses the detected CA path. See BuildClientConfigWithCa() comment.
+				auto sso_config = Aws::MakeShared<Aws::Client::ClientConfiguration>("DuckDBAwsSSO");
+				if (!SELECTED_CURL_CERT_PATH.empty()) {
+					sso_config->caFile = SELECTED_CURL_CERT_PATH;
+				}
 				if (profile.empty()) {
-					AddProvider(std::make_shared<Aws::Auth::SSOCredentialsProvider>());
+					AddProvider(std::make_shared<Aws::Auth::SSOCredentialsProvider>(Aws::String(), sso_config));
 				} else {
-					AddProvider(std::make_shared<Aws::Auth::SSOCredentialsProvider>(profile.c_str()));
+					AddProvider(
+					    std::make_shared<Aws::Auth::SSOCredentialsProvider>(profile.c_str(), sso_config));
 				}
 			} else if (item == "env") {
 				AddProvider(std::make_shared<Aws::Auth::EnvironmentAWSCredentialsProvider>());
@@ -185,10 +207,7 @@ public:
 	void AddSTSProvider(const Aws::Config::Profile &profile) {
 		string assume_role_arn = profile.GetRoleArn();
 		string external_id = profile.GetExternalId();
-		Aws::Client::ClientConfiguration clientConfig;
-		if (!SELECTED_CURL_CERT_PATH.empty()) {
-			clientConfig.caFile = SELECTED_CURL_CERT_PATH; // Set the CA file
-		}
+		Aws::Client::ClientConfiguration clientConfig = BuildClientConfigWithCa();
 		auto sts_client = std::make_shared<Aws::STS::STSClient>(clientConfig);
 		if (!external_id.empty()) {
 			AddProvider(std::make_shared<Aws::Auth::STSAssumeRoleCredentialsProvider>(
@@ -233,7 +252,7 @@ static string ConstructErrorMessage(string chain, string profile, string assume_
 
 static string GenerateRDSSecretToken(std::shared_ptr<DuckDBCustomAWSCredentialsProviderChain> &provider,
                                      const string &user, const string &host, const string &port, const string &region) {
-	Aws::Client::ClientConfiguration config;
+	Aws::Client::ClientConfiguration config = BuildClientConfigWithCa();
 	config.region = region;
 	Aws::RDS::RDSClient rds_client(provider, config);
 
