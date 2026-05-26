@@ -12,6 +12,7 @@
 #include <aws/core/config/AWSConfigFileProfileConfigLoader.h>
 #include <aws/core/config/AWSProfileConfigLoaderBase.h>
 #include <aws/identity-management/auth/STSAssumeRoleCredentialsProvider.h>
+#include <aws/rds/RDSClient.h>
 #include <aws/sts/STSClient.h>
 
 #include <sys/stat.h>
@@ -41,6 +42,21 @@ static struct {
 	const set<string> options = {"exists", "none"};
 	const string default_ = "exists";
 } CreateAwsSecretValidation;
+
+//! Build a ClientConfiguration with the detected CA file path applied (if any).
+//! This is required because libcurl is statically linked from a RHEL-based
+//! manylinux image, so its default CA path is /etc/pki/tls/certs/ca-bundle.crt,
+//! which does not exist on Debian/Ubuntu/Alpine/etc. Without this, every
+//! credentials provider that does its own HTTPS (SSO, STS, RDS, ...) fails the
+//! TLS handshake before it can fetch any credentials.
+//! See duckdb/duckdb#20652, duckdb/duckdb-aws#131.
+static Aws::Client::ClientConfiguration BuildClientConfigWithCa() {
+	Aws::Client::ClientConfiguration cfg;
+	if (!SELECTED_CURL_CERT_PATH.empty()) {
+		cfg.caFile = SELECTED_CURL_CERT_PATH;
+	}
+	return cfg;
+}
 
 //! Parse and set the remaining options
 static void ParseCoreS3Config(CreateSecretInput &input, KeyValueSecret &secret) {
@@ -101,7 +117,9 @@ class DuckDBCustomAWSCredentialsProviderChain : public Aws::Auth::AWSCredentials
 public:
 	explicit DuckDBCustomAWSCredentialsProviderChain(const string &credential_chain, const bool require_credentials,
 	                                                 const string &profile = "", const string &assume_role_arn = "",
-	                                                 const string &external_id = "") {
+	                                                 const string &external_id = "",
+	                                                 const string &web_identity_token_file = "",
+	                                                 const string &session_name = "") {
 		auto chain_list = StringUtil::Split(credential_chain, ';');
 
 		for (const auto &item : chain_list) {
@@ -119,10 +137,17 @@ public:
 				aws_profile.SetExternalId(external_id);
 				AddSTSProvider(aws_profile);
 			} else if (item == "sso") {
+				// Pass an explicit ClientConfiguration so the SSO portal HTTPS call
+				// uses the detected CA path. See BuildClientConfigWithCa() comment.
+				auto sso_config = Aws::MakeShared<Aws::Client::ClientConfiguration>("DuckDBAwsSSO");
+				if (!SELECTED_CURL_CERT_PATH.empty()) {
+					sso_config->caFile = SELECTED_CURL_CERT_PATH;
+				}
 				if (profile.empty()) {
-					AddProvider(std::make_shared<Aws::Auth::SSOCredentialsProvider>());
+					AddProvider(std::make_shared<Aws::Auth::SSOCredentialsProvider>(Aws::String(), sso_config));
 				} else {
-					AddProvider(std::make_shared<Aws::Auth::SSOCredentialsProvider>(profile.c_str()));
+					AddProvider(
+					    std::make_shared<Aws::Auth::SSOCredentialsProvider>(profile.c_str(), sso_config));
 				}
 			} else if (item == "env") {
 				AddProvider(std::make_shared<Aws::Auth::EnvironmentAWSCredentialsProvider>());
@@ -130,6 +155,18 @@ public:
 				/* Credentials provider implementation that loads credentials from the Amazon EC2 Instance Metadata
 				 * Service. */
 				AddProvider(std::make_shared<Aws::Auth::InstanceProfileCredentialsProvider>());
+			} else if (item == "web_identity") {
+				Aws::Client::ClientConfiguration::CredentialProviderConfiguration config;
+				if (!assume_role_arn.empty()) {
+					config.stsCredentialsProviderConfig.roleArn = assume_role_arn;
+				}
+				if (!web_identity_token_file.empty()) {
+					config.stsCredentialsProviderConfig.tokenFilePath = web_identity_token_file;
+				}
+				if (!session_name.empty()) {
+					config.stsCredentialsProviderConfig.sessionName = session_name;
+				}
+				AddProvider(std::make_shared<Aws::Auth::STSAssumeRoleWebIdentityCredentialsProvider>(config));
 			} else if (item == "process") {
 				if (profile.empty()) {
 					AddProvider(std::make_shared<Aws::Auth::ProcessCredentialsProvider>());
@@ -179,10 +216,7 @@ public:
 	void AddSTSProvider(const Aws::Config::Profile &profile) {
 		string assume_role_arn = profile.GetRoleArn();
 		string external_id = profile.GetExternalId();
-		Aws::Client::ClientConfiguration clientConfig;
-		if (!SELECTED_CURL_CERT_PATH.empty()) {
-			clientConfig.caFile = SELECTED_CURL_CERT_PATH; // Set the CA file
-		}
+		Aws::Client::ClientConfiguration clientConfig = BuildClientConfigWithCa();
 		auto sts_client = std::make_shared<Aws::STS::STSClient>(clientConfig);
 		if (!external_id.empty()) {
 			AddProvider(std::make_shared<Aws::Auth::STSAssumeRoleCredentialsProvider>(
@@ -203,12 +237,14 @@ static string TryGetStringParam(CreateSecretInput &input, const string &param_na
 	}
 }
 
-static string ConstructErrorMessage(string chain, string profile, string assume_role, string external_id) {
+static string ConstructErrorMessage(string chain, string profile, string assume_role, string external_id,
+                                    string web_identity_token_file, string session_name) {
 	string verb = "create";
 	// these chains "generate" new aws keys. See their documentation in the header file
 	// https://github.com/aws/aws-sdk-cpp/blob/main/src/aws-cpp-sdk-core/include/aws/core/auth/AWSCredentialsProvider.h
 	// if a roll is assumed, secrets are also "generated"
-	if (chain == "sts" || chain == "sso" || chain == "instance" || chain == "process" || !assume_role.empty()) {
+	if (chain == "sts" || chain == "sso" || chain == "instance" || chain == "process" || chain == "web_identity" ||
+	    !assume_role.empty()) {
 		verb = "generate";
 	}
 	string prefix = StringUtil::Format("Secret Validation Failure: during `%s` using the following:\n", verb);
@@ -216,7 +252,78 @@ static string ConstructErrorMessage(string chain, string profile, string assume_
 	prefix = chain.empty() ? prefix : prefix + StringUtil::Format("Credential Chain: '%s'\n", chain);
 	prefix = assume_role.empty() ? prefix : prefix + StringUtil::Format("Role-arn: '%s'\n", assume_role);
 	prefix = external_id.empty() ? prefix : prefix + StringUtil::Format("External-id: '%s'\n", external_id);
+	prefix = web_identity_token_file.empty()
+	             ? prefix
+	             : prefix + StringUtil::Format("Web Identity Token File: '%s'\n", web_identity_token_file);
+	prefix = session_name.empty() ? prefix : prefix + StringUtil::Format("Session Name: '%s'\n", session_name);
 	return prefix;
+}
+
+static string GenerateRDSSecretToken(std::shared_ptr<DuckDBCustomAWSCredentialsProviderChain> &provider,
+                                     const string &user, const string &host, const string &port, const string &region) {
+	Aws::Client::ClientConfiguration config = BuildClientConfigWithCa();
+	config.region = region;
+	Aws::RDS::RDSClient rds_client(provider, config);
+
+	// https://github.com/aws/aws-sdk-cpp/issues/861#issuecomment-386643571
+	// Aws::String token = rdsClient.GenerateConnectAuthToken(hostname.c_str(), aws_region.c_str(),
+	// static_cast<unsigned>(port_int), username.c_str());
+
+	uint64_t expiration_seconds = 900; // 15 min, this value is fixed, also used on consumer side
+	string host_and_port = host + ":" + port;
+	string host_and_port_with_prefix = "http://" + host_and_port;
+	string host_and_port_with_suffix = host_and_port + "/";
+	Aws::Http::URI uri(host_and_port_with_prefix.c_str());
+	uri.AddQueryStringParameter("Action", "connect");
+	uri.AddQueryStringParameter("DBUser", user.c_str());
+	auto token = rds_client.GeneratePresignedUrl(uri, Aws::Http::HttpMethod::HTTP_GET, region.c_str(), "rds-db",
+	                                             static_cast<long long>(expiration_seconds));
+	Aws::Utils::StringUtils::Replace(token, host_and_port_with_prefix.c_str(), host_and_port_with_suffix.c_str());
+
+	return string(token.c_str());
+}
+
+static unique_ptr<BaseSecret>
+CreateRDSSecretWithProvider(std::shared_ptr<DuckDBCustomAWSCredentialsProviderChain> &provider,
+                            CreateSecretInput &input, const string &region) {
+	string user = TryGetStringParam(input, "rds_user");
+	string host = TryGetStringParam(input, "rds_host");
+	string port = TryGetStringParam(input, "rds_port");
+	if (user.empty() || host.empty() || port.empty() || region.empty()) {
+		throw InvalidInputException(
+		    "Invalid RDS secret parameters, 'RDS_USER', 'RDS_HOST', 'RDS_PORT' and 'REGION' options must be specified");
+	}
+
+	vector<string> scope;
+	auto result = ConstructBaseS3Secret(scope, input.type, input.provider, input.name);
+
+	string template_secret_name = TryGetStringParam(input, "rds_template_secret_name");
+
+	// When user creates a SECRET of type "rds", resulting secret is a "template"
+	// that is used by duckdb-postgres to generate actual token. To effectively call
+	// 'CreateAWSSecretFromCredentialChain' duckdb-postgres recreated the secret with
+	// 'rds_template_secret_name' specified and reads its 'secret_token' field.
+	// To allow it to do so, we put all the input fields into the resulting "template"
+	// secret.
+	// TODO: RDS token refresh mechanics should be improved
+	bool generate_secret_token = !template_secret_name.empty();
+
+	if (!generate_secret_token) {
+		for (auto &en : input.options) {
+			result->secret_map[en.first] = en.second;
+		}
+		return result;
+	}
+
+	// "rds_template_secret_name" was specified when creting the secret,
+	// so we are generating and returning actual token in "session_token" field
+	string token = GenerateRDSSecretToken(provider, user, host, port, region);
+
+	// We do not throwing here if the resulting token was generated incorrectly,
+	// instead the consumer must do appropriate checks and report the error without
+	// including the whole input `CREATE SECRET` query into the error message.
+	result->secret_map["session_token"] = Value(token);
+	return result;
 }
 
 //! This is the actual callback function
@@ -227,6 +334,8 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 	string assume_role = TryGetStringParam(input, "assume_role_arn");
 	string external_id = TryGetStringParam(input, "external_id");
 	string chain = TryGetStringParam(input, "chain");
+	string web_identity_token_file = TryGetStringParam(input, "web_identity_token_file");
+	string session_name = TryGetStringParam(input, "session_name");
 	string validation = StringUtil::Lower(TryGetStringParam(input, "validation"));
 
 	if (!assume_role.empty() && chain.empty()) {
@@ -243,8 +352,58 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 		}
 	}
 
+	// Region MUST be set according to the SDK https://docs.aws.amazon.com/sdkref/latest/guide/feature-region.html
+	string region;
+	// Get region from secret options
+	auto region_param = input.options.find("region");
+	if (region_param != input.options.end() && !region_param->second.ToString().empty()) {
+		region = region_param->second.ToString();
+	}
+
+	// or from DuckDB settings (SET s3_region='us-east-1')
+	if (region.empty()) {
+		Value s3_region_setting;
+		if (context.TryGetCurrentSetting("s3_region", s3_region_setting)) {
+			region = s3_region_setting.ToString();
+		}
+	}
+
+	// or from environment variables
+	if (region.empty()) {
+		if (const char *env = getenv("AWS_REGION")) {
+			region = env;
+		} else if (const char *env = getenv("AWS_DEFAULT_REGION")) {
+			region = env;
+		}
+	}
+
+	// or from AWS config profile
+	if (region.empty()) {
+		string profile_to_lookup = profile.empty() ? "default" : profile;
+		auto aws_profile = GetProfile(profile_to_lookup, false);
+		region = aws_profile.GetRegion();
+	}
+
+	if (input.type == "rds") {
+		if (chain.empty()) {
+			throw InvalidConfigurationException("Invalid RDS secret parameters, 'CHAIN' option must be specified");
+		}
+		auto provider = Aws::MakeShared<DuckDBCustomAWSCredentialsProviderChain>("rds", chain, require_credentials,
+		                                                                         profile, assume_role, external_id,
+		                                                                         web_identity_token_file, session_name);
+		return CreateRDSSecretWithProvider(provider, input, region);
+	}
+
+	if (region.empty()) {
+		DUCKDB_LOG_WARNING(
+		    context,
+		    "Set region explicitly using REGION 'us-east-1' in your CREATE SECRET statement, adding a region to your "
+		    "profile in ~/.aws/config or configure the AWS_REGION or AWS_DEFAULT_REGION environment variables.")
+	}
+
 	if (!chain.empty()) {
-		DuckDBCustomAWSCredentialsProviderChain provider(chain, require_credentials, profile, assume_role, external_id);
+		DuckDBCustomAWSCredentialsProviderChain provider(chain, require_credentials, profile, assume_role, external_id,
+		                                                 web_identity_token_file, session_name);
 		credentials = provider.GetAWSCredentials();
 	} else {
 		if (input.options.find("profile") != input.options.end()) {
@@ -268,15 +427,9 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 	}
 
 	if (credentials.IsEmpty() && require_credentials) {
-		throw InvalidConfigurationException(ConstructErrorMessage(chain, profile, assume_role, external_id));
+		throw InvalidConfigurationException(
+		    ConstructErrorMessage(chain, profile, assume_role, external_id, web_identity_token_file, session_name));
 	}
-
-	//! If the profile is set we specify a specific profile
-	auto s3_config = Aws::Client::ClientConfiguration(profile.c_str());
-	auto region = s3_config.region;
-
-	// TODO: We would also like to get the endpoint here, but it's currently not supported by the AWS SDK:
-	// 		 https://github.com/aws/aws-sdk-cpp/issues/2587
 
 	auto scope = input.scope;
 	if (scope.empty()) {
@@ -307,7 +460,7 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 
 	// We have sneaked in this special handling where if you set the STS chain, you automatically enable refresh
 	// TODO: remove this once refresh is set to auto by default for all credential_chain provider created secrets.
-	if (chain == "sts" && refresh.empty()) {
+	if ((chain == "sts" || chain == "web_identity") && refresh.empty()) {
 		refresh = "auto";
 	}
 
@@ -369,7 +522,7 @@ void CreateAwsSecretFunctions::InitializeCurlCertificates(DatabaseInstance &db) 
 }
 
 void CreateAwsSecretFunctions::Register(ExtensionLoader &loader) {
-	vector<string> types = {"s3", "r2", "gcs", "aws"};
+	vector<string> types = {"s3", "r2", "gcs", "aws", "rds"};
 
 	for (const auto &type : types) {
 		// Register the credential_chain secret provider
@@ -387,6 +540,8 @@ void CreateAwsSecretFunctions::Register(ExtensionLoader &loader) {
 
 		cred_chain_function.named_parameters["assume_role_arn"] = LogicalType::VARCHAR;
 		cred_chain_function.named_parameters["external_id"] = LogicalType::VARCHAR;
+		cred_chain_function.named_parameters["web_identity_token_file"] = LogicalType::VARCHAR;
+		cred_chain_function.named_parameters["session_name"] = LogicalType::VARCHAR;
 
 		cred_chain_function.named_parameters["http_proxy"] = LogicalType::VARCHAR;
 		cred_chain_function.named_parameters["http_proxy_username"] = LogicalType::VARCHAR;
@@ -396,6 +551,13 @@ void CreateAwsSecretFunctions::Register(ExtensionLoader &loader) {
 
 		if (type == "r2") {
 			cred_chain_function.named_parameters["account_id"] = LogicalType::VARCHAR;
+		}
+
+		if (type == "rds") {
+			cred_chain_function.named_parameters["rds_user"] = LogicalType::VARCHAR;
+			cred_chain_function.named_parameters["rds_host"] = LogicalType::VARCHAR;
+			cred_chain_function.named_parameters["rds_port"] = LogicalType::VARCHAR;
+			cred_chain_function.named_parameters["rds_template_secret_name"] = LogicalType::VARCHAR;
 		}
 
 		// Param for configuring the chain that is used
