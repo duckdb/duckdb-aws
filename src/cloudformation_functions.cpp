@@ -416,6 +416,8 @@ static unique_ptr<FunctionData> CloudFormationDescribeStackBind(ClientContext &c
 	return_types.emplace_back(LogicalType::VARCHAR);
 	names.emplace_back("description");
 	return_types.emplace_back(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
+	names.emplace_back("tags");
+	return_types.emplace_back(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
 	names.emplace_back("outputs");
 
 	return std::move(result);
@@ -456,6 +458,14 @@ static void CloudFormationDescribeStackFun(ClientContext &context, TableFunction
 	}
 	string description(stack.GetDescription().c_str());
 
+	vector<Value> tag_keys;
+	vector<Value> tag_values;
+	for (const auto &t : stack.GetTags()) {
+		tag_keys.emplace_back(string(t.GetKey().c_str()));
+		tag_values.emplace_back(string(t.GetValue().c_str()));
+	}
+	auto tags = Value::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR, std::move(tag_keys), std::move(tag_values));
+
 	vector<Value> output_keys;
 	vector<Value> output_values;
 	for (const auto &o : stack.GetOutputs()) {
@@ -473,7 +483,8 @@ static void CloudFormationDescribeStackFun(ClientContext &context, TableFunction
 	output.SetValue(5, 0, created.empty() ? Value() : Value(created));
 	output.SetValue(6, 0, updated.empty() ? Value() : Value(updated));
 	output.SetValue(7, 0, description.empty() ? Value() : Value(description));
-	output.SetValue(8, 0, outputs);
+	output.SetValue(8, 0, tags);
+	output.SetValue(9, 0, outputs);
 	output.SetCardinality(1);
 	data.finished = true;
 }
