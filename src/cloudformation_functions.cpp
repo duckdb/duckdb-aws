@@ -15,6 +15,7 @@
 #include <aws/cloudformation/model/DeleteStackRequest.h>
 #include <aws/cloudformation/model/DescribeStacksRequest.h>
 #include <aws/cloudformation/model/GetTemplateSummaryRequest.h>
+#include <aws/cloudformation/model/ListStacksRequest.h>
 #include <aws/cloudformation/model/Parameter.h>
 #include <aws/cloudformation/model/StackStatus.h>
 #include <aws/cloudformation/model/Tag.h>
@@ -22,6 +23,7 @@
 #include <aws/core/utils/json/JsonSerializer.h>
 
 #include <cctype>
+#include <cstdlib>
 #include <set>
 
 namespace duckdb {
@@ -539,6 +541,159 @@ static void CloudFormationDeleteStackFun(ClientContext &context, TableFunctionIn
 }
 
 //===--------------------------------------------------------------------===//
+// cloudformation_list_stacks([region := ...] [status_filter := ...])
+//===--------------------------------------------------------------------===//
+
+struct CloudFormationListStacksRow {
+	string region;
+	string stack_name;
+	string stack_id;
+	string status;
+	string status_reason;
+	string creation_time;
+	string last_updated_time;
+	string description;
+};
+
+struct CloudFormationListStacksBindData : public TableFunctionData {
+	string region;
+	vector<Aws::CloudFormation::Model::StackStatus> status_filter;
+	bool initialized = false;
+	vector<CloudFormationListStacksRow> rows;
+	idx_t cursor = 0;
+};
+
+static unique_ptr<FunctionData> CloudFormationListStacksBind(ClientContext &context, TableFunctionBindInput &input,
+                                                             vector<LogicalType> &return_types,
+                                                             vector<string> &names) {
+	auto result = make_uniq<CloudFormationListStacksBindData>();
+
+	for (auto &np : input.named_parameters) {
+		auto key = StringUtil::Lower(np.first);
+		if (key == "region") {
+			if (!np.second.IsNull()) {
+				result->region = StringValue::Get(np.second);
+			}
+		} else if (key == "status_filter") {
+			if (!np.second.IsNull()) {
+				auto &children = ListValue::GetChildren(np.second);
+				for (auto &child : children) {
+					if (child.IsNull()) {
+						continue;
+					}
+					auto str = StringValue::Get(child);
+					auto status_enum =
+					    Aws::CloudFormation::Model::StackStatusMapper::GetStackStatusForName(str.c_str());
+					if (status_enum == Aws::CloudFormation::Model::StackStatus::NOT_SET) {
+						throw InvalidInputException(
+						    "cloudformation_list_stacks: unknown stack status '%s' in status_filter", str);
+					}
+					result->status_filter.push_back(status_enum);
+				}
+			}
+		}
+	}
+
+	// Region fallback: AWS_REGION / AWS_DEFAULT_REGION env vars. If neither is
+	// set and the caller didn't pass `region :=`, surface a clear error.
+	if (result->region.empty()) {
+		if (const char *env = std::getenv("AWS_REGION"); env && *env) {
+			result->region = env;
+		} else if (env = std::getenv("AWS_DEFAULT_REGION"); env && *env) {
+			result->region = env;
+		}
+	}
+	if (result->region.empty()) {
+		throw InvalidInputException(
+		    "cloudformation_list_stacks: no region provided and AWS_REGION / AWS_DEFAULT_REGION "
+		    "environment variables are not set");
+	}
+
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("region");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("stack_name");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("stack_id");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("status");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("status_reason");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("creation_time");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("last_updated_time");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("description");
+
+	return std::move(result);
+}
+
+static void CloudFormationListStacksFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	auto &data = (CloudFormationListStacksBindData &)*data_p.bind_data;
+
+	if (!data.initialized) {
+		auto provider = BuildAwsCredentialsProvider("", /*require_credentials=*/true);
+		auto cfg = BuildClientConfigWithCa();
+		cfg.region = data.region.c_str();
+		Aws::CloudFormation::CloudFormationClient cfn(provider, cfg);
+
+		Aws::String next_token;
+		do {
+			Aws::CloudFormation::Model::ListStacksRequest req;
+			if (!data.status_filter.empty()) {
+				req.SetStackStatusFilter(data.status_filter);
+			}
+			if (!next_token.empty()) {
+				req.SetNextToken(next_token);
+			}
+			auto outcome = cfn.ListStacks(req);
+			if (!outcome.IsSuccess()) {
+				const auto &err = outcome.GetError();
+				throw IOException("CloudFormation ListStacks failed: %s - %s",
+				                  string(err.GetExceptionName().c_str()), string(err.GetMessage().c_str()));
+			}
+			const auto &res = outcome.GetResult();
+			for (const auto &s : res.GetStackSummaries()) {
+				CloudFormationListStacksRow row;
+				row.region = data.region;
+				row.stack_name = string(s.GetStackName().c_str());
+				row.stack_id = string(s.GetStackId().c_str());
+				row.status = string(
+				    Aws::CloudFormation::Model::StackStatusMapper::GetNameForStackStatus(s.GetStackStatus()).c_str());
+				row.status_reason = string(s.GetStackStatusReason().c_str());
+				row.creation_time =
+				    string(s.GetCreationTime().ToGmtString(Aws::Utils::DateFormat::ISO_8601).c_str());
+				if (s.LastUpdatedTimeHasBeenSet()) {
+					row.last_updated_time =
+					    string(s.GetLastUpdatedTime().ToGmtString(Aws::Utils::DateFormat::ISO_8601).c_str());
+				}
+				row.description = string(s.GetTemplateDescription().c_str());
+				data.rows.push_back(row);
+			}
+			next_token = res.GetNextToken();
+		} while (!next_token.empty());
+		data.initialized = true;
+	}
+
+	idx_t remaining = data.rows.size() - data.cursor;
+	idx_t to_emit = std::min(remaining, (idx_t)STANDARD_VECTOR_SIZE);
+	for (idx_t i = 0; i < to_emit; i++) {
+		auto &r = data.rows[data.cursor + i];
+		output.SetValue(0, i, Value(r.region));
+		output.SetValue(1, i, Value(r.stack_name));
+		output.SetValue(2, i, Value(r.stack_id));
+		output.SetValue(3, i, Value(r.status));
+		output.SetValue(4, i, r.status_reason.empty() ? Value() : Value(r.status_reason));
+		output.SetValue(5, i, r.creation_time.empty() ? Value() : Value(r.creation_time));
+		output.SetValue(6, i, r.last_updated_time.empty() ? Value() : Value(r.last_updated_time));
+		output.SetValue(7, i, r.description.empty() ? Value() : Value(r.description));
+	}
+	output.SetCardinality(to_emit);
+	data.cursor += to_emit;
+}
+
+//===--------------------------------------------------------------------===//
 // duckdb_aws_session_id() scalar function
 //===--------------------------------------------------------------------===//
 
@@ -566,6 +721,11 @@ void CloudFormationFunctions::Register(ExtensionLoader &loader) {
 
 	TableFunction delete_fn("cloudformation_delete_stack", {map_vv}, CloudFormationDeleteStackFun, CloudFormationDeleteStackBind);
 	loader.RegisterFunction(delete_fn);
+
+	TableFunction list_fn("cloudformation_list_stacks", {}, CloudFormationListStacksFun, CloudFormationListStacksBind);
+	list_fn.named_parameters["region"] = LogicalType::VARCHAR;
+	list_fn.named_parameters["status_filter"] = LogicalType::LIST(LogicalType::VARCHAR);
+	loader.RegisterFunction(list_fn);
 
 	ScalarFunction session_id_fn("duckdb_aws_session_id", {}, LogicalType::VARCHAR, DuckDBAwsSessionIdFunction);
 	loader.RegisterFunction(session_id_fn);
