@@ -597,9 +597,11 @@ static unique_ptr<FunctionData> CloudFormationListStacksBind(ClientContext &cont
 	// Region fallback: AWS_REGION / AWS_DEFAULT_REGION env vars. If neither is
 	// set and the caller didn't pass `region :=`, surface a clear error.
 	if (result->region.empty()) {
-		if (const char *env = std::getenv("AWS_REGION"); env && *env) {
-			result->region = env;
-		} else if (env = std::getenv("AWS_DEFAULT_REGION"); env && *env) {
+		const char *env = std::getenv("AWS_REGION");
+		if (!env || !*env) {
+			env = std::getenv("AWS_DEFAULT_REGION");
+		}
+		if (env && *env) {
 			result->region = env;
 		}
 	}
