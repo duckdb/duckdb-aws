@@ -96,7 +96,7 @@ jobs:
         shell: bash
         env:
           HTTP_PROXY_PUBLIC: localhost:8080
-          DUCKDB_S3_USE_SSL: false
+          DUCKDB_S3_USE_SSL: 0
           AWS_ACCESS_KEY_ID: duckdb_env_testing_id
           AWS_SECRET_ACCESS_KEY: duckdb_env_testing_key
           AWS_DEFAULT_REGION: duckdb_env_testing_region
@@ -115,7 +115,7 @@ jobs:
         env:
           HTTP_PROXY_PUBLIC: localhost:8080
           AWS_ACCESS_KEY_ID: duckdb_env_testing_id
-          DUCKDB_S3_USE_SSL: false
+          DUCKDB_S3_USE_SSL: 0
           AWS_SECRET_ACCESS_KEY: duckdb_env_testing_key
           AWS_DEFAULT_REGION: duckdb_env_testing_region
         run: |
