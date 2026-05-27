@@ -92,6 +92,9 @@ jobs:
           python3 -m pip install mitmproxy==12.2.1
           mitmdump --mode regular@8080 --flow-detail 2 > mitmproxy.log 2>&1 &
 
+      - name: Setup tmate session
+        uses: mxschmitt/action-tmate@v3
+
       - name: Run proxy tests
         shell: bash
         env:
