@@ -1,4 +1,4 @@
-#include "cfn_functions.hpp"
+#include "cloudformation_functions.hpp"
 #include "aws_client.hpp"
 
 #include "duckdb.hpp"
@@ -114,10 +114,10 @@ const std::set<string> RESERVED_OPTION_KEYS = {
 } // namespace
 
 //===--------------------------------------------------------------------===//
-// cfn_create_stack(template, name, options) [region :=, tags :=]
+// cloudformation_create_stack(template, name, options) [region :=, tags :=]
 //===--------------------------------------------------------------------===//
 
-struct CfnCreateStackBindData : public TableFunctionData {
+struct CloudFormationCreateStackBindData : public TableFunctionData {
 	string template_arg;
 	string name_arg;
 	vector<StringKV> options;
@@ -127,12 +127,12 @@ struct CfnCreateStackBindData : public TableFunctionData {
 	bool finished = false;
 };
 
-static unique_ptr<FunctionData> CfnCreateStackBind(ClientContext &context, TableFunctionBindInput &input,
+static unique_ptr<FunctionData> CloudFormationCreateStackBind(ClientContext &context, TableFunctionBindInput &input,
                                                    vector<LogicalType> &return_types, vector<string> &names) {
-	auto result = make_uniq<CfnCreateStackBindData>();
+	auto result = make_uniq<CloudFormationCreateStackBindData>();
 
 	if (input.inputs[0].IsNull()) {
-		throw InvalidInputException("cfn_create_stack: the template argument must not be NULL");
+		throw InvalidInputException("cloudformation_create_stack: the template argument must not be NULL");
 	}
 	result->template_arg = StringValue::Get(input.inputs[0]);
 	if (!input.inputs[1].IsNull()) {
@@ -158,8 +158,8 @@ static unique_ptr<FunctionData> CfnCreateStackBind(ClientContext &context, Table
 	return std::move(result);
 }
 
-static void CfnCreateStackFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
-	auto &data = (CfnCreateStackBindData &)*data_p.bind_data;
+static void CloudFormationCreateStackFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	auto &data = (CloudFormationCreateStackBindData &)*data_p.bind_data;
 	if (data.finished) {
 		return;
 	}
@@ -173,7 +173,7 @@ static void CfnCreateStackFun(ClientContext &context, TableFunctionInput &data_p
 	}
 	if (region.empty()) {
 		throw InvalidInputException(
-		    "cfn_create_stack: region is required - set options['region'] or the region:= named parameter");
+		    "cloudformation_create_stack: region is required - set options['region'] or the region:= named parameter");
 	}
 
 	auto opt = [&](const string &key) -> string {
@@ -229,7 +229,7 @@ static void CfnCreateStackFun(ClientContext &context, TableFunctionInput &data_p
 	if (!data.name_arg.empty()) {
 		if (data.name_arg.size() > MAX_STACK_NAME_LEN) {
 			throw InvalidInputException(
-			    "cfn_create_stack: explicit name '%s' is %llu chars; max %llu "
+			    "cloudformation_create_stack: explicit name '%s' is %llu chars; max %llu "
 			    "(to keep the resulting CFN stack ARN within the 128-char API limit)",
 			    data.name_arg, (unsigned long long)data.name_arg.size(),
 			    (unsigned long long)MAX_STACK_NAME_LEN);
@@ -243,7 +243,7 @@ static void CfnCreateStackFun(ClientContext &context, TableFunctionInput &data_p
 			prefix = UrlBasenameStem(data.template_arg);
 		}
 		if (prefix.empty()) {
-			prefix = "cfn-stack";
+			prefix = "duckdb-aws";
 		}
 		if (prefix.size() > MAX_PREFIX_LEN) {
 			prefix = prefix.substr(0, MAX_PREFIX_LEN);
@@ -252,28 +252,28 @@ static void CfnCreateStackFun(ClientContext &context, TableFunctionInput &data_p
 	}
 
 	// Route every non-reserved option key to a declared template parameter.
-	Aws::Vector<Aws::CloudFormation::Model::Parameter> cfn_params;
+	Aws::Vector<Aws::CloudFormation::Model::Parameter> cloudformation_params;
 	for (auto &kv : data.options) {
 		if (RESERVED_OPTION_KEYS.count(StringUtil::Lower(kv.key))) {
 			continue;
 		}
 		if (!declared_params.count(kv.key)) {
 			throw InvalidInputException(
-			    "cfn_create_stack: option '%s' is not a parameter declared by the template", kv.key);
+			    "cloudformation_create_stack: option '%s' is not a parameter declared by the template", kv.key);
 		}
 		Aws::CloudFormation::Model::Parameter p;
 		p.SetParameterKey(kv.key.c_str());
 		p.SetParameterValue(kv.value.c_str());
-		cfn_params.push_back(p);
+		cloudformation_params.push_back(p);
 	}
 
 	// Tags: provenance, the metadata stack-name, then caller-supplied extras.
-	Aws::Vector<Aws::CloudFormation::Model::Tag> cfn_tags;
+	Aws::Vector<Aws::CloudFormation::Model::Tag> cloudformation_tags;
 	auto add_tag = [&](const string &k, const string &v) {
 		Aws::CloudFormation::Model::Tag t;
 		t.SetKey(k.c_str());
 		t.SetValue(v.c_str());
-		cfn_tags.push_back(t);
+		cloudformation_tags.push_back(t);
 	};
 	add_tag("created-by", "duckdb");
 	if (!metadata_stack_name.empty()) {
@@ -290,14 +290,14 @@ static void CfnCreateStackFun(ClientContext &context, TableFunctionInput &data_p
 	} else {
 		req.SetTemplateBody(data.template_arg.c_str());
 	}
-	if (!cfn_params.empty()) {
-		req.SetParameters(cfn_params);
+	if (!cloudformation_params.empty()) {
+		req.SetParameters(cloudformation_params);
 	}
 	if (!summary.GetCapabilities().empty()) {
 		req.SetCapabilities(summary.GetCapabilities());
 	}
-	if (!cfn_tags.empty()) {
-		req.SetTags(cfn_tags);
+	if (!cloudformation_tags.empty()) {
+		req.SetTags(cloudformation_tags);
 	}
 
 	auto outcome = cfn.CreateStack(req);
@@ -324,21 +324,21 @@ static void CfnCreateStackFun(ClientContext &context, TableFunctionInput &data_p
 }
 
 //===--------------------------------------------------------------------===//
-// Shared handle parsing (cfn_describe_stack / cfn_outputs / cfn_delete_stack)
+// Shared handle parsing (cloudformation_describe_stack / cloudformation_outputs / cloudformation_delete_stack)
 //===--------------------------------------------------------------------===//
 
 namespace {
 
-struct CfnHandle {
+struct CloudFormationHandle {
 	string stack_ref; // stack_id (ARN) when present, else stack_name
 	string stack_name;
 	string stack_id;
 	string region;
 };
 
-CfnHandle ParseHandle(const Value &handle_value, const char *fn_name) {
+CloudFormationHandle ParseHandle(const Value &handle_value, const char *fn_name) {
 	auto kvs = UnpackStringMap(handle_value);
-	CfnHandle h;
+	CloudFormationHandle h;
 	if (auto *v = FindCI(kvs, "stack_id")) {
 		h.stack_id = *v;
 	}
@@ -361,18 +361,18 @@ CfnHandle ParseHandle(const Value &handle_value, const char *fn_name) {
 } // namespace
 
 //===--------------------------------------------------------------------===//
-// cfn_describe_stack(handle)
+// cloudformation_describe_stack(handle)
 //===--------------------------------------------------------------------===//
 
-struct CfnDescribeStackBindData : public TableFunctionData {
-	CfnHandle handle;
+struct CloudFormationDescribeStackBindData : public TableFunctionData {
+	CloudFormationHandle handle;
 	bool finished = false;
 };
 
-static unique_ptr<FunctionData> CfnDescribeStackBind(ClientContext &context, TableFunctionBindInput &input,
+static unique_ptr<FunctionData> CloudFormationDescribeStackBind(ClientContext &context, TableFunctionBindInput &input,
                                                      vector<LogicalType> &return_types, vector<string> &names) {
-	auto result = make_uniq<CfnDescribeStackBindData>();
-	result->handle = ParseHandle(input.inputs[0], "cfn_describe_stack");
+	auto result = make_uniq<CloudFormationDescribeStackBindData>();
+	result->handle = ParseHandle(input.inputs[0], "cloudformation_describe_stack");
 
 	return_types.emplace_back(LogicalType::VARCHAR);
 	names.emplace_back("stack_name");
@@ -388,8 +388,8 @@ static unique_ptr<FunctionData> CfnDescribeStackBind(ClientContext &context, Tab
 	return std::move(result);
 }
 
-static void CfnDescribeStackFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
-	auto &data = (CfnDescribeStackBindData &)*data_p.bind_data;
+static void CloudFormationDescribeStackFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	auto &data = (CloudFormationDescribeStackBindData &)*data_p.bind_data;
 	if (data.finished) {
 		return;
 	}
@@ -428,18 +428,18 @@ static void CfnDescribeStackFun(ClientContext &context, TableFunctionInput &data
 }
 
 //===--------------------------------------------------------------------===//
-// cfn_outputs(handle)
+// cloudformation_outputs(handle)
 //===--------------------------------------------------------------------===//
 
-struct CfnOutputsBindData : public TableFunctionData {
-	CfnHandle handle;
+struct CloudFormationOutputsBindData : public TableFunctionData {
+	CloudFormationHandle handle;
 	bool finished = false;
 };
 
-static unique_ptr<FunctionData> CfnOutputsBind(ClientContext &context, TableFunctionBindInput &input,
+static unique_ptr<FunctionData> CloudFormationOutputsBind(ClientContext &context, TableFunctionBindInput &input,
                                                vector<LogicalType> &return_types, vector<string> &names) {
-	auto result = make_uniq<CfnOutputsBindData>();
-	result->handle = ParseHandle(input.inputs[0], "cfn_outputs");
+	auto result = make_uniq<CloudFormationOutputsBindData>();
+	result->handle = ParseHandle(input.inputs[0], "cloudformation_outputs");
 
 	return_types.emplace_back(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
 	names.emplace_back("outputs");
@@ -447,8 +447,8 @@ static unique_ptr<FunctionData> CfnOutputsBind(ClientContext &context, TableFunc
 	return std::move(result);
 }
 
-static void CfnOutputsFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
-	auto &data = (CfnOutputsBindData &)*data_p.bind_data;
+static void CloudFormationOutputsFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	auto &data = (CloudFormationOutputsBindData &)*data_p.bind_data;
 	if (data.finished) {
 		return;
 	}
@@ -485,18 +485,18 @@ static void CfnOutputsFun(ClientContext &context, TableFunctionInput &data_p, Da
 }
 
 //===--------------------------------------------------------------------===//
-// cfn_delete_stack(handle)
+// cloudformation_delete_stack(handle)
 //===--------------------------------------------------------------------===//
 
-struct CfnDeleteStackBindData : public TableFunctionData {
-	CfnHandle handle;
+struct CloudFormationDeleteStackBindData : public TableFunctionData {
+	CloudFormationHandle handle;
 	bool finished = false;
 };
 
-static unique_ptr<FunctionData> CfnDeleteStackBind(ClientContext &context, TableFunctionBindInput &input,
+static unique_ptr<FunctionData> CloudFormationDeleteStackBind(ClientContext &context, TableFunctionBindInput &input,
                                                    vector<LogicalType> &return_types, vector<string> &names) {
-	auto result = make_uniq<CfnDeleteStackBindData>();
-	result->handle = ParseHandle(input.inputs[0], "cfn_delete_stack");
+	auto result = make_uniq<CloudFormationDeleteStackBindData>();
+	result->handle = ParseHandle(input.inputs[0], "cloudformation_delete_stack");
 
 	return_types.emplace_back(LogicalType::VARCHAR);
 	names.emplace_back("stack_id");
@@ -504,8 +504,8 @@ static unique_ptr<FunctionData> CfnDeleteStackBind(ClientContext &context, Table
 	return std::move(result);
 }
 
-static void CfnDeleteStackFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
-	auto &data = (CfnDeleteStackBindData &)*data_p.bind_data;
+static void CloudFormationDeleteStackFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	auto &data = (CloudFormationDeleteStackBindData &)*data_p.bind_data;
 	if (data.finished) {
 		return;
 	}
@@ -533,22 +533,22 @@ static void CfnDeleteStackFun(ClientContext &context, TableFunctionInput &data_p
 // Registration
 //===--------------------------------------------------------------------===//
 
-void CfnFunctions::Register(ExtensionLoader &loader) {
+void CloudFormationFunctions::Register(ExtensionLoader &loader) {
 	auto map_vv = LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR);
 
-	TableFunction create_fn("cfn_create_stack", {LogicalType::VARCHAR, LogicalType::VARCHAR, map_vv},
-	                        CfnCreateStackFun, CfnCreateStackBind);
+	TableFunction create_fn("cloudformation_create_stack", {LogicalType::VARCHAR, LogicalType::VARCHAR, map_vv},
+	                        CloudFormationCreateStackFun, CloudFormationCreateStackBind);
 	create_fn.named_parameters["region"] = LogicalType::VARCHAR;
 	create_fn.named_parameters["tags"] = map_vv;
 	loader.RegisterFunction(create_fn);
 
-	TableFunction describe_fn("cfn_describe_stack", {map_vv}, CfnDescribeStackFun, CfnDescribeStackBind);
+	TableFunction describe_fn("cloudformation_describe_stack", {map_vv}, CloudFormationDescribeStackFun, CloudFormationDescribeStackBind);
 	loader.RegisterFunction(describe_fn);
 
-	TableFunction outputs_fn("cfn_outputs", {map_vv}, CfnOutputsFun, CfnOutputsBind);
+	TableFunction outputs_fn("cloudformation_outputs", {map_vv}, CloudFormationOutputsFun, CloudFormationOutputsBind);
 	loader.RegisterFunction(outputs_fn);
 
-	TableFunction delete_fn("cfn_delete_stack", {map_vv}, CfnDeleteStackFun, CfnDeleteStackBind);
+	TableFunction delete_fn("cloudformation_delete_stack", {map_vv}, CloudFormationDeleteStackFun, CloudFormationDeleteStackBind);
 	loader.RegisterFunction(delete_fn);
 }
 

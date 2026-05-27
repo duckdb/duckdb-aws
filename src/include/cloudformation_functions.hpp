@@ -4,8 +4,8 @@ namespace duckdb {
 
 class ExtensionLoader;
 
-struct CfnFunctions {
-	//! Register the generic CloudFormation table functions (cfn_*).
+struct CloudFormationFunctions {
+	//! Register the generic CloudFormation table functions (cloudformation_*).
 	static void Register(ExtensionLoader &loader);
 };
 
