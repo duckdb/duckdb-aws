@@ -384,6 +384,8 @@ static unique_ptr<FunctionData> CloudFormationDescribeStackBind(ClientContext &c
 	names.emplace_back("status_reason");
 	return_types.emplace_back(LogicalType::VARCHAR);
 	names.emplace_back("creation_time");
+	return_types.emplace_back(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
+	names.emplace_back("outputs");
 
 	return std::move(result);
 }
@@ -418,68 +420,21 @@ static void CloudFormationDescribeStackFun(ClientContext &context, TableFunction
 	string reason(stack.GetStackStatusReason().c_str());
 	string created(stack.GetCreationTime().ToGmtString(Aws::Utils::DateFormat::ISO_8601).c_str());
 
+	vector<Value> output_keys;
+	vector<Value> output_values;
+	for (const auto &o : stack.GetOutputs()) {
+		output_keys.emplace_back(string(o.GetOutputKey().c_str()));
+		output_values.emplace_back(string(o.GetOutputValue().c_str()));
+	}
+	auto outputs =
+	    Value::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR, std::move(output_keys), std::move(output_values));
+
 	output.SetValue(0, 0, Value(string(stack.GetStackName().c_str())));
 	output.SetValue(1, 0, Value(string(stack.GetStackId().c_str())));
 	output.SetValue(2, 0, Value(status));
 	output.SetValue(3, 0, reason.empty() ? Value() : Value(reason));
 	output.SetValue(4, 0, created.empty() ? Value() : Value(created));
-	output.SetCardinality(1);
-	data.finished = true;
-}
-
-//===--------------------------------------------------------------------===//
-// cloudformation_outputs(handle)
-//===--------------------------------------------------------------------===//
-
-struct CloudFormationOutputsBindData : public TableFunctionData {
-	CloudFormationHandle handle;
-	bool finished = false;
-};
-
-static unique_ptr<FunctionData> CloudFormationOutputsBind(ClientContext &context, TableFunctionBindInput &input,
-                                               vector<LogicalType> &return_types, vector<string> &names) {
-	auto result = make_uniq<CloudFormationOutputsBindData>();
-	result->handle = ParseHandle(input.inputs[0], "cloudformation_outputs");
-
-	return_types.emplace_back(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
-	names.emplace_back("outputs");
-
-	return std::move(result);
-}
-
-static void CloudFormationOutputsFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
-	auto &data = (CloudFormationOutputsBindData &)*data_p.bind_data;
-	if (data.finished) {
-		return;
-	}
-
-	auto provider = BuildAwsCredentialsProvider("", /*require_credentials=*/true);
-	auto cfg = BuildClientConfigWithCa();
-	cfg.region = data.handle.region.c_str();
-	Aws::CloudFormation::CloudFormationClient cfn(provider, cfg);
-
-	Aws::CloudFormation::Model::DescribeStacksRequest req;
-	req.SetStackName(data.handle.stack_ref.c_str());
-	auto outcome = cfn.DescribeStacks(req);
-	if (!outcome.IsSuccess()) {
-		const auto &err = outcome.GetError();
-		throw IOException("CloudFormation DescribeStacks failed: %s - %s", string(err.GetExceptionName().c_str()),
-		                  string(err.GetMessage().c_str()));
-	}
-	const auto &stacks = outcome.GetResult().GetStacks();
-	if (stacks.empty()) {
-		throw IOException("CloudFormation DescribeStacks returned no stack for '%s'", data.handle.stack_ref);
-	}
-
-	vector<Value> keys;
-	vector<Value> values;
-	for (const auto &o : stacks[0].GetOutputs()) {
-		keys.emplace_back(string(o.GetOutputKey().c_str()));
-		values.emplace_back(string(o.GetOutputValue().c_str()));
-	}
-	auto outputs = Value::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR, std::move(keys), std::move(values));
-
-	output.SetValue(0, 0, outputs);
+	output.SetValue(5, 0, outputs);
 	output.SetCardinality(1);
 	data.finished = true;
 }
@@ -544,9 +499,6 @@ void CloudFormationFunctions::Register(ExtensionLoader &loader) {
 
 	TableFunction describe_fn("cloudformation_describe_stack", {map_vv}, CloudFormationDescribeStackFun, CloudFormationDescribeStackBind);
 	loader.RegisterFunction(describe_fn);
-
-	TableFunction outputs_fn("cloudformation_outputs", {map_vv}, CloudFormationOutputsFun, CloudFormationOutputsBind);
-	loader.RegisterFunction(outputs_fn);
 
 	TableFunction delete_fn("cloudformation_delete_stack", {map_vv}, CloudFormationDeleteStackFun, CloudFormationDeleteStackBind);
 	loader.RegisterFunction(delete_fn);

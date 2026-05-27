@@ -35,18 +35,6 @@ SELECT * FROM cloudformation_describe_stack(MAP {'stack_name': 's'});
 ----
 handle is missing 'region'
 
-# cloudformation_outputs: handle without a stack reference.
-statement error
-SELECT * FROM cloudformation_outputs(MAP {'region': 'us-east-1'});
-----
-handle must contain 'stack_id' or 'stack_name'
-
-# cloudformation_outputs: handle missing region.
-statement error
-SELECT * FROM cloudformation_outputs(MAP {'stack_name': 's'});
-----
-handle is missing 'region'
-
 # cloudformation_delete_stack: handle without a stack reference.
 statement error
 SELECT * FROM cloudformation_delete_stack(MAP {'region': 'us-east-1'});
