@@ -7,6 +7,20 @@ set(EXTENSION_NAME ${TARGET_NAME}_extension)
 project(${TARGET_NAME})
 include_directories(src/include)
 
+# Capture the duckdb-aws extension's git short SHA at build time. Surfaced
+# at runtime as the `created-by-version` auto-tag on every stack the
+# cloudformation_* functions create.
+execute_process(
+    COMMAND git rev-parse --short HEAD
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    OUTPUT_VARIABLE DUCKDB_AWS_GIT_SHA
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET)
+if(NOT DUCKDB_AWS_GIT_SHA)
+    set(DUCKDB_AWS_GIT_SHA "unknown")
+endif()
+add_compile_definitions(DUCKDB_AWS_GIT_SHA="${DUCKDB_AWS_GIT_SHA}")
+
 set(EXTENSION_SOURCES src/aws_extension.cpp src/aws_secret.cpp src/cloudformation_functions.cpp)
 add_library(${EXTENSION_NAME} STATIC ${EXTENSION_SOURCES})
 

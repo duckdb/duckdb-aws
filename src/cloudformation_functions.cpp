@@ -5,6 +5,8 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/uuid.hpp"
+#include "duckdb/function/scalar_function.hpp"
+#include "duckdb/main/database.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 
 #include <aws/cloudformation/CloudFormationClient.h>
@@ -96,6 +98,14 @@ string ShortRandHex() {
 	auto uuid_str = UUID::ToString(UUID::GenerateRandomUUID());
 	// UUID layout: 8-4-4-4-12. First 12 hex = first segment (8) + second segment (4).
 	return uuid_str.substr(0, 8) + uuid_str.substr(9, 4);
+}
+
+//! Per-process session id used for the duckdb-session-id auto-tag on every
+//! stack this extension creates. Lazy-initialised on first use, then stable
+//! for the lifetime of the duckdb-aws extension load.
+const string &SessionId() {
+	static const string id = ShortRandHex();
+	return id;
 }
 
 //! CFN's StackName API parameter is capped at 128 chars. The ARN is
@@ -267,20 +277,35 @@ static void CloudFormationCreateStackFun(ClientContext &context, TableFunctionIn
 		cloudformation_params.push_back(p);
 	}
 
-	// Tags: provenance, the metadata stack-name, then caller-supplied extras.
-	Aws::Vector<Aws::CloudFormation::Model::Tag> cloudformation_tags;
-	auto add_tag = [&](const string &k, const string &v) {
-		Aws::CloudFormation::Model::Tag t;
-		t.SetKey(k.c_str());
-		t.SetValue(v.c_str());
-		cloudformation_tags.push_back(t);
+	// Tags: provenance auto-tags first, then caller-supplied extras (which
+	// override on key collision because they're applied last).
+	vector<StringKV> tag_kv;
+	auto set_tag = [&](const string &k, const string &v) {
+		for (auto &existing : tag_kv) {
+			if (existing.key == k) {
+				existing.value = v;
+				return;
+			}
+		}
+		tag_kv.push_back({k, v});
 	};
-	add_tag("created-by", "duckdb");
+	set_tag("created-by", "duckdb-aws");
+	set_tag("created-by-version", DUCKDB_AWS_GIT_SHA);
+	set_tag("duckdb-version", DuckDB::LibraryVersion());
+	set_tag("managed-by", "duckdb-aws");
+	set_tag("duckdb-session-id", SessionId());
 	if (!metadata_stack_name.empty()) {
-		add_tag("stack-name", metadata_stack_name);
+		set_tag("stack-name", metadata_stack_name);
 	}
 	for (auto &kv : data.tags_override) {
-		add_tag(kv.key, kv.value);
+		set_tag(kv.key, kv.value);
+	}
+	Aws::Vector<Aws::CloudFormation::Model::Tag> cloudformation_tags;
+	for (auto &kv : tag_kv) {
+		Aws::CloudFormation::Model::Tag t;
+		t.SetKey(kv.key.c_str());
+		t.SetValue(kv.value.c_str());
+		cloudformation_tags.push_back(t);
 	}
 
 	Aws::CloudFormation::Model::CreateStackRequest req;
@@ -485,6 +510,16 @@ static void CloudFormationDeleteStackFun(ClientContext &context, TableFunctionIn
 }
 
 //===--------------------------------------------------------------------===//
+// duckdb_aws_session_id() scalar function
+//===--------------------------------------------------------------------===//
+
+static void DuckDBAwsSessionIdFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+	result.SetVectorType(VectorType::CONSTANT_VECTOR);
+	auto data = ConstantVector::GetData<string_t>(result);
+	data[0] = StringVector::AddString(result, SessionId());
+}
+
+//===--------------------------------------------------------------------===//
 // Registration
 //===--------------------------------------------------------------------===//
 
@@ -502,6 +537,9 @@ void CloudFormationFunctions::Register(ExtensionLoader &loader) {
 
 	TableFunction delete_fn("cloudformation_delete_stack", {map_vv}, CloudFormationDeleteStackFun, CloudFormationDeleteStackBind);
 	loader.RegisterFunction(delete_fn);
+
+	ScalarFunction session_id_fn("duckdb_aws_session_id", {}, LogicalType::VARCHAR, DuckDBAwsSessionIdFunction);
+	loader.RegisterFunction(session_id_fn);
 }
 
 } // namespace duckdb
