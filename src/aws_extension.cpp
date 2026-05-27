@@ -1,5 +1,6 @@
 #include "aws_secret.hpp"
 #include "aws_extension.hpp"
+#include "cfn_functions.hpp"
 
 #include "duckdb.hpp"
 #include "duckdb/common/exception.hpp"
@@ -146,6 +147,8 @@ static void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterFunction(function_set);
 
 	CreateAwsSecretFunctions::Register(loader);
+
+	CfnFunctions::Register(loader);
 }
 
 void AwsExtension::Load(ExtensionLoader &loader) {
