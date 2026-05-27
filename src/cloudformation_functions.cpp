@@ -400,6 +400,8 @@ static unique_ptr<FunctionData> CloudFormationDescribeStackBind(ClientContext &c
 	result->handle = ParseHandle(input.inputs[0], "cloudformation_describe_stack");
 
 	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("region");
+	return_types.emplace_back(LogicalType::VARCHAR);
 	names.emplace_back("stack_name");
 	return_types.emplace_back(LogicalType::VARCHAR);
 	names.emplace_back("stack_id");
@@ -409,6 +411,10 @@ static unique_ptr<FunctionData> CloudFormationDescribeStackBind(ClientContext &c
 	names.emplace_back("status_reason");
 	return_types.emplace_back(LogicalType::VARCHAR);
 	names.emplace_back("creation_time");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("last_updated_time");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("description");
 	return_types.emplace_back(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
 	names.emplace_back("outputs");
 
@@ -444,6 +450,11 @@ static void CloudFormationDescribeStackFun(ClientContext &context, TableFunction
 	    Aws::CloudFormation::Model::StackStatusMapper::GetNameForStackStatus(stack.GetStackStatus()).c_str());
 	string reason(stack.GetStackStatusReason().c_str());
 	string created(stack.GetCreationTime().ToGmtString(Aws::Utils::DateFormat::ISO_8601).c_str());
+	string updated;
+	if (stack.LastUpdatedTimeHasBeenSet()) {
+		updated = string(stack.GetLastUpdatedTime().ToGmtString(Aws::Utils::DateFormat::ISO_8601).c_str());
+	}
+	string description(stack.GetDescription().c_str());
 
 	vector<Value> output_keys;
 	vector<Value> output_values;
@@ -454,12 +465,15 @@ static void CloudFormationDescribeStackFun(ClientContext &context, TableFunction
 	auto outputs =
 	    Value::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR, std::move(output_keys), std::move(output_values));
 
-	output.SetValue(0, 0, Value(string(stack.GetStackName().c_str())));
-	output.SetValue(1, 0, Value(string(stack.GetStackId().c_str())));
-	output.SetValue(2, 0, Value(status));
-	output.SetValue(3, 0, reason.empty() ? Value() : Value(reason));
-	output.SetValue(4, 0, created.empty() ? Value() : Value(created));
-	output.SetValue(5, 0, outputs);
+	output.SetValue(0, 0, Value(data.handle.region));
+	output.SetValue(1, 0, Value(string(stack.GetStackName().c_str())));
+	output.SetValue(2, 0, Value(string(stack.GetStackId().c_str())));
+	output.SetValue(3, 0, Value(status));
+	output.SetValue(4, 0, reason.empty() ? Value() : Value(reason));
+	output.SetValue(5, 0, created.empty() ? Value() : Value(created));
+	output.SetValue(6, 0, updated.empty() ? Value() : Value(updated));
+	output.SetValue(7, 0, description.empty() ? Value() : Value(description));
+	output.SetValue(8, 0, outputs);
 	output.SetCardinality(1);
 	data.finished = true;
 }
@@ -470,6 +484,7 @@ static void CloudFormationDescribeStackFun(ClientContext &context, TableFunction
 
 struct CloudFormationDeleteStackBindData : public TableFunctionData {
 	CloudFormationHandle handle;
+	Value handle_value;   // original MAP, echoed back verbatim
 	bool finished = false;
 };
 
@@ -477,9 +492,10 @@ static unique_ptr<FunctionData> CloudFormationDeleteStackBind(ClientContext &con
                                                    vector<LogicalType> &return_types, vector<string> &names) {
 	auto result = make_uniq<CloudFormationDeleteStackBindData>();
 	result->handle = ParseHandle(input.inputs[0], "cloudformation_delete_stack");
+	result->handle_value = input.inputs[0];
 
-	return_types.emplace_back(LogicalType::VARCHAR);
-	names.emplace_back("stack_id");
+	return_types.emplace_back(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
+	names.emplace_back("handle");
 
 	return std::move(result);
 }
@@ -504,7 +520,9 @@ static void CloudFormationDeleteStackFun(ClientContext &context, TableFunctionIn
 		                  string(err.GetMessage().c_str()));
 	}
 
-	output.SetValue(0, 0, Value(data.handle.stack_ref));
+	// Pass-through: echo the input handle byte-for-byte. Any extra keys the
+	// caller put in (annotations, timestamps, custom metadata) survive intact.
+	output.SetValue(0, 0, data.handle_value);
 	output.SetCardinality(1);
 	data.finished = true;
 }
