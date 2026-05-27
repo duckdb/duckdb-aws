@@ -23,7 +23,6 @@
 #include <aws/core/utils/json/JsonSerializer.h>
 
 #include <cctype>
-#include <cstdlib>
 #include <set>
 
 namespace duckdb {
@@ -568,13 +567,17 @@ static unique_ptr<FunctionData> CloudFormationListStacksBind(ClientContext &cont
                                                              vector<string> &names) {
 	auto result = make_uniq<CloudFormationListStacksBindData>();
 
+	if (input.inputs[0].IsNull()) {
+		throw InvalidInputException("cloudformation_list_stacks: region must not be NULL");
+	}
+	result->region = StringValue::Get(input.inputs[0]);
+	if (result->region.empty()) {
+		throw InvalidInputException("cloudformation_list_stacks: region must not be empty");
+	}
+
 	for (auto &np : input.named_parameters) {
 		auto key = StringUtil::Lower(np.first);
-		if (key == "region") {
-			if (!np.second.IsNull()) {
-				result->region = StringValue::Get(np.second);
-			}
-		} else if (key == "status_filter") {
+		if (key == "status_filter") {
 			if (!np.second.IsNull()) {
 				auto &children = ListValue::GetChildren(np.second);
 				for (auto &child : children) {
@@ -592,23 +595,6 @@ static unique_ptr<FunctionData> CloudFormationListStacksBind(ClientContext &cont
 				}
 			}
 		}
-	}
-
-	// Region fallback: AWS_REGION / AWS_DEFAULT_REGION env vars. If neither is
-	// set and the caller didn't pass `region :=`, surface a clear error.
-	if (result->region.empty()) {
-		const char *env = std::getenv("AWS_REGION");
-		if (!env || !*env) {
-			env = std::getenv("AWS_DEFAULT_REGION");
-		}
-		if (env && *env) {
-			result->region = env;
-		}
-	}
-	if (result->region.empty()) {
-		throw InvalidInputException(
-		    "cloudformation_list_stacks: no region provided and AWS_REGION / AWS_DEFAULT_REGION "
-		    "environment variables are not set");
 	}
 
 	return_types.emplace_back(LogicalType::VARCHAR);
@@ -724,8 +710,8 @@ void CloudFormationFunctions::Register(ExtensionLoader &loader) {
 	TableFunction delete_fn("cloudformation_delete_stack", {map_vv}, CloudFormationDeleteStackFun, CloudFormationDeleteStackBind);
 	loader.RegisterFunction(delete_fn);
 
-	TableFunction list_fn("cloudformation_list_stacks", {}, CloudFormationListStacksFun, CloudFormationListStacksBind);
-	list_fn.named_parameters["region"] = LogicalType::VARCHAR;
+	TableFunction list_fn("cloudformation_list_stacks", {LogicalType::VARCHAR}, CloudFormationListStacksFun,
+	                      CloudFormationListStacksBind);
 	list_fn.named_parameters["status_filter"] = LogicalType::LIST(LogicalType::VARCHAR);
 	loader.RegisterFunction(list_fn);
 
