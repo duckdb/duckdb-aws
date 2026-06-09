@@ -5,6 +5,7 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
+#include "duckdb/main/settings.hpp"
 #include <duckdb/parser/parsed_data/create_scalar_function_info.hpp>
 #include <aws/core/Aws.h>
 #include <aws/core/auth/AWSCredentialsProviderChain.h>
@@ -69,6 +70,11 @@ static unique_ptr<FunctionData> LoadAWSCredentialsBind(ClientContext &context, T
 		}
 	}
 
+	if (!result->redact_secret && !Settings::Get<AllowUnredactedSecretsSetting>(context)) {
+		throw InvalidInputException("Displaying unredacted secrets is disabled: set allow_unredacted_secrets to true "
+		                            "at startup to enable this");
+	}
+
 	if (input.inputs.size() >= 1) {
 		result->profile_name = input.inputs[0].ToString();
 	}
@@ -108,7 +114,11 @@ static void LoadAWSCredentialsFun(ClientContext &context, TableFunctionInput &da
 		output.SetValue(1, 0,
 		                load_result.set_secret_access_key.empty() ? Value(nullptr) : load_result.set_secret_access_key);
 	}
-	output.SetValue(2, 0, load_result.set_session_token.empty() ? Value(nullptr) : load_result.set_session_token);
+	if (data.redact_secret && !load_result.set_session_token.empty()) {
+		output.SetValue(2, 0, "<redacted>");
+	} else {
+		output.SetValue(2, 0, load_result.set_session_token.empty() ? Value(nullptr) : load_result.set_session_token);
+	}
 	output.SetValue(3, 0, load_result.set_region.empty() ? Value(nullptr) : load_result.set_region);
 
 	output.SetCardinality(1);
