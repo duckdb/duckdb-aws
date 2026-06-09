@@ -114,11 +114,7 @@ static void LoadAWSCredentialsFun(ClientContext &context, TableFunctionInput &da
 		output.SetValue(1, 0,
 		                load_result.set_secret_access_key.empty() ? Value(nullptr) : load_result.set_secret_access_key);
 	}
-	if (data.redact_secret && !load_result.set_session_token.empty()) {
-		output.SetValue(2, 0, "<redacted>");
-	} else {
-		output.SetValue(2, 0, load_result.set_session_token.empty() ? Value(nullptr) : load_result.set_session_token);
-	}
+	output.SetValue(2, 0, load_result.set_session_token.empty() ? Value(nullptr) : load_result.set_session_token);
 	output.SetValue(3, 0, load_result.set_region.empty() ? Value(nullptr) : load_result.set_region);
 
 	output.SetCardinality(1);
