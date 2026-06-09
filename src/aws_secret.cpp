@@ -146,8 +146,7 @@ public:
 				if (profile.empty()) {
 					AddProvider(std::make_shared<Aws::Auth::SSOCredentialsProvider>(Aws::String(), sso_config));
 				} else {
-					AddProvider(
-					    std::make_shared<Aws::Auth::SSOCredentialsProvider>(profile.c_str(), sso_config));
+					AddProvider(std::make_shared<Aws::Auth::SSOCredentialsProvider>(profile.c_str(), sso_config));
 				}
 			} else if (item == "env") {
 				AddProvider(std::make_shared<Aws::Auth::EnvironmentAWSCredentialsProvider>());

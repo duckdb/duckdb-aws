@@ -14,8 +14,17 @@ require-env AWS_SECRET_ACCESS_KEY
 
 require-env AWS_DEFAULT_REGION
 
-statement ok
+# secret key must appear as <redacted> in output; no session token in this env so NULL
+query IIII
 CALL load_aws_credentials();
+----
+duckdb_env_testing_id	<redacted>	NULL	<REGEX>:.*
+
+# allow_unredacted_secrets=true, redact_secret=false returns actual values
+query IIII
+CALL load_aws_credentials(redact_secret => false);
+----
+duckdb_env_testing_id	duckdb_env_testing_key	NULL	<REGEX>:.*
 
 query I
 select value from duckdb_settings() where name='s3_secret_access_key';
