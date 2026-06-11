@@ -309,7 +309,7 @@ CreateRDSSecretWithProvider(std::shared_ptr<DuckDBCustomAWSCredentialsProviderCh
 
 	if (!generate_secret_token) {
 		for (auto &en : input.options) {
-			result->secret_map[en.first] = en.second;
+			result->secret_map[Identifier(en.first)] = en.second;
 		}
 		return result;
 	}
