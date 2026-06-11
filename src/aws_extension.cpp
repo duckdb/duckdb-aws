@@ -5,6 +5,7 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
+#include "duckdb/main/settings.hpp"
 #include <duckdb/parser/parsed_data/create_scalar_function_info.hpp>
 #include <aws/core/Aws.h>
 #include <aws/core/auth/AWSCredentialsProviderChain.h>
@@ -67,6 +68,11 @@ static unique_ptr<FunctionData> LoadAWSCredentialsBind(ClientContext &context, T
 		} else if (option.first == "redact_secret") {
 			result->redact_secret = BooleanValue::Get(option.second);
 		}
+	}
+
+	if (!result->redact_secret && !Settings::Get<AllowUnredactedSecretsSetting>(context)) {
+		throw InvalidInputException("Displaying unredacted secrets is disabled: set allow_unredacted_secrets to true "
+		                            "at startup to enable this");
 	}
 
 	if (input.inputs.size() >= 1) {
