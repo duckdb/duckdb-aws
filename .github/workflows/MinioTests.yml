@@ -71,8 +71,8 @@ jobs:
       - name: Test
         shell: bash
         env:
-          AWS_CONFIG_FILE: $HOME/.aws/credentials
-          AWS_SHARED_CREDENTIALS_FILE: $HOME/.aws/credentials
+          AWS_CONFIG_FILE: ${{ env.HOME }}/.aws/config
+          AWS_SHARED_CREDENTIALS_FILE: ${{ env.HOME }}/.aws/credentials
         run: |
           make test
 
@@ -83,8 +83,8 @@ jobs:
           AWS_ACCESS_KEY_ID: duckdb_env_testing_id
           AWS_SECRET_ACCESS_KEY: duckdb_env_testing_key
           AWS_DEFAULT_REGION: duckdb_env_testing_region
-          AWS_CONFIG_FILE: $HOME/.aws/credentials
-          AWS_SHARED_CREDENTIALS_FILE: $HOME/.aws/credentials
+          AWS_CONFIG_FILE: ${{ env.HOME }}/.aws/config
+          AWS_SHARED_CREDENTIALS_FILE: ${{ env.HOME }}/.aws/credentials
         run: |
           ./build/release/test/unittest "*/test/sql/env/*"
 
