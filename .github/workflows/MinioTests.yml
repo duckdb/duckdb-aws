@@ -119,4 +119,6 @@ jobs:
         env:
           HTTP_PROXY_PUBLIC: localhost:8080
         run: |
+          export AWS_CONFIG_FILE="$HOME/.aws/config";
+          export AWS_SHARED_CREDENTIALS_FILE="$HOME/.aws/credentials";
           ./build/release/test/unittest test/sql/env/proxy/aws_secret_http_proxy_with_auth.test
