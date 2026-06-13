@@ -14,6 +14,10 @@ require-env AWS_SECRET_ACCESS_KEY
 
 require-env AWS_DEFAULT_REGION
 
+require-env AWS_CONFIG_FILE
+
+require-env AWS_SHARED_CREDENTIALS_FILE
+
 # secret key must appear as <redacted> in output; no session token in this env so NULL
 query IIII
 CALL load_aws_credentials();

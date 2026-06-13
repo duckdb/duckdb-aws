@@ -118,6 +118,9 @@ static void LoadAWSCredentialsFun(ClientContext &context, TableFunctionInput &da
 	output.SetValue(3, 0, load_result.set_region.empty() ? Value(nullptr) : load_result.set_region);
 
 	output.SetCardinality(1);
+	for (idx_t i = 0; i < output.ColumnCount(); i++) {
+		FlatVector::SetSize(output.data[i], count_t(1));
+	}
 
 	data.finished = true;
 }

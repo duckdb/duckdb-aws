@@ -12,6 +12,10 @@ require-env DUCKDB_S3_USE_SSL
 
 require-env S3_TEST_SERVER_AVAILABLE 1
 
+require-env AWS_CONFIG_FILE
+
+require-env AWS_SHARED_CREDENTIALS_FILE
+
 set ignore_error_messages
 
 # Without params, this will use the DefaultAWSCredentialsProviderChain (https://sdk.amazonaws.com/cpp/api/LATEST/root/html/md_docs_2_credentials___providers.html)

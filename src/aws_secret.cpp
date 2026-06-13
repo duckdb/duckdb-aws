@@ -74,14 +74,14 @@ static void ParseCoreS3Config(CreateSecretInput &input, KeyValueSecret &secret) 
 	for (const auto &val : options) {
 		auto set_region_param = input.options.find(val);
 		if (set_region_param != input.options.end()) {
-			secret.secret_map[val] = set_region_param->second;
+			secret.secret_map[Identifier(val)] = set_region_param->second;
 		}
 	}
 }
 
 //! This constructs the base S3 Type secret
-static unique_ptr<KeyValueSecret> ConstructBaseS3Secret(vector<string> &prefix_paths_p, string &type, string &provider,
-                                                        string &name) {
+static unique_ptr<KeyValueSecret> ConstructBaseS3Secret(vector<string> &prefix_paths_p, const Identifier &type,
+                                                        const Identifier &provider, const Identifier &name) {
 	auto return_value = make_uniq<KeyValueSecret>(prefix_paths_p, type, provider, name);
 	return_value->redact_keys = {"secret", "session_token"};
 	return return_value;
@@ -309,7 +309,7 @@ CreateRDSSecretWithProvider(std::shared_ptr<DuckDBCustomAWSCredentialsProviderCh
 
 	if (!generate_secret_token) {
 		for (auto &en : input.options) {
-			result->secret_map[en.first] = en.second;
+			result->secret_map[Identifier(en.first)] = en.second;
 		}
 		return result;
 	}
@@ -467,7 +467,7 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 		child_list_t<Value> struct_fields;
 		for (const auto &named_param : input.options) {
 			auto lower_name = StringUtil::Lower(named_param.first);
-			struct_fields.push_back({lower_name, named_param.second});
+			struct_fields.emplace_back(lower_name, named_param.second);
 		}
 		result->secret_map["refresh_info"] = Value::STRUCT(struct_fields);
 	}
