@@ -18,52 +18,13 @@ require-env AWS_SHARED_CREDENTIALS_FILE
 
 set ignore_error_messages
 
-# Without params, this will use the DefaultAWSCredentialsProviderChain (https://sdk.amazonaws.com/cpp/api/LATEST/root/html/md_docs_2_credentials___providers.html)
-query IIII
-CALL load_aws_credentials();
-----
-minio_duckdb_user	<redacted>	NULL	eu-west-1
-
-query I
-select value from duckdb_settings() where name='s3_secret_access_key';
-----
-minio_duckdb_user_password
-
-query I
-select value from duckdb_settings() where name='s3_access_key_id';
-----
-minio_duckdb_user
-
-# You can specify which config profile to use, this uses the ProfileConfigFileAWSCredentialsProvider directly
-query IIII
-CALL load_aws_credentials('minio-testing-2');
-----
-minio_duckdb_user_2	<redacted>	NULL	eu-west-1
-
-# You can disable secret redaction to make load_aws_credentials print the secret key
-query IIII
-CALL load_aws_credentials(redact_secret=false);
-----
-minio_duckdb_user	minio_duckdb_user_password	NULL	eu-west-1
-
-# You can also skip loading the region to only set the main credentials
-query IIII
-CALL load_aws_credentials(set_region=false);
-----
-minio_duckdb_user	<redacted>	NULL	NULL
-
-query I
-select value from duckdb_settings() where name='s3_secret_access_key';
-----
-minio_duckdb_user_password
-
-query I
-select value from duckdb_settings() where name='s3_access_key_id';
-----
-minio_duckdb_user
-
 statement ok
-CALL load_aws_credentials();
+CREATE PERSISTENT SECRET (
+    TYPE S3,
+    PROVIDER credential_chain,
+    ENDPOINT '{DUCKDB_S3_ENDPOINT}',
+    USE_SSL '{DUCKDB_S3_USE_SSL}'
+)
 
 statement ok
 COPY (select 123 as column) to 's3://test-bucket/test_basic/test.csv';
@@ -73,11 +34,15 @@ SELECT * FROM 's3://test-bucket/test_basic/test.csv';
 ----
 123
 
-# Now when we select a failing profile, the query should fail
-query IIII
-CALL load_aws_credentials('minio-testing-invalid');
-----
-minio_duckdb_user_invalid	<redacted>	completelybogussessiontoken	the-moon-123
+# set a faulty region value on purpose
+statement ok
+CREATE OR REPLACE PERSISTENT SECRET (
+  TYPE S3,
+  PROVIDER credential_chain,
+  REGION 'the-moon-123',
+  ENDPOINT '{DUCKDB_S3_ENDPOINT}',
+  USE_SSL '{DUCKDB_S3_USE_SSL}'
+)
 
 # Malformed region: throws 400
 statement error
@@ -87,7 +52,14 @@ HTTP 400
 
 # reset region
 statement ok
-set s3_region='eu-west-1';
+CREATE OR REPLACE PERSISTENT SECRET (
+TYPE S3,
+PROVIDER credential_chain,
+PROFILE 'minio-testing-invalid',
+REGION 'eu-west-1',
+ENDPOINT '{DUCKDB_S3_ENDPOINT}',
+USE_SSL '{DUCKDB_S3_USE_SSL}'
+)
 
 # now http 403 is thrown for invalid credentials
 statement error
@@ -95,31 +67,14 @@ SELECT * FROM 's3://test-bucket/test_basic/test.csv';
 ----
 HTTP 403
 
-# Now resetting to one of the working profiles and it works again
+# Reset to a working secret
 statement ok
-CALL load_aws_credentials();
-
-query I
-SELECT * FROM 's3://test-bucket/test_basic/test.csv';
-----
-123
-
-# Trying to access a profile that doesn't exist will load the default profile
-query IIII
-CALL load_aws_credentials('profile-doesnt-exists-altogether');
-----
-NULL	NULL	NULL	eu-west-1
-
-query IIII
-CALL load_aws_credentials(NULL);
-----
-NULL	NULL	NULL	eu-west-1
-
-# Key is untouched
-query I
-select value from duckdb_settings() where name='s3_secret_access_key';
-----
-minio_duckdb_user_password
+CREATE OR REPLACE PERSISTENT SECRET (
+TYPE S3,
+PROVIDER credential_chain,
+ENDPOINT '{DUCKDB_S3_ENDPOINT}',
+USE_SSL '{DUCKDB_S3_USE_SSL}'
+)
 
 # Query still works
 query I
