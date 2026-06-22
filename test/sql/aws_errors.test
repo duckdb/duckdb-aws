@@ -1,0 +1,26 @@
+# name: test/sql/aws_errors.test
+# description: test aws extension
+# group: [sql]
+
+require no_extension_autoloading "EXPECTED: Test relies on explcit INSTALL and LOAD"
+
+# Before we load the extension, this will fail
+statement error
+create secret s1 (type s3, provider 'credential_chain');
+----
+Invalid Input Error: Secret provider 'credential_chain' for type 's3' does not exist, but it exists in the aws extension.
+
+# Require statement will ensure this test is run with this extension loaded
+require aws
+
+# load_aws_credentials only works with httpfs loaded
+statement error
+create secret s1 (type s3, provider 'credential_chain');
+----
+Invalid Configuration Error: Secret Validation Failure: during `create` using the following:
+Credential Chain: 'config'
+
+require httpfs
+
+statement ok
+create secret s1 (type s3, provider 'credential_chain');
