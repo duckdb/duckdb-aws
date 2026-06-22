@@ -152,7 +152,7 @@ static unique_ptr<FunctionData> CloudFormationCreateStackBind(ClientContext &con
 	result->options = UnpackStringMap(input.inputs[2]);
 
 	for (auto &np : input.named_parameters) {
-		auto key = StringUtil::Lower(np.first);
+		auto key = StringUtil::Lower(np.first.GetIdentifierName());
 		if (key == "region") {
 			if (!np.second.IsNull()) {
 				result->has_region_override = true;
@@ -576,7 +576,7 @@ static unique_ptr<FunctionData> CloudFormationListStacksBind(ClientContext &cont
 	}
 
 	for (auto &np : input.named_parameters) {
-		auto key = StringUtil::Lower(np.first);
+		auto key = StringUtil::Lower(np.first.GetIdentifierName());
 		if (key == "status_filter") {
 			if (!np.second.IsNull()) {
 				auto &children = ListValue::GetChildren(np.second);
