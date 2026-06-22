@@ -197,7 +197,7 @@ static void CloudFormationCreateStackFun(ClientContext &context, TableFunctionIn
 	                                            opt("web_identity_token_file"), opt("session_name"));
 	auto client_config = BuildClientConfigWithCa();
 	client_config.region = region.c_str();
-	Aws::CloudFormation::CloudFormationClient cfn(provider, client_config);
+	Aws::CloudFormation::CloudFormationClient cloudformation_client(provider, client_config);
 
 	bool template_is_url = LooksLikeUrl(data.template_arg);
 
@@ -209,7 +209,7 @@ static void CloudFormationCreateStackFun(ClientContext &context, TableFunctionIn
 	} else {
 		summary_req.SetTemplateBody(data.template_arg.c_str());
 	}
-	auto summary_outcome = cfn.GetTemplateSummary(summary_req);
+	auto summary_outcome = cloudformation_client.GetTemplateSummary(summary_req);
 	if (!summary_outcome.IsSuccess()) {
 		const auto &err = summary_outcome.GetError();
 		throw IOException("CloudFormation GetTemplateSummary failed: %s - %s", string(err.GetExceptionName().c_str()),
@@ -325,7 +325,7 @@ static void CloudFormationCreateStackFun(ClientContext &context, TableFunctionIn
 		req.SetTags(cloudformation_tags);
 	}
 
-	auto outcome = cfn.CreateStack(req);
+	auto outcome = cloudformation_client.CreateStack(req);
 	if (!outcome.IsSuccess()) {
 		const auto &err = outcome.GetError();
 		throw IOException("CloudFormation CreateStack failed: %s - %s", string(err.GetExceptionName().c_str()),
@@ -432,11 +432,11 @@ static void CloudFormationDescribeStackFun(ClientContext &context, TableFunction
 	auto provider = BuildAwsCredentialsProvider("", /*require_credentials=*/true);
 	auto cfg = BuildClientConfigWithCa();
 	cfg.region = data.handle.region.c_str();
-	Aws::CloudFormation::CloudFormationClient cfn(provider, cfg);
+	Aws::CloudFormation::CloudFormationClient cloudformation_client(provider, cfg);
 
 	Aws::CloudFormation::Model::DescribeStacksRequest req;
 	req.SetStackName(data.handle.stack_ref.c_str());
-	auto outcome = cfn.DescribeStacks(req);
+	auto outcome = cloudformation_client.DescribeStacks(req);
 	if (!outcome.IsSuccess()) {
 		const auto &err = outcome.GetError();
 		throw IOException("CloudFormation DescribeStacks failed: %s - %s", string(err.GetExceptionName().c_str()),
@@ -520,11 +520,11 @@ static void CloudFormationDeleteStackFun(ClientContext &context, TableFunctionIn
 	auto provider = BuildAwsCredentialsProvider("", /*require_credentials=*/true);
 	auto cfg = BuildClientConfigWithCa();
 	cfg.region = data.handle.region.c_str();
-	Aws::CloudFormation::CloudFormationClient cfn(provider, cfg);
+	Aws::CloudFormation::CloudFormationClient cloudformation_client(provider, cfg);
 
 	Aws::CloudFormation::Model::DeleteStackRequest req;
 	req.SetStackName(data.handle.stack_ref.c_str());
-	auto outcome = cfn.DeleteStack(req);
+	auto outcome = cloudformation_client.DeleteStack(req);
 	if (!outcome.IsSuccess()) {
 		const auto &err = outcome.GetError();
 		throw IOException("CloudFormation DeleteStack failed: %s - %s", string(err.GetExceptionName().c_str()),
@@ -623,7 +623,7 @@ static void CloudFormationListStacksFun(ClientContext &context, TableFunctionInp
 		auto provider = BuildAwsCredentialsProvider("", /*require_credentials=*/true);
 		auto cfg = BuildClientConfigWithCa();
 		cfg.region = data.region.c_str();
-		Aws::CloudFormation::CloudFormationClient cfn(provider, cfg);
+		Aws::CloudFormation::CloudFormationClient cloudformation_client(provider, cfg);
 
 		Aws::String next_token;
 		do {
@@ -634,7 +634,7 @@ static void CloudFormationListStacksFun(ClientContext &context, TableFunctionInp
 			if (!next_token.empty()) {
 				req.SetNextToken(next_token);
 			}
-			auto outcome = cfn.ListStacks(req);
+			auto outcome = cloudformation_client.ListStacks(req);
 			if (!outcome.IsSuccess()) {
 				const auto &err = outcome.GetError();
 				throw IOException("CloudFormation ListStacks failed: %s - %s",
