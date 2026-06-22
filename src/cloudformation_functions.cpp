@@ -293,7 +293,6 @@ static void CloudFormationCreateStackFun(ClientContext &context, TableFunctionIn
 	set_tag("created-by", "duckdb-aws");
 	set_tag("created-by-version", DUCKDB_AWS_GIT_SHA);
 	set_tag("duckdb-version", DuckDB::LibraryVersion());
-	set_tag("managed-by", "duckdb-aws");
 	set_tag("duckdb-session-id", SessionId());
 	if (!metadata_stack_name.empty()) {
 		set_tag("stack-name", metadata_stack_name);
