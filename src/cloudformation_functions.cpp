@@ -238,6 +238,7 @@ static void CloudFormationCreateStackFun(ClientContext &context, TableFunctionIn
 	// explicit names that exceed the limit.
 	string stack_name;
 	if (!data.name_arg.empty()) {
+		// Explicit name
 		if (data.name_arg.size() > MAX_STACK_NAME_LEN) {
 			throw InvalidInputException(
 			    "cloudformation_create_stack: explicit name '%s' is %llu chars; max %llu "
@@ -247,6 +248,7 @@ static void CloudFormationCreateStackFun(ClientContext &context, TableFunctionIn
 		}
 		stack_name = data.name_arg;
 	} else {
+		// Auto-generate prefix, then append UUID
 		string prefix;
 		if (!metadata_stack_name.empty()) {
 			prefix = SanitizeNameFragment(metadata_stack_name);
@@ -272,10 +274,10 @@ static void CloudFormationCreateStackFun(ClientContext &context, TableFunctionIn
 			throw InvalidInputException(
 			    "cloudformation_create_stack: option '%s' is not a parameter declared by the template", kv.key);
 		}
-		Aws::CloudFormation::Model::Parameter p;
-		p.SetParameterKey(kv.key.c_str());
-		p.SetParameterValue(kv.value.c_str());
-		cloudformation_params.push_back(p);
+		Aws::CloudFormation::Model::Parameter param;
+		param.SetParameterKey(kv.key.c_str());
+		param.SetParameterValue(kv.value.c_str());
+		cloudformation_params.push_back(param);
 	}
 
 	// Tags: provenance auto-tags first, then caller-supplied extras (which
