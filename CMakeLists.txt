@@ -16,7 +16,7 @@ build_loadable_extension(${TARGET_NAME} ${PARAMETERS} ${EXTENSION_SOURCES})
 # Weirdly we need to manually to this, otherwise linking against
 # ${AWSSDK_LINK_LIBRARIES} fails for some reason
 find_package(ZLIB REQUIRED)
-find_package(AWSSDK REQUIRED COMPONENTS core sso sts identity-management rds)
+find_package(AWSSDK REQUIRED COMPONENTS core sso sts identity-management rds redshift)
 
 # Build static lib
 target_include_directories(${EXTENSION_NAME}

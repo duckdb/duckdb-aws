@@ -13,6 +13,8 @@
 #include <aws/core/config/AWSProfileConfigLoaderBase.h>
 #include <aws/identity-management/auth/STSAssumeRoleCredentialsProvider.h>
 #include <aws/rds/RDSClient.h>
+#include <aws/redshift/RedshiftClient.h>
+#include <aws/redshift/model/GetClusterCredentialsWithIAMRequest.h>
 #include <aws/sts/STSClient.h>
 
 #include <sys/stat.h>
@@ -325,6 +327,102 @@ CreateRDSSecretWithProvider(std::shared_ptr<DuckDBCustomAWSCredentialsProviderCh
 	return result;
 }
 
+struct RedshiftIamCredentials {
+	string db_user;
+	string db_password;
+	string expiration;
+};
+
+//! Calls the Redshift `GetClusterCredentialsWithIAM` API and returns the temporary
+//! database user/password it mints. The provider supplies (and signs with) the AWS
+//! identity resolved from the credential chain; the returned credentials are scoped
+//! to the cluster and short-lived (see DurationSeconds, default ~900s).
+static RedshiftIamCredentials
+GenerateRedshiftCredentials(std::shared_ptr<DuckDBCustomAWSCredentialsProviderChain> &provider,
+                            const string &cluster_id, const string &db_name, const string &region,
+                            int duration_seconds) {
+	Aws::Client::ClientConfiguration config = BuildClientConfigWithCa();
+	config.region = region;
+	Aws::Redshift::RedshiftClient redshift_client(provider, config);
+
+	Aws::Redshift::Model::GetClusterCredentialsWithIAMRequest request;
+	request.SetClusterIdentifier(cluster_id.c_str());
+	if (!db_name.empty()) {
+		request.SetDbName(db_name.c_str());
+	}
+	if (duration_seconds > 0) {
+		request.SetDurationSeconds(duration_seconds);
+	}
+
+	auto outcome = redshift_client.GetClusterCredentialsWithIAM(request);
+	if (!outcome.IsSuccess()) {
+		throw InvalidConfigurationException(
+		    "Secret Validation Failure: GetClusterCredentialsWithIAM failed for Redshift cluster '%s': %s", cluster_id,
+		    string(outcome.GetError().GetMessage().c_str()));
+	}
+
+	auto &api_result = outcome.GetResult();
+	RedshiftIamCredentials creds;
+	creds.db_user = string(api_result.GetDbUser().c_str());
+	creds.db_password = string(api_result.GetDbPassword().c_str());
+	creds.expiration =
+	    string(api_result.GetExpiration().ToGmtString(Aws::Utils::DateFormat::ISO_8601).c_str());
+	return creds;
+}
+
+//! Single-secret Redshift path: mints temporary IAM credentials at CREATE SECRET
+//! time and stores them alongside the connection details, so the secret can be
+//! consumed directly by a Postgres-protocol ATTACH. Because the minted credentials
+//! are short-lived, this secret is intended for immediate use rather than as a
+//! long-lived / persistent secret.
+static unique_ptr<BaseSecret>
+CreateRedshiftSecretWithProvider(std::shared_ptr<DuckDBCustomAWSCredentialsProviderChain> &provider,
+                                 CreateSecretInput &input, const string &region) {
+	string cluster_id = TryGetStringParam(input, "redshift_cluster_id");
+	string db_name = TryGetStringParam(input, "redshift_db_name");
+	string host = TryGetStringParam(input, "redshift_host");
+	string port = TryGetStringParam(input, "redshift_port");
+	if (cluster_id.empty() || host.empty() || port.empty() || region.empty()) {
+		throw InvalidInputException("Invalid Redshift secret parameters, 'REDSHIFT_CLUSTER_ID', 'REDSHIFT_HOST', "
+		                            "'REDSHIFT_PORT' and 'REGION' options must be specified");
+	}
+
+	int duration_seconds = 0;
+	string duration = TryGetStringParam(input, "redshift_duration_seconds");
+	if (!duration.empty()) {
+		try {
+			duration_seconds = std::stoi(duration);
+		} catch (const std::exception &) {
+			throw InvalidInputException("'REDSHIFT_DURATION_SECONDS' must be an integer, got '%s'", duration);
+		}
+	}
+
+	auto creds = GenerateRedshiftCredentials(provider, cluster_id, db_name, region, duration_seconds);
+
+	vector<string> scope;
+	auto result = ConstructBaseS3Secret(scope, input.type, input.provider, input.name);
+	// The minted database password is the sensitive field for a Redshift secret.
+	result->redact_keys = {"password"};
+
+	// Connection fields consumed by a Postgres-protocol ATTACH. These must use the
+	// libpq parameter names the postgres extension recognizes (host/port/dbname/...),
+	// not friendly aliases: e.g. 'database' is silently ignored, so dbname would
+	// default to the username. Redshift also requires SSL, so default sslmode=require.
+	result->secret_map["host"] = Value(host);
+	result->secret_map["port"] = Value(port);
+	if (!db_name.empty()) {
+		result->secret_map["dbname"] = Value(db_name);
+	}
+	result->secret_map["user"] = Value(creds.db_user);
+	result->secret_map["password"] = Value(creds.db_password);
+	result->secret_map["sslmode"] = Value("require");
+	result->secret_map["region"] = Value(region);
+	if (!creds.expiration.empty()) {
+		result->secret_map["expiration"] = Value(creds.expiration);
+	}
+	return std::move(result);
+}
+
 //! This is the actual callback function
 static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &context, CreateSecretInput &input) {
 	Aws::Auth::AWSCredentials credentials;
@@ -391,6 +489,16 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 		                                                                         profile, assume_role, external_id,
 		                                                                         web_identity_token_file, session_name);
 		return CreateRDSSecretWithProvider(provider, input, region);
+	}
+
+	if (input.type == "redshift") {
+		if (chain.empty()) {
+			throw InvalidConfigurationException("Invalid Redshift secret parameters, 'CHAIN' option must be specified");
+		}
+		auto provider = Aws::MakeShared<DuckDBCustomAWSCredentialsProviderChain>(
+		    "redshift", chain, require_credentials, profile, assume_role, external_id, web_identity_token_file,
+		    session_name);
+		return CreateRedshiftSecretWithProvider(provider, input, region);
 	}
 
 	if (region.empty()) {
@@ -521,7 +629,16 @@ void CreateAwsSecretFunctions::InitializeCurlCertificates(DatabaseInstance &db) 
 }
 
 void CreateAwsSecretFunctions::Register(ExtensionLoader &loader) {
-	vector<string> types = {"s3", "r2", "gcs", "aws", "rds"};
+	// The s3/r2/gcs/aws secret types are registered by httpfs, and rds by the postgres
+	// extension. 'redshift' is owned by this extension, so we must register the type
+	// ourselves; without this CREATE SECRET fails with "Secret type 'redshift' not found".
+	SecretType redshift_secret_type;
+	redshift_secret_type.name = "redshift";
+	redshift_secret_type.deserializer = KeyValueSecret::Deserialize<KeyValueSecret>;
+	redshift_secret_type.default_provider = "credential_chain";
+	loader.RegisterSecretType(redshift_secret_type);
+
+	vector<string> types = {"s3", "r2", "gcs", "aws", "rds", "redshift"};
 
 	for (const auto &type : types) {
 		// Register the credential_chain secret provider
@@ -557,6 +674,14 @@ void CreateAwsSecretFunctions::Register(ExtensionLoader &loader) {
 			cred_chain_function.named_parameters["rds_host"] = LogicalType::VARCHAR;
 			cred_chain_function.named_parameters["rds_port"] = LogicalType::VARCHAR;
 			cred_chain_function.named_parameters["rds_template_secret_name"] = LogicalType::VARCHAR;
+		}
+
+		if (type == "redshift") {
+			cred_chain_function.named_parameters["redshift_cluster_id"] = LogicalType::VARCHAR;
+			cred_chain_function.named_parameters["redshift_db_name"] = LogicalType::VARCHAR;
+			cred_chain_function.named_parameters["redshift_host"] = LogicalType::VARCHAR;
+			cred_chain_function.named_parameters["redshift_port"] = LogicalType::VARCHAR;
+			cred_chain_function.named_parameters["redshift_duration_seconds"] = LogicalType::VARCHAR;
 		}
 
 		// Param for configuring the chain that is used

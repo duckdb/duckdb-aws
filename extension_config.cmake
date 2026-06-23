@@ -5,3 +5,14 @@ duckdb_extension_load(aws
     SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR}
     LOAD_TESTS
 )
+
+# Build the postgres scanner for the redshift action (e.g. redshift attach).
+# Pinned to the ref/patches/submodule duckdb itself uses for this duckdb version, see
+# duckdb/.github/config/extensions/postgres_scanner.cmake
+duckdb_extension_load(postgres_scanner
+    DONT_LINK
+    GIT_URL https://github.com/duckdb/duckdb-postgres
+    GIT_TAG f77b0cb511748fd70fb8a4eb265e2990599d286c
+    SUBMODULES database-connector
+    APPLY_PATCHES
+)
