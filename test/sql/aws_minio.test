@@ -88,3 +88,7 @@ query I
 SELECT value FROM duckdb_settings() WHERE name = 's3_secret_access_key';
 ----
 NULL
+
+query II
+select * from duckdb_settings;
+----
