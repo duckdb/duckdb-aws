@@ -476,6 +476,13 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 		result->secret_map["key_id"] = Value(credentials.GetAWSAccessKeyId());
 		result->secret_map["secret"] = Value(credentials.GetAWSSecretKey());
 		result->secret_map["session_token"] = Value(credentials.GetSessionToken());
+
+		// Store credential expiration as epoch seconds so consumers (e.g., duckdb-iceberg)
+		// can refresh proactively at ~80% TTL instead of guessing with a fixed timer.
+		auto expiration = credentials.GetExpiration();
+		if (expiration != Aws::Utils::DateTime()) {
+			result->secret_map["expiration_epoch"] = Value::BIGINT(expiration.Seconds());
+		}
 	}
 
 	ParseCoreS3Config(input, *result);
