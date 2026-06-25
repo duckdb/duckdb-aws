@@ -81,3 +81,14 @@ query I
 SELECT * FROM 's3://test-bucket/test_basic/test.csv';
 ----
 123
+
+
+# testing something
+query I
+SELECT value FROM duckdb_settings() WHERE name = 's3_secret_access_key';
+----
+NULL
+
+query II
+select * from duckdb_settings();
+----
