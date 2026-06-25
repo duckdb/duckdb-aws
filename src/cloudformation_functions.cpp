@@ -2,6 +2,7 @@
 #include "aws_client.hpp"
 
 #include "duckdb.hpp"
+#include "duckdb/common/case_insensitive_map.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/uuid.hpp"
@@ -50,14 +51,22 @@ vector<StringKV> UnpackStringMap(const Value &map_value) {
 	return out;
 }
 
-const string *FindCI(const vector<StringKV> &kvs, const string &key) {
-	auto lowered = StringUtil::Lower(key);
-	for (auto &kv : kvs) {
-		if (StringUtil::Lower(kv.key) == lowered) {
-			return &kv.value;
-		}
+//! Case-insensitive variant: keys are matched/looked-up case-insensitively but
+//! stored with their original case (e.g. for case-sensitive CFN parameter names).
+case_insensitive_map_t<string> UnpackStringMapCI(const Value &map_value) {
+	case_insensitive_map_t<string> out;
+	if (map_value.IsNull()) {
+		return out;
 	}
-	return nullptr;
+	auto &children = MapValue::GetChildren(map_value);
+	for (auto &child : children) {
+		auto &kv = StructValue::GetChildren(child);
+		if (kv[0].IsNull()) {
+			continue;
+		}
+		out[StringValue::Get(kv[0])] = kv[1].IsNull() ? string() : StringValue::Get(kv[1]);
+	}
+	return out;
 }
 
 bool LooksLikeUrl(const string &s) {
@@ -131,7 +140,7 @@ const std::set<string> RESERVED_OPTION_KEYS = {
 struct CloudFormationCreateStackBindData : public TableFunctionData {
 	string template_arg;
 	string name_arg;
-	vector<StringKV> options;
+	case_insensitive_map_t<string> options;
 	bool has_region_override = false;
 	string region_override;
 	vector<StringKV> tags_override;
@@ -149,7 +158,7 @@ static unique_ptr<FunctionData> CloudFormationCreateStackBind(ClientContext &con
 	if (!input.inputs[1].IsNull()) {
 		result->name_arg = StringValue::Get(input.inputs[1]);
 	}
-	result->options = UnpackStringMap(input.inputs[2]);
+	result->options = UnpackStringMapCI(input.inputs[2]);
 
 	for (auto &np : input.named_parameters) {
 		auto key = StringUtil::Lower(np.first.GetIdentifierName());
@@ -179,8 +188,8 @@ static void CloudFormationCreateStackFun(ClientContext &context, TableFunctionIn
 	string region;
 	if (data.has_region_override) {
 		region = data.region_override;
-	} else if (auto *r = FindCI(data.options, "region")) {
-		region = *r;
+	} else if (auto it = data.options.find("region"); it != data.options.end()) {
+		region = it->second;
 	}
 	if (region.empty()) {
 		throw InvalidInputException(
@@ -188,8 +197,8 @@ static void CloudFormationCreateStackFun(ClientContext &context, TableFunctionIn
 	}
 
 	auto opt = [&](const string &key) -> string {
-		auto *v = FindCI(data.options, key);
-		return v ? *v : string();
+		auto it = data.options.find(key);
+		return it != data.options.end() ? it->second : string();
 	};
 
 	auto provider = BuildAwsCredentialsProvider(opt("chain"), /*require_credentials=*/true, opt("profile"),
@@ -267,16 +276,16 @@ static void CloudFormationCreateStackFun(ClientContext &context, TableFunctionIn
 	// Route every non-reserved option key to a declared template parameter.
 	Aws::Vector<Aws::CloudFormation::Model::Parameter> cloudformation_params;
 	for (auto &kv : data.options) {
-		if (RESERVED_OPTION_KEYS.count(StringUtil::Lower(kv.key))) {
+		if (RESERVED_OPTION_KEYS.count(StringUtil::Lower(kv.first))) {
 			continue;
 		}
-		if (!declared_params.count(kv.key)) {
+		if (!declared_params.count(kv.first)) {
 			throw InvalidInputException(
-			    "cloudformation_create_stack: option '%s' is not a parameter declared by the template", kv.key);
+			    "cloudformation_create_stack: option '%s' is not a parameter declared by the template", kv.first);
 		}
 		Aws::CloudFormation::Model::Parameter param;
-		param.SetParameterKey(kv.key.c_str());
-		param.SetParameterValue(kv.value.c_str());
+		param.SetParameterKey(kv.first.c_str());
+		param.SetParameterValue(kv.second.c_str());
 		cloudformation_params.push_back(param);
 	}
 
@@ -364,17 +373,15 @@ struct CloudFormationHandle {
 };
 
 CloudFormationHandle ParseHandle(const Value &handle_value, const char *fn_name) {
-	auto kvs = UnpackStringMap(handle_value);
+	auto kvs = UnpackStringMapCI(handle_value);
 	CloudFormationHandle h;
-	if (auto *v = FindCI(kvs, "stack_id")) {
-		h.stack_id = *v;
-	}
-	if (auto *v = FindCI(kvs, "stack_name")) {
-		h.stack_name = *v;
-	}
-	if (auto *v = FindCI(kvs, "region")) {
-		h.region = *v;
-	}
+	auto get = [&](const string &key) -> string {
+		auto it = kvs.find(key);
+		return it != kvs.end() ? it->second : string();
+	};
+	h.stack_id = get("stack_id");
+	h.stack_name = get("stack_name");
+	h.region = get("region");
 	h.stack_ref = !h.stack_id.empty() ? h.stack_id : h.stack_name;
 	if (h.stack_ref.empty()) {
 		throw InvalidInputException("%s: handle must contain 'stack_id' or 'stack_name'", fn_name);
