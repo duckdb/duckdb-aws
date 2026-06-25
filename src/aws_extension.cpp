@@ -1,5 +1,6 @@
 #include "aws_secret.hpp"
 #include "aws_extension.hpp"
+#include "cloudformation_functions.hpp"
 
 #include "duckdb.hpp"
 #include "duckdb/common/exception.hpp"
@@ -19,6 +20,8 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	CreateAwsSecretFunctions::InitializeCurlCertificates(loader.GetDatabaseInstance());
 	CreateAwsSecretFunctions::Register(loader);
+
+	CloudFormationFunctions::Register(loader);
 }
 
 void AwsExtension::Load(ExtensionLoader &loader) {

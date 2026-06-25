@@ -1,4 +1,5 @@
 #include "aws_secret.hpp"
+#include "aws_client.hpp"
 
 #include "duckdb/common/case_insensitive_map.hpp"
 #include "duckdb/common/exception.hpp"
@@ -43,14 +44,8 @@ static struct {
 	const string default_ = "exists";
 } CreateAwsSecretValidation;
 
-//! Build a ClientConfiguration with the detected CA file path applied (if any).
-//! This is required because libcurl is statically linked from a RHEL-based
-//! manylinux image, so its default CA path is /etc/pki/tls/certs/ca-bundle.crt,
-//! which does not exist on Debian/Ubuntu/Alpine/etc. Without this, every
-//! credentials provider that does its own HTTPS (SSO, STS, RDS, ...) fails the
-//! TLS handshake before it can fetch any credentials.
-//! See duckdb/duckdb#20652, duckdb/duckdb-aws#131.
-static Aws::Client::ClientConfiguration BuildClientConfigWithCa() {
+//! See aws_client.hpp for rationale.
+Aws::Client::ClientConfiguration BuildClientConfigWithCa() {
 	Aws::Client::ClientConfiguration cfg;
 	if (!SELECTED_CURL_CERT_PATH.empty()) {
 		cfg.caFile = SELECTED_CURL_CERT_PATH;
@@ -514,6 +509,22 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 	}
 
 	return std::move(result);
+}
+
+std::shared_ptr<Aws::Auth::AWSCredentialsProvider>
+BuildAwsCredentialsProvider(const std::string &chain, bool require_credentials, const std::string &profile,
+                            const std::string &assume_role_arn, const std::string &external_id,
+                            const std::string &web_identity_token_file, const std::string &session_name) {
+	if (chain.empty()) {
+		if (!profile.empty()) {
+			return Aws::MakeShared<Aws::Auth::ProfileConfigFileAWSCredentialsProvider>("DuckDBAwsProfile",
+			                                                                            profile.c_str());
+		}
+		return Aws::MakeShared<Aws::Auth::DefaultAWSCredentialsProviderChain>("DuckDBAwsDefault");
+	}
+	return Aws::MakeShared<DuckDBCustomAWSCredentialsProviderChain>("DuckDBCustomChain", chain, require_credentials,
+	                                                                 profile, assume_role_arn, external_id,
+	                                                                 web_identity_token_file, session_name);
 }
 
 void CreateAwsSecretFunctions::InitializeCurlCertificates(DatabaseInstance &db) {
