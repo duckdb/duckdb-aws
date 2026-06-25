@@ -4,6 +4,7 @@
 #include "duckdb.hpp"
 #include "duckdb/common/case_insensitive_map.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/insertion_order_preserving_map.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/uuid.hpp"
 #include "duckdb/function/scalar_function.hpp"
@@ -30,13 +31,13 @@ namespace duckdb {
 
 namespace {
 
-struct StringKV {
-	string key;
-	string value;
-};
+//! Case-sensitive, insertion-order-preserving string map. The index map must be
+//! spelled out because the type defaults to case-insensitive matching, which is
+//! wrong for case-sensitive keys like AWS tag keys.
+using OrderedStringMap = InsertionOrderPreservingMap<string, string, unordered_map<string, idx_t>>;
 
-vector<StringKV> UnpackStringMap(const Value &map_value) {
-	vector<StringKV> out;
+OrderedStringMap UnpackStringMap(const Value &map_value) {
+	OrderedStringMap out;
 	if (map_value.IsNull()) {
 		return out;
 	}
@@ -46,7 +47,7 @@ vector<StringKV> UnpackStringMap(const Value &map_value) {
 		if (kv[0].IsNull()) {
 			continue;
 		}
-		out.push_back({StringValue::Get(kv[0]), kv[1].IsNull() ? string() : StringValue::Get(kv[1])});
+		out[StringValue::Get(kv[0])] = kv[1].IsNull() ? string() : StringValue::Get(kv[1]);
 	}
 	return out;
 }
@@ -143,7 +144,7 @@ struct CloudFormationCreateStackBindData : public TableFunctionData {
 	case_insensitive_map_t<string> options;
 	bool has_region_override = false;
 	string region_override;
-	vector<StringKV> tags_override;
+	OrderedStringMap tags_override;
 	bool finished = false;
 };
 
@@ -290,32 +291,24 @@ static void CloudFormationCreateStackFun(ClientContext &context, TableFunctionIn
 	}
 
 	// Tags: provenance auto-tags first, then caller-supplied extras (which
-	// override on key collision because they're applied last).
-	vector<StringKV> tag_kv;
-	auto set_tag = [&](const string &k, const string &v) {
-		for (auto &existing : tag_kv) {
-			if (existing.key == k) {
-				existing.value = v;
-				return;
-			}
-		}
-		tag_kv.push_back({k, v});
-	};
-	set_tag("created-by", "duckdb-aws");
-	set_tag("created-by-version", DUCKDB_AWS_GIT_SHA);
-	set_tag("duckdb-version", DuckDB::LibraryVersion());
-	set_tag("duckdb-session-id", SessionId());
+	// override on key collision because they're applied last). operator[] gives
+	// last-wins override while keeping insertion order.
+	OrderedStringMap tags;
+	tags["created-by"] = "duckdb-aws";
+	tags["created-by-version"] = DUCKDB_AWS_GIT_SHA;
+	tags["duckdb-version"] = DuckDB::LibraryVersion();
+	tags["duckdb-session-id"] = SessionId();
 	if (!metadata_stack_name.empty()) {
-		set_tag("stack-name", metadata_stack_name);
+		tags["stack-name"] = metadata_stack_name;
 	}
 	for (auto &kv : data.tags_override) {
-		set_tag(kv.key, kv.value);
+		tags[kv.first] = kv.second;
 	}
 	Aws::Vector<Aws::CloudFormation::Model::Tag> cloudformation_tags;
-	for (auto &kv : tag_kv) {
+	for (auto &kv : tags) {
 		Aws::CloudFormation::Model::Tag t;
-		t.SetKey(kv.key.c_str());
-		t.SetValue(kv.value.c_str());
+		t.SetKey(kv.first.c_str());
+		t.SetValue(kv.second.c_str());
 		cloudformation_tags.push_back(t);
 	}
 
