@@ -89,6 +89,40 @@ SELECT * FROM cloudformation_delete_stack(MAP {'stack_name': 's'});
 ----
 handle is missing 'region'
 
+# dry_run does not bypass handle validation on delete either.
+statement error
+SELECT * FROM cloudformation_delete_stack(MAP {'stack_name': 's'}, dry_run := true);
+----
+handle is missing 'region'
+
+# dry_run on delete is the same typed BOOLEAN. A value that failed to parse must
+# not fall through to false and delete a real stack.
+statement error
+SELECT * FROM cloudformation_delete_stack(MAP {'stack_name': 's', 'region': 'us-east-1'}, dry_run := 'maybe');
+----
+Could not convert string 'maybe' to BOOL
+
+# cloudformation_delete_stack exposes the same columns with and without dry_run.
+# A missing column would surface as a binder error rather than the handle error.
+statement error
+SELECT handle, stack_name, stack_id, region, exists, status, termination_protection
+FROM cloudformation_delete_stack(MAP {'stack_name': 's'}, dry_run := true);
+----
+handle is missing 'region'
+
+statement error
+SELECT handle, stack_name, stack_id, region, exists, status, termination_protection
+FROM cloudformation_delete_stack(MAP {'stack_name': 's'});
+----
+handle is missing 'region'
+
+# A dry-run create returns a NULL handle, which delete_stack must refuse rather
+# than silently treat as a deletable stack.
+statement error
+SELECT * FROM cloudformation_delete_stack(NULL::MAP(VARCHAR, VARCHAR), dry_run := true);
+----
+handle must contain 'stack_id' or 'stack_name'
+
 # duckdb_aws_session_id returns a non-empty string.
 query I
 SELECT length(duckdb_aws_session_id()) > 0;

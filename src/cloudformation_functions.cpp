@@ -583,6 +583,7 @@ static void CloudFormationDescribeStackFun(ClientContext &context, TableFunction
 struct CloudFormationDeleteStackBindData : public TableFunctionData {
 	CloudFormationHandle handle;
 	Value handle_value; // original MAP, echoed back verbatim
+	bool dry_run = false;
 	bool finished = false;
 };
 
@@ -593,8 +594,27 @@ static unique_ptr<FunctionData> CloudFormationDeleteStackBind(ClientContext &con
 	result->handle = ParseHandle(input.inputs[0], "cloudformation_delete_stack");
 	result->handle_value = input.inputs[0];
 
+	for (auto &np : input.named_parameters) {
+		auto key = StringUtil::Lower(np.first.GetIdentifierName());
+		if (key == "dry_run") {
+			result->dry_run = !np.second.IsNull() && BooleanValue::Get(np.second);
+		}
+	}
+
 	return_types.emplace_back(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
 	names.emplace_back("handle");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("stack_name");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("stack_id");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("region");
+	return_types.emplace_back(LogicalType::BOOLEAN);
+	names.emplace_back("exists");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("status");
+	return_types.emplace_back(LogicalType::BOOLEAN);
+	names.emplace_back("termination_protection");
 
 	return std::move(result);
 }
@@ -610,18 +630,67 @@ static void CloudFormationDeleteStackFun(ClientContext &context, TableFunctionIn
 	cfg.region = data.handle.region.c_str();
 	Aws::CloudFormation::CloudFormationClient cloudformation_client(provider, cfg);
 
-	Aws::CloudFormation::Model::DeleteStackRequest req;
-	req.SetStackName(data.handle.stack_ref.c_str());
-	auto outcome = cloudformation_client.DeleteStack(req);
-	if (!outcome.IsSuccess()) {
-		const auto &err = outcome.GetError();
-		throw IOException("CloudFormation DeleteStack failed: %s - %s", string(err.GetExceptionName().c_str()),
-		                  string(err.GetMessage().c_str()));
+	// Describe first, on both paths, so the row says the same thing whether or not
+	// the delete fired. DeleteStack itself performs these checks server-side, so a
+	// failure here is never worth aborting a real delete over: swallow it and let
+	// DeleteStack report the authoritative error. On a dry run there is no such
+	// second chance, so anything other than "no such stack" is raised.
+	Value exists;                 // NULL when DescribeStacks could not answer
+	Value status;                 // NULL when the stack is gone or unknown
+	Value termination_protection; // NULL when not reported by CloudFormation
+	Aws::CloudFormation::Model::DescribeStacksRequest desc_req;
+	desc_req.SetStackName(data.handle.stack_ref.c_str());
+	auto desc_outcome = cloudformation_client.DescribeStacks(desc_req);
+	if (desc_outcome.IsSuccess()) {
+		const auto &stacks = desc_outcome.GetResult().GetStacks();
+		if (stacks.empty()) {
+			exists = Value::BOOLEAN(false);
+		} else {
+			const auto &stack = stacks[0];
+			exists = Value::BOOLEAN(true);
+			status = Value(string(
+			    Aws::CloudFormation::Model::StackStatusMapper::GetNameForStackStatus(stack.GetStackStatus()).c_str()));
+			if (stack.EnableTerminationProtectionHasBeenSet()) {
+				termination_protection = Value::BOOLEAN(stack.GetEnableTerminationProtection());
+			}
+		}
+	} else {
+		const auto &err = desc_outcome.GetError();
+		// CloudFormation reports an absent stack as ValidationError. DeleteStack is
+		// idempotent there - it succeeds - so a dry run must report the absence
+		// rather than raise, or it would predict a failure that never happens.
+		if (string(err.GetExceptionName().c_str()) == "ValidationError") {
+			exists = Value::BOOLEAN(false);
+		} else if (data.dry_run) {
+			throw IOException("CloudFormation DescribeStacks failed: %s - %s", string(err.GetExceptionName().c_str()),
+			                  string(err.GetMessage().c_str()));
+		}
 	}
 
-	// Pass-through: echo the input handle byte-for-byte. Any extra keys the
-	// caller put in (annotations, timestamps, custom metadata) survive intact.
-	output.SetValue(0, 0, data.handle_value);
+	// A dry run stops here. The handle is NULL because nothing was deleted, which
+	// also keeps a dry-run row from being mistaken for proof of deletion.
+	Value handle(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
+	if (!data.dry_run) {
+		Aws::CloudFormation::Model::DeleteStackRequest req;
+		req.SetStackName(data.handle.stack_ref.c_str());
+		auto outcome = cloudformation_client.DeleteStack(req);
+		if (!outcome.IsSuccess()) {
+			const auto &err = outcome.GetError();
+			throw IOException("CloudFormation DeleteStack failed: %s - %s", string(err.GetExceptionName().c_str()),
+			                  string(err.GetMessage().c_str()));
+		}
+		// Pass-through: echo the input handle byte-for-byte. Any extra keys the
+		// caller put in (annotations, timestamps, custom metadata) survive intact.
+		handle = data.handle_value;
+	}
+
+	output.SetValue(0, 0, handle);
+	output.SetValue(1, 0, data.handle.stack_name.empty() ? Value() : Value(data.handle.stack_name));
+	output.SetValue(2, 0, data.handle.stack_id.empty() ? Value() : Value(data.handle.stack_id));
+	output.SetValue(3, 0, Value(data.handle.region));
+	output.SetValue(4, 0, exists);
+	output.SetValue(5, 0, status);
+	output.SetValue(6, 0, termination_protection);
 	output.SetCardinality(1);
 	data.finished = true;
 }
@@ -802,6 +871,7 @@ void CloudFormationFunctions::Register(ExtensionLoader &loader) {
 
 	TableFunction delete_fn("cloudformation_delete_stack", {map_vv}, CloudFormationDeleteStackFun,
 	                        CloudFormationDeleteStackBind);
+	delete_fn.named_parameters["dry_run"] = LogicalType::BOOLEAN;
 	loader.RegisterFunction(delete_fn);
 
 	TableFunction list_fn("cloudformation_list_stacks", {LogicalType::VARCHAR}, CloudFormationListStacksFun,
