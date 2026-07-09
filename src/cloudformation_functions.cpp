@@ -126,23 +126,19 @@ const string &SessionId() {
 constexpr idx_t MAX_STACK_NAME_LEN = 34;
 constexpr idx_t MAX_PREFIX_LEN = MAX_STACK_NAME_LEN - 12 - 1; // 21: '<prefix>-<12hex>'
 
-//! Reserved option keys configure the AWS client; everything else in `options`
-//! must match a parameter the template declares.
-const std::set<string> RESERVED_OPTION_KEYS = {
-    "region", "chain", "profile", "assume_role_arn", "external_id", "web_identity_token_file", "session_name"};
-
 } // namespace
 
 //===--------------------------------------------------------------------===//
-// cloudformation_create_stack(template, name, options) [region :=, tags :=]
+// cloudformation_create_stack(template) [name :=, template_parameters :=,
+//                                        tags :=, region :=, dry_run :=]
 //===--------------------------------------------------------------------===//
 
 struct CloudFormationCreateStackBindData : public TableFunctionData {
 	string template_arg;
 	string name_arg;
-	case_insensitive_map_t<string> options;
-	bool has_region_override = false;
-	string region_override;
+	//! Case-sensitive: CloudFormation treats `foo` and `Foo` as distinct parameters.
+	OrderedStringMap template_parameters;
+	string region;
 	OrderedStringMap tags_override;
 	bool dry_run = false;
 	bool finished = false;
@@ -157,24 +153,29 @@ static unique_ptr<FunctionData> CloudFormationCreateStackBind(ClientContext &con
 		throw InvalidInputException("cloudformation_create_stack: the template argument must not be NULL");
 	}
 	result->template_arg = StringValue::Get(input.inputs[0]);
-	if (!input.inputs[1].IsNull()) {
-		result->name_arg = StringValue::Get(input.inputs[1]);
-	}
-	result->options = UnpackStringMapCI(input.inputs[2]);
 
 	for (auto &np : input.named_parameters) {
 		auto key = StringUtil::Lower(np.first.GetIdentifierName());
-		if (key == "region") {
+		if (key == "name") {
 			if (!np.second.IsNull()) {
-				result->has_region_override = true;
-				result->region_override = StringValue::Get(np.second);
+				result->name_arg = StringValue::Get(np.second);
 			}
+		} else if (key == "region") {
+			if (!np.second.IsNull()) {
+				result->region = StringValue::Get(np.second);
+			}
+		} else if (key == "template_parameters") {
+			result->template_parameters = UnpackStringMap(np.second);
 		} else if (key == "tags") {
 			result->tags_override = UnpackStringMap(np.second);
 		} else if (key == "dry_run") {
 			result->dry_run = !np.second.IsNull() && BooleanValue::Get(np.second);
 		}
 	}
+
+	// region is validated in the execution function, not here: throwing during bind
+	// would preempt column resolution, and the tests rely on a missing output column
+	// surfacing as a binder error rather than being masked by this check.
 
 	// The schema does not depend on dry_run: a dry run resolves and validates
 	// exactly as a real create does, it just never calls CreateStack. Only the
@@ -292,14 +293,14 @@ ResolvedStackRequest ResolveStackRequest(Aws::CloudFormation::CloudFormationClie
 		resolved.stack_name = prefix + "-" + ShortRandHex();
 	}
 
-	// Route every non-reserved option key to a declared template parameter.
-	for (auto &kv : data.options) {
-		if (RESERVED_OPTION_KEYS.count(StringUtil::Lower(kv.first))) {
-			continue;
-		}
+	// Every key must name a parameter the template declares. No key is reserved:
+	// credentials come from CREATE SECRET, so a template is free to declare a
+	// parameter called Region or Profile without it being swallowed as config.
+	for (auto &kv : data.template_parameters) {
 		if (!declared_params.count(kv.first)) {
 			throw InvalidInputException(
-			    "cloudformation_create_stack: option '%s' is not a parameter declared by the template", kv.first);
+			    "cloudformation_create_stack: template_parameters['%s'] is not a parameter declared by the template",
+			    kv.first);
 		}
 		unsatisfied_params.erase(kv.first);
 		Aws::CloudFormation::Model::Parameter param;
@@ -312,7 +313,7 @@ ResolvedStackRequest ResolveStackRequest(Aws::CloudFormation::CloudFormationClie
 	// would fail server-side. Report every one of them, not just the first.
 	if (!unsatisfied_params.empty()) {
 		throw InvalidInputException("cloudformation_create_stack: the template requires parameter(s) %s, which have no "
-		                            "default and were not supplied in options",
+		                            "default and were not supplied in template_parameters",
 		                            StringUtil::Join(unsatisfied_params, ", "));
 	}
 
@@ -348,26 +349,17 @@ static void CloudFormationCreateStackFun(ClientContext &context, TableFunctionIn
 		return;
 	}
 
-	// Region: explicit override wins over options['region'].
-	string region;
-	if (data.has_region_override) {
-		region = data.region_override;
-	} else if (auto it = data.options.find("region"); it != data.options.end()) {
-		region = it->second;
-	}
+	const string &region = data.region;
 	if (region.empty()) {
 		throw InvalidInputException(
-		    "cloudformation_create_stack: region is required - set options['region'] or the region:= named parameter");
+		    "cloudformation_create_stack: region is required - set the region:= named parameter");
 	}
 
-	auto opt = [&](const string &key) -> string {
-		auto it = data.options.find(key);
-		return it != data.options.end() ? it->second : string();
-	};
-
-	auto provider =
-	    BuildAwsCredentialsProvider(opt("chain"), /*require_credentials=*/true, opt("profile"), opt("assume_role_arn"),
-	                                opt("external_id"), opt("web_identity_token_file"), opt("session_name"));
+	// Credentials come from CREATE SECRET / the default chain, exactly as they do
+	// for describe_stack, delete_stack and list_stacks. Accepting per-call
+	// credential overrides here and nowhere else meant a stack created under an
+	// assumed role could not be deleted through this extension.
+	auto provider = BuildAwsCredentialsProvider("", /*require_credentials=*/true);
 	auto client_config = BuildClientConfigWithCa();
 	client_config.region = region.c_str();
 	Aws::CloudFormation::CloudFormationClient cloudformation_client(provider, client_config);
@@ -791,12 +783,16 @@ static void DuckDBAwsSessionIdFunction(DataChunk &args, ExpressionState &state, 
 void CloudFormationFunctions::Register(ExtensionLoader &loader) {
 	auto map_vv = LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR);
 
-	TableFunction create_fn("cloudformation_create_stack", {LogicalType::VARCHAR, LogicalType::VARCHAR, map_vv},
-	                        CloudFormationCreateStackFun, CloudFormationCreateStackBind);
+	// The template is the only positional argument: it is what the verb acts on.
+	// Everything else modifies the call.
+	TableFunction create_fn("cloudformation_create_stack", {LogicalType::VARCHAR}, CloudFormationCreateStackFun,
+	                        CloudFormationCreateStackBind);
+	create_fn.named_parameters["name"] = LogicalType::VARCHAR;
 	create_fn.named_parameters["region"] = LogicalType::VARCHAR;
+	create_fn.named_parameters["template_parameters"] = map_vv;
 	create_fn.named_parameters["tags"] = map_vv;
-	// Typed BOOLEAN rather than an options key: a string 'dry_run' that failed to
-	// parse would fall through to false and create a real stack.
+	// Typed BOOLEAN rather than a string key: a value that failed to parse would
+	// fall through to false and create a real stack.
 	create_fn.named_parameters["dry_run"] = LogicalType::BOOLEAN;
 	loader.RegisterFunction(create_fn);
 
