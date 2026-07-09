@@ -2,24 +2,28 @@
 # description: test aws extension
 # group: [sql]
 
-require no_extension_autoloading "EXPECTED: Test relies on explcit INSTALL and LOAD"
+require no_extension_autoloading "EXPECTED: Test relies on explicit INSTALL and LOAD"
 
-# Before we load the extension, this will fail
+# Before we load the extension, the credential_chain provider does not exist
 statement error
-CALL load_aws_credentials();
+create secret s1 (type s3, provider 'credential_chain');
 ----
-Catalog Error: Table Function with name "load_aws_credentials" is not in the catalog, but it exists in the aws extension.
+Invalid Input Error: Secret provider 'credential_chain' for type 's3' does not exist, but it exists in the aws extension.
 
 # Require statement will ensure this test is run with this extension loaded
 require aws
 
-# load_aws_credentials only works with httpfs loaded
+# aws supplies the credential_chain provider, but the s3 secret TYPE itself is
+# registered by httpfs - so without httpfs the secret still cannot be stored.
+# (validation 'none' skips real credential resolution so this is deterministic.)
 statement error
-CALL load_aws_credentials();
+create secret s1 (type s3, provider 'credential_chain', validation 'none');
 ----
-httpfs extension is required for load_aws_credentials
+Secret type 's3' does not exist, but it exists in the httpfs extension
 
 require httpfs
 
+# With both the type (httpfs) and provider (aws) available, and validation
+# disabled so no real AWS credentials are needed, the secret is created.
 statement ok
-CALL load_aws_credentials();
+create secret s1 (type s3, provider 'credential_chain', validation 'none');

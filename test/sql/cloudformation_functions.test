@@ -1,0 +1,60 @@
+# name: test/sql/cloudformation_functions.test
+# description: smoke test for the generic cloudformation_* CloudFormation functions
+# group: [sql]
+
+require no_extension_autoloading "EXPECTED: Test relies on explicit INSTALL and LOAD"
+
+# Before LOAD aws, the functions do not exist.
+statement error
+SELECT * FROM cloudformation_create_stack('x', NULL, MAP {'region': 'us-east-1'});
+----
+
+require aws
+
+# cloudformation_create_stack: a NULL template is rejected at bind time.
+statement error
+SELECT * FROM cloudformation_create_stack(NULL, NULL, MAP {'region': 'us-east-1'});
+----
+template argument must not be NULL
+
+# cloudformation_create_stack: region is required (checked before any AWS call).
+statement error
+SELECT * FROM cloudformation_create_stack('AWSTemplateFormatVersion: 2010-09-09', NULL, MAP {'InstanceType': 't3.micro'});
+----
+region is required
+
+# cloudformation_describe_stack: handle without a stack reference.
+statement error
+SELECT * FROM cloudformation_describe_stack(MAP {'region': 'us-east-1'});
+----
+handle must contain 'stack_id' or 'stack_name'
+
+# cloudformation_describe_stack: handle missing region.
+statement error
+SELECT * FROM cloudformation_describe_stack(MAP {'stack_name': 's'});
+----
+handle is missing 'region'
+
+# cloudformation_delete_stack: handle without a stack reference.
+statement error
+SELECT * FROM cloudformation_delete_stack(MAP {'region': 'us-east-1'});
+----
+handle must contain 'stack_id' or 'stack_name'
+
+# cloudformation_delete_stack: handle missing region.
+statement error
+SELECT * FROM cloudformation_delete_stack(MAP {'stack_name': 's'});
+----
+handle is missing 'region'
+
+# duckdb_aws_session_id returns a non-empty string.
+query I
+SELECT length(duckdb_aws_session_id()) > 0;
+----
+true
+
+# Session id is stable within a session: repeated calls return the same value.
+query I
+SELECT duckdb_aws_session_id() = duckdb_aws_session_id();
+----
+true
