@@ -23,6 +23,33 @@ SELECT * FROM cloudformation_create_stack('AWSTemplateFormatVersion: 2010-09-09'
 ----
 region is required
 
+# dry_run does not bypass argument validation: it skips the mutation, nothing else.
+statement error
+SELECT * FROM cloudformation_create_stack('AWSTemplateFormatVersion: 2010-09-09', NULL, MAP {'InstanceType': 't3.micro'}, dry_run := true);
+----
+region is required
+
+# dry_run is a typed BOOLEAN, so an unparseable value is rejected rather than
+# quietly falling back to false and creating a real stack.
+statement error
+SELECT * FROM cloudformation_create_stack('AWSTemplateFormatVersion: 2010-09-09', NULL, MAP {'region': 'us-east-1'}, dry_run := 'maybe');
+----
+Could not convert string 'maybe' to BOOL
+
+# The output schema does not depend on dry_run. Binding alone proves it; neither
+# statement below reaches an AWS call.
+statement error
+SELECT handle, stack_name, region, parameters, tags, capabilities, description
+FROM cloudformation_create_stack('AWSTemplateFormatVersion: 2010-09-09', NULL, MAP {}, dry_run := true);
+----
+region is required
+
+statement error
+SELECT handle, stack_name, region, parameters, tags, capabilities, description
+FROM cloudformation_create_stack('AWSTemplateFormatVersion: 2010-09-09', NULL, MAP {});
+----
+region is required
+
 # cloudformation_describe_stack: handle without a stack reference.
 statement error
 SELECT * FROM cloudformation_describe_stack(MAP {'region': 'us-east-1'});

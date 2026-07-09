@@ -144,6 +144,7 @@ struct CloudFormationCreateStackBindData : public TableFunctionData {
 	bool has_region_override = false;
 	string region_override;
 	OrderedStringMap tags_override;
+	bool dry_run = false;
 	bool finished = false;
 };
 
@@ -170,11 +171,29 @@ static unique_ptr<FunctionData> CloudFormationCreateStackBind(ClientContext &con
 			}
 		} else if (key == "tags") {
 			result->tags_override = UnpackStringMap(np.second);
+		} else if (key == "dry_run") {
+			result->dry_run = !np.second.IsNull() && BooleanValue::Get(np.second);
 		}
 	}
 
+	// The schema does not depend on dry_run: a dry run resolves and validates
+	// exactly as a real create does, it just never calls CreateStack. Only the
+	// handle differs - it is NULL when nothing was created, which also stops a
+	// dry-run row from being fed to cloudformation_describe_stack/_delete_stack.
 	return_types.emplace_back(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
 	names.emplace_back("handle");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("stack_name");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("region");
+	return_types.emplace_back(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
+	names.emplace_back("parameters");
+	return_types.emplace_back(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
+	names.emplace_back("tags");
+	return_types.emplace_back(LogicalType::LIST(LogicalType::VARCHAR));
+	names.emplace_back("capabilities");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("description");
 
 	return std::move(result);
 }
@@ -355,42 +374,73 @@ static void CloudFormationCreateStackFun(ClientContext &context, TableFunctionIn
 
 	auto resolved = ResolveStackRequest(cloudformation_client, data);
 
-	Aws::CloudFormation::Model::CreateStackRequest req;
-	req.SetStackName(resolved.stack_name.c_str());
-	if (resolved.template_is_url) {
-		req.SetTemplateURL(data.template_arg.c_str());
-	} else {
-		req.SetTemplateBody(data.template_arg.c_str());
-	}
-	if (!resolved.parameters.empty()) {
-		req.SetParameters(resolved.parameters);
-	}
-	if (!resolved.capabilities.empty()) {
-		req.SetCapabilities(resolved.capabilities);
-	}
-	if (!resolved.tags.empty()) {
-		req.SetTags(resolved.tags);
+	// A dry run stops here: everything above is read-only, everything below
+	// mutates. The handle stays NULL because no stack exists to refer to.
+	Value handle(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
+	if (!data.dry_run) {
+		Aws::CloudFormation::Model::CreateStackRequest req;
+		req.SetStackName(resolved.stack_name.c_str());
+		if (resolved.template_is_url) {
+			req.SetTemplateURL(data.template_arg.c_str());
+		} else {
+			req.SetTemplateBody(data.template_arg.c_str());
+		}
+		if (!resolved.parameters.empty()) {
+			req.SetParameters(resolved.parameters);
+		}
+		if (!resolved.capabilities.empty()) {
+			req.SetCapabilities(resolved.capabilities);
+		}
+		if (!resolved.tags.empty()) {
+			req.SetTags(resolved.tags);
+		}
+
+		auto outcome = cloudformation_client.CreateStack(req);
+		if (!outcome.IsSuccess()) {
+			const auto &err = outcome.GetError();
+			throw IOException("CloudFormation CreateStack failed: %s - %s", string(err.GetExceptionName().c_str()),
+			                  string(err.GetMessage().c_str()));
+		}
+		string stack_id(outcome.GetResult().GetStackId().c_str());
+
+		vector<Value> keys;
+		vector<Value> values;
+		keys.emplace_back("stack_name");
+		values.emplace_back(resolved.stack_name);
+		keys.emplace_back("stack_id");
+		values.emplace_back(stack_id);
+		keys.emplace_back("region");
+		values.emplace_back(region);
+		handle = Value::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR, std::move(keys), std::move(values));
 	}
 
-	auto outcome = cloudformation_client.CreateStack(req);
-	if (!outcome.IsSuccess()) {
-		const auto &err = outcome.GetError();
-		throw IOException("CloudFormation CreateStack failed: %s - %s", string(err.GetExceptionName().c_str()),
-		                  string(err.GetMessage().c_str()));
+	vector<Value> param_keys;
+	vector<Value> param_values;
+	for (const auto &p : resolved.parameters) {
+		param_keys.emplace_back(string(p.GetParameterKey().c_str()));
+		param_values.emplace_back(string(p.GetParameterValue().c_str()));
 	}
-	string stack_id(outcome.GetResult().GetStackId().c_str());
-
-	vector<Value> keys;
-	vector<Value> values;
-	keys.emplace_back("stack_name");
-	values.emplace_back(resolved.stack_name);
-	keys.emplace_back("stack_id");
-	values.emplace_back(stack_id);
-	keys.emplace_back("region");
-	values.emplace_back(region);
-	auto handle = Value::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR, std::move(keys), std::move(values));
+	vector<Value> tag_keys;
+	vector<Value> tag_values;
+	for (const auto &t : resolved.tags) {
+		tag_keys.emplace_back(string(t.GetKey().c_str()));
+		tag_values.emplace_back(string(t.GetValue().c_str()));
+	}
+	vector<Value> capabilities;
+	for (const auto &c : resolved.capabilities) {
+		capabilities.emplace_back(
+		    string(Aws::CloudFormation::Model::CapabilityMapper::GetNameForCapability(c).c_str()));
+	}
 
 	output.SetValue(0, 0, handle);
+	output.SetValue(1, 0, Value(resolved.stack_name));
+	output.SetValue(2, 0, Value(region));
+	output.SetValue(
+	    3, 0, Value::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR, std::move(param_keys), std::move(param_values)));
+	output.SetValue(4, 0,
+	                Value::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR, std::move(tag_keys), std::move(tag_values)));
+	output.SetValue(5, 0, Value::LIST(LogicalType::VARCHAR, std::move(capabilities)));
+	output.SetValue(6, 0, resolved.description.empty() ? Value() : Value(resolved.description));
 	output.SetCardinality(1);
 	data.finished = true;
 }
@@ -745,6 +795,9 @@ void CloudFormationFunctions::Register(ExtensionLoader &loader) {
 	                        CloudFormationCreateStackFun, CloudFormationCreateStackBind);
 	create_fn.named_parameters["region"] = LogicalType::VARCHAR;
 	create_fn.named_parameters["tags"] = map_vv;
+	// Typed BOOLEAN rather than an options key: a string 'dry_run' that failed to
+	// parse would fall through to false and create a real stack.
+	create_fn.named_parameters["dry_run"] = LogicalType::BOOLEAN;
 	loader.RegisterFunction(create_fn);
 
 	TableFunction describe_fn("cloudformation_describe_stack", {map_vv}, CloudFormationDescribeStackFun,
