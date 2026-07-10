@@ -129,8 +129,7 @@ constexpr idx_t MAX_PREFIX_LEN = MAX_STACK_NAME_LEN - 12 - 1; // 21: '<prefix>-<
 //! Reserved option keys configure the AWS client; everything else in `options`
 //! must match a parameter the template declares.
 const std::set<string> RESERVED_OPTION_KEYS = {
-    "region",      "chain",                   "profile",     "assume_role_arn",
-    "external_id", "web_identity_token_file", "session_name"};
+    "region", "chain", "profile", "assume_role_arn", "external_id", "web_identity_token_file", "session_name"};
 
 } // namespace
 
@@ -149,7 +148,8 @@ struct CloudFormationCreateStackBindData : public TableFunctionData {
 };
 
 static unique_ptr<FunctionData> CloudFormationCreateStackBind(ClientContext &context, TableFunctionBindInput &input,
-                                                   vector<LogicalType> &return_types, vector<string> &names) {
+                                                              vector<LogicalType> &return_types,
+                                                              vector<string> &names) {
 	auto result = make_uniq<CloudFormationCreateStackBindData>();
 
 	if (input.inputs[0].IsNull()) {
@@ -202,9 +202,9 @@ static void CloudFormationCreateStackFun(ClientContext &context, TableFunctionIn
 		return it != data.options.end() ? it->second : string();
 	};
 
-	auto provider = BuildAwsCredentialsProvider(opt("chain"), /*require_credentials=*/true, opt("profile"),
-	                                            opt("assume_role_arn"), opt("external_id"),
-	                                            opt("web_identity_token_file"), opt("session_name"));
+	auto provider =
+	    BuildAwsCredentialsProvider(opt("chain"), /*require_credentials=*/true, opt("profile"), opt("assume_role_arn"),
+	                                opt("external_id"), opt("web_identity_token_file"), opt("session_name"));
 	auto client_config = BuildClientConfigWithCa();
 	client_config.region = region.c_str();
 	Aws::CloudFormation::CloudFormationClient cloudformation_client(provider, client_config);
@@ -250,11 +250,10 @@ static void CloudFormationCreateStackFun(ClientContext &context, TableFunctionIn
 	if (!data.name_arg.empty()) {
 		// Explicit name
 		if (data.name_arg.size() > MAX_STACK_NAME_LEN) {
-			throw InvalidInputException(
-			    "cloudformation_create_stack: explicit name '%s' is %llu chars; max %llu "
-			    "(to keep the resulting CFN stack ARN within the 128-char API limit)",
-			    data.name_arg, (unsigned long long)data.name_arg.size(),
-			    (unsigned long long)MAX_STACK_NAME_LEN);
+			throw InvalidInputException("cloudformation_create_stack: explicit name '%s' is %llu chars; max %llu "
+			                            "(to keep the resulting CFN stack ARN within the 128-char API limit)",
+			                            data.name_arg, (unsigned long long)data.name_arg.size(),
+			                            (unsigned long long)MAX_STACK_NAME_LEN);
 		}
 		stack_name = data.name_arg;
 	} else {
@@ -397,7 +396,8 @@ struct CloudFormationDescribeStackBindData : public TableFunctionData {
 };
 
 static unique_ptr<FunctionData> CloudFormationDescribeStackBind(ClientContext &context, TableFunctionBindInput &input,
-                                                     vector<LogicalType> &return_types, vector<string> &names) {
+                                                                vector<LogicalType> &return_types,
+                                                                vector<string> &names) {
 	auto result = make_uniq<CloudFormationDescribeStackBindData>();
 	result->handle = ParseHandle(input.inputs[0], "cloudformation_describe_stack");
 
@@ -450,8 +450,7 @@ static void CloudFormationDescribeStackFun(ClientContext &context, TableFunction
 	}
 	const auto &stack = stacks[0];
 
-	string status(
-	    Aws::CloudFormation::Model::StackStatusMapper::GetNameForStackStatus(stack.GetStackStatus()).c_str());
+	string status(Aws::CloudFormation::Model::StackStatusMapper::GetNameForStackStatus(stack.GetStackStatus()).c_str());
 	string reason(stack.GetStackStatusReason().c_str());
 	string created(stack.GetCreationTime().ToGmtString(Aws::Utils::DateFormat::ISO_8601).c_str());
 	string updated;
@@ -497,12 +496,13 @@ static void CloudFormationDescribeStackFun(ClientContext &context, TableFunction
 
 struct CloudFormationDeleteStackBindData : public TableFunctionData {
 	CloudFormationHandle handle;
-	Value handle_value;   // original MAP, echoed back verbatim
+	Value handle_value; // original MAP, echoed back verbatim
 	bool finished = false;
 };
 
 static unique_ptr<FunctionData> CloudFormationDeleteStackBind(ClientContext &context, TableFunctionBindInput &input,
-                                                   vector<LogicalType> &return_types, vector<string> &names) {
+                                                              vector<LogicalType> &return_types,
+                                                              vector<string> &names) {
 	auto result = make_uniq<CloudFormationDeleteStackBindData>();
 	result->handle = ParseHandle(input.inputs[0], "cloudformation_delete_stack");
 	result->handle_value = input.inputs[0];
@@ -564,8 +564,7 @@ struct CloudFormationListStacksBindData : public TableFunctionData {
 };
 
 static unique_ptr<FunctionData> CloudFormationListStacksBind(ClientContext &context, TableFunctionBindInput &input,
-                                                             vector<LogicalType> &return_types,
-                                                             vector<string> &names) {
+                                                             vector<LogicalType> &return_types, vector<string> &names) {
 	auto result = make_uniq<CloudFormationListStacksBindData>();
 
 	if (input.inputs[0].IsNull()) {
@@ -639,8 +638,8 @@ static void CloudFormationListStacksFun(ClientContext &context, TableFunctionInp
 			auto outcome = cloudformation_client.ListStacks(req);
 			if (!outcome.IsSuccess()) {
 				const auto &err = outcome.GetError();
-				throw IOException("CloudFormation ListStacks failed: %s - %s",
-				                  string(err.GetExceptionName().c_str()), string(err.GetMessage().c_str()));
+				throw IOException("CloudFormation ListStacks failed: %s - %s", string(err.GetExceptionName().c_str()),
+				                  string(err.GetMessage().c_str()));
 			}
 			const auto &res = outcome.GetResult();
 			for (const auto &s : res.GetStackSummaries()) {
@@ -651,8 +650,7 @@ static void CloudFormationListStacksFun(ClientContext &context, TableFunctionInp
 				row.status = string(
 				    Aws::CloudFormation::Model::StackStatusMapper::GetNameForStackStatus(s.GetStackStatus()).c_str());
 				row.status_reason = string(s.GetStackStatusReason().c_str());
-				row.creation_time =
-				    string(s.GetCreationTime().ToGmtString(Aws::Utils::DateFormat::ISO_8601).c_str());
+				row.creation_time = string(s.GetCreationTime().ToGmtString(Aws::Utils::DateFormat::ISO_8601).c_str());
 				if (s.LastUpdatedTimeHasBeenSet()) {
 					row.last_updated_time =
 					    string(s.GetLastUpdatedTime().ToGmtString(Aws::Utils::DateFormat::ISO_8601).c_str());
@@ -705,10 +703,12 @@ void CloudFormationFunctions::Register(ExtensionLoader &loader) {
 	create_fn.named_parameters["tags"] = map_vv;
 	loader.RegisterFunction(create_fn);
 
-	TableFunction describe_fn("cloudformation_describe_stack", {map_vv}, CloudFormationDescribeStackFun, CloudFormationDescribeStackBind);
+	TableFunction describe_fn("cloudformation_describe_stack", {map_vv}, CloudFormationDescribeStackFun,
+	                          CloudFormationDescribeStackBind);
 	loader.RegisterFunction(describe_fn);
 
-	TableFunction delete_fn("cloudformation_delete_stack", {map_vv}, CloudFormationDeleteStackFun, CloudFormationDeleteStackBind);
+	TableFunction delete_fn("cloudformation_delete_stack", {map_vv}, CloudFormationDeleteStackFun,
+	                        CloudFormationDeleteStackBind);
 	loader.RegisterFunction(delete_fn);
 
 	TableFunction list_fn("cloudformation_list_stacks", {LogicalType::VARCHAR}, CloudFormationListStacksFun,

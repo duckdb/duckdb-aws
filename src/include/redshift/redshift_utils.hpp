@@ -10,22 +10,44 @@ namespace duckdb {
 
 class ExtensionLoader;
 
-//! Everything the aws extension knows about Redshift secrets.
+//! The subset of a Redshift cluster description that we need to open a Postgres-protocol
+//! connection to it. Filled in from the `DescribeClusters` API.
+struct RedshiftClusterInfo {
+	string endpoint_address;
+	int32_t endpoint_port = 0;
+	string db_name;
+	string master_username;
+	string cluster_status;
+};
+
+//! Short-lived database credentials minted by `GetClusterCredentialsWithIAM`.
+struct RedshiftIamCredentials {
+	string db_user;
+	string db_password;
+	string expiration;
+};
+
+//! Everything the aws extension knows about Redshift.
+//!
+//! There is no 'redshift' secret type: a Redshift attach authenticates with an ordinary AWS
+//! identity, so it reads the same 'aws' (or 's3') secret every other AWS integration uses.
 struct Redshift {
-	//! Register the 'redshift' secret type. Unlike s3/r2/gcs/aws (owned by httpfs) and
-	//! rds (owned by the postgres extension), no other extension owns 'redshift', so we
-	//! must register it here or CREATE SECRET fails with "Secret type 'redshift' not found".
-	static void RegisterSecret(ExtensionLoader &loader);
+	//! Register the 'redshift' storage extension, which is what makes
+	//! `ATTACH '<cluster-id>' (TYPE redshift, SECRET <name>)` resolve the cluster and then
+	//! hand the resulting connection string to the postgres extension.
+	static void RegisterStorageExtension(ExtensionLoader &loader);
 
-	//! Add the redshift_* named parameters to a CREATE SECRET function of type 'redshift'.
-	static void AddNamedParameters(CreateSecretFunction &function);
+	//! Look up a cluster by identifier via the Redshift `DescribeClusters` API. Throws when the
+	//! cluster does not exist or exposes no endpoint (e.g. while it is still being created).
+	static RedshiftClusterInfo DescribeCluster(const std::shared_ptr<Aws::Auth::AWSCredentialsProvider> &provider,
+	                                           const string &cluster_id, const string &region);
 
-	//! Mints temporary IAM credentials for a Redshift cluster and returns a secret holding
-	//! them alongside the connection details, ready to be consumed by a Postgres-protocol
-	//! ATTACH. Because the minted credentials are short-lived, this secret is intended for
-	//! immediate use rather than as a long-lived / persistent secret.
-	static unique_ptr<BaseSecret> CreateSecret(const std::shared_ptr<Aws::Auth::AWSCredentialsProvider> &provider,
-	                                           CreateSecretInput &input, const string &region);
+	//! Mint temporary database credentials for a cluster via `GetClusterCredentialsWithIAM`. The
+	//! provider supplies (and signs with) the AWS identity; the returned credentials are scoped to
+	//! the cluster and short-lived (see duration_seconds, default ~900s).
+	static RedshiftIamCredentials
+	GetClusterCredentials(const std::shared_ptr<Aws::Auth::AWSCredentialsProvider> &provider, const string &cluster_id,
+	                      const string &db_name, const string &region, int duration_seconds);
 };
 
 } // namespace duckdb

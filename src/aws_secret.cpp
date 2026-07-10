@@ -1,6 +1,5 @@
 #include "aws_secret.hpp"
 #include "aws_client.hpp"
-#include "redshift/redshift_utils.hpp"
 
 #include "duckdb/common/case_insensitive_map.hpp"
 #include "duckdb/common/exception.hpp"
@@ -389,16 +388,6 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 		return CreateRDSSecretWithProvider(provider, input, region);
 	}
 
-	if (input.type == "redshift") {
-		if (chain.empty()) {
-			throw InvalidConfigurationException("Invalid Redshift secret parameters, 'CHAIN' option must be specified");
-		}
-		auto provider = Aws::MakeShared<DuckDBCustomAWSCredentialsProviderChain>(
-		    "redshift", chain, require_credentials, profile, assume_role, external_id, web_identity_token_file,
-		    session_name);
-		return Redshift::CreateSecret(provider, input, region);
-	}
-
 	if (region.empty()) {
 		DUCKDB_LOG_WARNING(
 		    context,
@@ -529,13 +518,13 @@ BuildAwsCredentialsProvider(const std::string &chain, bool require_credentials, 
 	if (chain.empty()) {
 		if (!profile.empty()) {
 			return Aws::MakeShared<Aws::Auth::ProfileConfigFileAWSCredentialsProvider>("DuckDBAwsProfile",
-			                                                                            profile.c_str());
+			                                                                           profile.c_str());
 		}
 		return Aws::MakeShared<Aws::Auth::DefaultAWSCredentialsProviderChain>("DuckDBAwsDefault");
 	}
 	return Aws::MakeShared<DuckDBCustomAWSCredentialsProviderChain>("DuckDBCustomChain", chain, require_credentials,
-	                                                                 profile, assume_role_arn, external_id,
-	                                                                 web_identity_token_file, session_name);
+	                                                                profile, assume_role_arn, external_id,
+	                                                                web_identity_token_file, session_name);
 }
 
 void CreateAwsSecretFunctions::InitializeCurlCertificates(DatabaseInstance &db) {
@@ -550,12 +539,10 @@ void CreateAwsSecretFunctions::InitializeCurlCertificates(DatabaseInstance &db) 
 }
 
 void CreateAwsSecretFunctions::Register(ExtensionLoader &loader) {
-	// The s3/r2/gcs/aws secret types are registered by httpfs, and rds by the postgres
-	// extension. 'redshift' is owned by this extension, so we must register the type
-	// ourselves; without this CREATE SECRET fails with "Secret type 'redshift' not found".
-	Redshift::RegisterSecret(loader);
-
-	vector<string> types = {"s3", "r2", "gcs", "aws", "rds", "redshift"};
+	// The s3/r2/gcs/aws secret types are registered by httpfs, and rds by the postgres extension.
+	// Redshift has no secret type of its own: `ATTACH (TYPE redshift)` reads an 'aws' or 's3'
+	// secret, since all it needs is an AWS identity. See redshift_storage.cpp.
+	vector<string> types = {"s3", "r2", "gcs", "aws", "rds"};
 
 	for (const auto &type : types) {
 		// Register the credential_chain secret provider
@@ -591,10 +578,6 @@ void CreateAwsSecretFunctions::Register(ExtensionLoader &loader) {
 			cred_chain_function.named_parameters["rds_host"] = LogicalType::VARCHAR;
 			cred_chain_function.named_parameters["rds_port"] = LogicalType::VARCHAR;
 			cred_chain_function.named_parameters["rds_template_secret_name"] = LogicalType::VARCHAR;
-		}
-
-		if (type == "redshift") {
-			Redshift::AddNamedParameters(cred_chain_function);
 		}
 
 		// Param for configuring the chain that is used

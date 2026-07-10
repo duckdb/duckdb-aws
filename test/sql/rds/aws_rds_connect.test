@@ -1,0 +1,133 @@
+# name: test/sql/rds/aws_rds_connect.test
+# description: test aws extension redshift secret (GetClusterCredentialsWithIAM) + postgres attach
+# group: [rds]
+
+require aws
+
+require parquet
+
+require postgres_scanner
+
+require-env RDS_AVAILABLE 1
+
+statement ok
+SET allow_persistent_secrets=false
+
+
+# In this attach call, multiple API calls should be made to AWS RDS services.
+# 1 Describe DB Clusters with `aws rds describe-db-clusters --db-cluster-identifier`
+# https://docs.aws.amazon.com/cli/latest/reference/rds/describe-db-clusters.html
+
+# Returns the following (truncated for now)
+# {
+#    "DBClusters": [
+#        {
+#            "AllocatedStorage": 1,
+#            "AvailabilityZones": [
+#                "us-east-1a",
+#                "us-east-1b",
+#                "us-east-1e"
+#            ],
+#            "BackupRetentionPeriod": 1,
+#            "DatabaseName": "mydbcluster",
+#            "DBClusterIdentifier": "mydbcluster",
+#            "DBClusterParameterGroup": "default.aurora-mysql5.7",
+#            "DBSubnetGroup": "default",
+#            "Status": "available",
+#            "EarliestRestorableTime": "2019-06-19T09:16:28.210Z",
+#            "Endpoint": "mydbcluster.cluster-cnpexample.us-east-1.rds.amazonaws.com",
+#            "ReaderEndpoint": "mydbcluster.cluster-ro-cnpexample.us-east-1.rds.amazonaws.com",
+#            "MultiAZ": true,
+#            "Engine": "aurora-mysql",
+#            "EngineVersion": "5.7.mysql_aurora.2.04.2",
+#            "LatestRestorableTime": "2019-06-20T22:38:14.908Z",
+#            "Port": 3306,
+#            "MasterUsername": "myadmin",
+#            "PreferredBackupWindow": "09:09-09:39",
+#            "PreferredMaintenanceWindow": "sat:04:09-sat:04:39",
+#            "ReadReplicaIdentifiers": [],
+#            "DBClusterMembers": [
+#                {
+#                    "DBInstanceIdentifier": "dbinstance3",
+#                    "IsClusterWriter": false,
+#                    "DBClusterParameterGroupStatus": "in-sync",
+#                    "PromotionTier": 1
+#                },
+#                {
+#                    "DBInstanceIdentifier": "dbinstance1",
+#                    "IsClusterWriter": false,
+#                    "DBClusterParameterGroupStatus": "in-sync",
+#                    "PromotionTier": 1
+#                },
+#                {
+#                    "DBInstanceIdentifier": "dbinstance2",
+#                    "IsClusterWriter": false,
+#                    "DBClusterParameterGroupStatus": "in-sync",
+#                    "PromotionTier": 1
+#                },
+#                {
+#                    "DBInstanceIdentifier": "mydbcluster",
+#                    "IsClusterWriter": false,
+#                    "DBClusterParameterGroupStatus": "in-sync",
+#                    "PromotionTier": 1
+#                },
+#                {
+#                    "DBInstanceIdentifier": "mydbcluster-us-east-1b",
+#                    "IsClusterWriter": false,
+#                    "DBClusterParameterGroupStatus": "in-sync",
+#                    "PromotionTier": 1
+#                },
+#                {
+#                    "DBInstanceIdentifier": "mydbcluster",
+#                    "IsClusterWriter": true,
+#                    "DBClusterParameterGroupStatus": "in-sync",
+#                    "PromotionTier": 1
+#                }
+#            ],
+#            "VpcSecurityGroups": [
+#                {
+#                    "VpcSecurityGroupId": "sg-0b9130572daf3dc16",
+#                    "Status": "active"
+#                }
+#            ],
+#            "HostedZoneId": "Z2R2ITUGPM61AM",
+#            "StorageEncrypted": true,
+#            "KmsKeyId": "arn:aws:kms:us-east-1:814387698303:key/AKIAIOSFODNN7EXAMPLE",
+#            "DbClusterResourceId": "cluster-AKIAIOSFODNN7EXAMPLE",
+#            "DBClusterArn": "arn:aws:rds:us-east-1:123456789012:cluster:mydbcluster",
+#            "AssociatedRoles": [],
+#            "IAMDatabaseAuthenticationEnabled": false,
+#            "ClusterCreateTime": "2019-04-15T14:18:42.785Z",
+#            "EngineMode": "provisioned",
+#            "DeletionProtection": false,
+#            "HttpEndpointEnabled": false
+#        }
+#    ]
+#}
+
+
+From this we have 
+Endpoint
+Engine
+MasterUsername?
+
+
+# Then it will call GetClusterCredentialsWithIAM to get a needed username and password
+statement ok
+ATTACH 'redshift-cluster-1' AS redshift_db (TYPE postgres, SECRET redshift_creds);
+
+statement ok
+select * from (show all tables) where database = 'redshift_db';
+
+
+# The dev database should expose exactly 7 tables.
+query I
+SELECT count(*) FROM (SHOW ALL TABLES) WHERE database = 'redshift_db';
+----
+7
+
+statement ok
+DETACH redshift_db
+
+statement ok
+DROP SECRET redshift_creds
