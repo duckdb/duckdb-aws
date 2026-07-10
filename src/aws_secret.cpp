@@ -1,5 +1,6 @@
 #include "aws_secret.hpp"
 #include "aws_client.hpp"
+#include "utils/region_utils.hpp"
 
 #include "duckdb/common/case_insensitive_map.hpp"
 #include "duckdb/common/exception.hpp"
@@ -82,7 +83,7 @@ static unique_ptr<KeyValueSecret> ConstructBaseS3Secret(vector<string> &prefix_p
 	return return_value;
 }
 
-static Aws::Config::Profile GetProfile(const string &profile_name, const bool require_profile) {
+Aws::Config::Profile GetAwsProfile(const std::string &profile_name, const bool require_profile) {
 	Aws::Config::Profile selected_profile;
 	// get file path where aws config is stored.
 	// comes from AWS_CONFIG_FILE
@@ -182,7 +183,7 @@ public:
 
 	void AddConfigProvider(const bool require_credentials, const string &profile_name, const string &assume_role_arn,
 	                       const string &external_id) {
-		auto profile = GetProfile(profile_name, require_credentials);
+		auto profile = GetAwsProfile(profile_name, require_credentials);
 		if (!profile.GetRoleArn().empty() && !assume_role_arn.empty()) {
 			throw InvalidInputException(
 			    "Ambiguous role arn. Role_arn '%s' defined in profile '%s'. Role_arn '%s' defined in secret statement",
@@ -347,36 +348,7 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 	}
 
 	// Region MUST be set according to the SDK https://docs.aws.amazon.com/sdkref/latest/guide/feature-region.html
-	string region;
-	// Get region from secret options
-	auto region_param = input.options.find("region");
-	if (region_param != input.options.end() && !region_param->second.ToString().empty()) {
-		region = region_param->second.ToString();
-	}
-
-	// or from DuckDB settings (SET s3_region='us-east-1')
-	if (region.empty()) {
-		Value s3_region_setting;
-		if (context.TryGetCurrentSetting("s3_region", s3_region_setting)) {
-			region = s3_region_setting.ToString();
-		}
-	}
-
-	// or from environment variables
-	if (region.empty()) {
-		if (const char *env = getenv("AWS_REGION")) {
-			region = env;
-		} else if (const char *env = getenv("AWS_DEFAULT_REGION")) {
-			region = env;
-		}
-	}
-
-	// or from AWS config profile
-	if (region.empty()) {
-		string profile_to_lookup = profile.empty() ? "default" : profile;
-		auto aws_profile = GetProfile(profile_to_lookup, false);
-		region = aws_profile.GetRegion();
-	}
+	string region = ResolveAwsRegion(context, TryGetStringParam(input, "region"), profile);
 
 	if (input.type == "rds") {
 		if (chain.empty()) {

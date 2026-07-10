@@ -1,6 +1,7 @@
 #include "redshift/redshift_utils.hpp"
 
 #include "aws_client.hpp"
+#include "utils/region_utils.hpp"
 
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/common/exception.hpp"
@@ -144,26 +145,18 @@ unique_ptr<SecretEntry> FindAwsSecret(ClientContext &context, const string &secr
 	                      "CREATE SECRET (TYPE aws, PROVIDER credential_chain, REGION '<region>')");
 }
 
-string ResolveRegion(const string &attach_region, const KeyValueSecret &secret) {
-	// An s3 secret's region is the bucket region, which need not be the cluster's, so an
-	// explicit ATTACH region wins.
-	if (!attach_region.empty()) {
-		return attach_region;
+string ResolveRegion(ClientContext &context, const string &attach_region, const KeyValueSecret &secret) {
+	// An s3 secret's region is the bucket region, which need not be the cluster's, so an explicit
+	// ATTACH region wins over it. Past those two, fall back to the same sources CREATE SECRET uses.
+	auto explicit_region = attach_region.empty() ? GetSecretString(secret, "region") : attach_region;
+	auto region = ResolveAwsRegion(context, explicit_region, "");
+	if (region.empty()) {
+		throw InvalidConfigurationException(
+		    "No AWS region found for the Redshift cluster. Pass it to ATTACH, e.g. "
+		    "ATTACH '<cluster-id>' AS db (TYPE redshift, REGION '<region>'), set it on the secret, "
+		    "or configure the AWS_REGION environment variable");
 	}
-	auto secret_region = GetSecretString(secret, "region");
-	if (!secret_region.empty()) {
-		return secret_region;
-	}
-	if (const char *env = getenv("AWS_REGION")) {
-		return env;
-	}
-	if (const char *env = getenv("AWS_DEFAULT_REGION")) {
-		return env;
-	}
-	throw InvalidConfigurationException(
-	    "No AWS region found for the Redshift cluster. Pass it to ATTACH, e.g. "
-	    "ATTACH '<cluster-id>' AS db (TYPE redshift, REGION '<region>'), set it on the secret, "
-	    "or configure the AWS_REGION environment variable");
+	return region;
 }
 
 std::shared_ptr<Aws::Auth::AWSCredentialsProvider> BuildProvider(const KeyValueSecret &secret) {
@@ -207,7 +200,7 @@ unique_ptr<Catalog> RedshiftAttach(optional_ptr<StorageExtensionInfo> storage_in
 	auto attach_options = ParseAttachOptions(options);
 	auto secret_entry = FindAwsSecret(context, attach_options.secret_name);
 	const auto &secret = dynamic_cast<const KeyValueSecret &>(*secret_entry->secret);
-	auto region = ResolveRegion(attach_options.region, secret);
+	auto region = ResolveRegion(context, attach_options.region, secret);
 
 	// Resolve the postgres extension before spending API calls on a connection we cannot open.
 	auto &db_config = DBConfig::GetConfig(context);

@@ -44,7 +44,7 @@ true
 # `TYPE redshift` is handled by the aws extension, which resolves the cluster and then hands
 # the resulting connection string to the postgres extension.
 statement ok
-ATTACH 'redshift-cluster-1' AS redshift_db (TYPE redshift, SECRET redshift_creds);
+ATTACH 'redshift-cluster-1' AS redshift_db (TYPE redshift);
 
 statement ok
 select * from (show all tables) where database = 'redshift_db';

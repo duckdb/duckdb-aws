@@ -27,14 +27,8 @@ struct RedshiftIamCredentials {
 	string expiration;
 };
 
-//! Everything the aws extension knows about Redshift.
-//!
-//! There is no 'redshift' secret type: a Redshift attach authenticates with an ordinary AWS
-//! identity, so it reads the same 'aws' (or 's3') secret every other AWS integration uses.
 struct Redshift {
 	//! Register the 'redshift' storage extension, which is what makes
-	//! `ATTACH '<cluster-id>' (TYPE redshift, SECRET <name>)` resolve the cluster and then
-	//! hand the resulting connection string to the postgres extension.
 	static void RegisterStorageExtension(ExtensionLoader &loader);
 
 	//! Look up a cluster by identifier via the Redshift `DescribeClusters` API. Throws when the
