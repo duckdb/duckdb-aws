@@ -21,7 +21,7 @@ if(NOT DUCKDB_AWS_GIT_SHA)
 endif()
 add_compile_definitions(DUCKDB_AWS_GIT_SHA="${DUCKDB_AWS_GIT_SHA}")
 
-set(EXTENSION_SOURCES src/aws_extension.cpp src/aws_secret.cpp src/cloudformation_functions.cpp
+set(EXTENSION_SOURCES src/arn_storage.cpp src/aws_extension.cpp src/aws_secret.cpp src/cloudformation_functions.cpp
                       src/rds/rds_utils.cpp src/rds/rds_storage.cpp
                       src/quack_on_ec2_resource.cpp
                       src/redshift/redshift_utils.cpp src/redshift/redshift_storage.cpp

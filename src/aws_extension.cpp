@@ -1,3 +1,4 @@
+#include "arn_storage.hpp"
 #include "aws_secret.hpp"
 #include "aws_extension.hpp"
 #include "cloudformation_functions.hpp"
@@ -6,10 +7,7 @@
 #include "redshift/redshift_utils.hpp"
 
 #include "duckdb.hpp"
-#include "duckdb/common/exception.hpp"
-#include "duckdb/catalog/catalog.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
-#include "duckdb/main/settings.hpp"
 #include <duckdb/parser/parsed_data/create_scalar_function_info.hpp>
 #include <aws/core/Aws.h>
 #include <aws/core/auth/AWSCredentialsProviderChain.h>
@@ -29,6 +27,9 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	// Same for `ATTACH '<db-cluster-id>' (TYPE rds, ...)`.
 	Rds::RegisterStorageExtension(loader);
+
+	// Makes `ATTACH 'arn:aws:...'` dispatch to the backend serving the ARN's service.
+	ArnStorage::RegisterStorageExtension(loader);
 
 	CloudFormationFunctions::Register(loader);
 	QuackOnEc2Resource::Register(loader);
