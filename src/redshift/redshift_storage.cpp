@@ -126,8 +126,7 @@ unique_ptr<Catalog> RedshiftAttach(optional_ptr<StorageExtensionInfo> storage_in
 
 	// An s3 secret's region is the bucket region, which need not be the cluster's, so an explicit
 	// ATTACH region wins over it. Past those two, fall back to the sources CREATE SECRET uses.
-	auto explicit_region =
-	    attach_options.region.empty() ? GetSecretString(secret, "region") : attach_options.region;
+	auto explicit_region = attach_options.region.empty() ? GetSecretString(secret, "region") : attach_options.region;
 	auto region = ResolveAwsRegion(context, explicit_region, "");
 	if (region.empty()) {
 		throw InvalidConfigurationException(
