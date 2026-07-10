@@ -3,6 +3,7 @@
 
 #include "duckdb/common/case_insensitive_map.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/logging/logger.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 
 #include <aws/core/Aws.h>
