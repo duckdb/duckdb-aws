@@ -9,9 +9,6 @@ require parquet
 # The 'aws' secret type is registered by httpfs.
 require httpfs
 
-# postgres_scanner is built as a loadable (DONT_LINK) extension; `require` installs
-# it from the local build repository and loads it. `LOAD postgres` would not resolve
-# here because the bare name has no path when autoloading is disabled in the test build.
 require postgres_scanner
 
 # This test hits a real Redshift cluster + a real AWS identity, so it only runs
