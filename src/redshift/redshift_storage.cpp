@@ -1,7 +1,7 @@
 #include "redshift/redshift_utils.hpp"
 
 #include "aws_client.hpp"
-#include "utils/region_utils.hpp"
+#include "utils/utils.hpp"
 
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/common/exception.hpp"
@@ -9,7 +9,6 @@
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
-#include "duckdb/main/extension_helper.hpp"
 #include "duckdb/main/secret/secret_manager.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/parser/parsed_data/attach_info.hpp"
@@ -18,13 +17,6 @@
 namespace duckdb {
 
 namespace {
-
-//! The postgres extension registers its storage extension under its full extension name.
-constexpr const char *POSTGRES_EXTENSION_NAME = "postgres";
-
-//! Secret types that carry an AWS identity we can sign Redshift API calls with. 'aws' is the
-//! generic one and is preferred; 's3' holds the same credentials alongside bucket settings.
-const char *AWS_SECRET_TYPES[] = {"aws", "s3"};
 
 //! ATTACH options that we consume ourselves. Everything else is forwarded to the postgres
 //! extension, which rejects options it does not know.
@@ -95,70 +87,6 @@ RedshiftAttachOptions ParseAttachOptions(AttachOptions &options) {
 	return parsed;
 }
 
-bool IsAwsSecretType(const string &type) {
-	for (const auto &candidate : AWS_SECRET_TYPES) {
-		if (type == candidate) {
-			return true;
-		}
-	}
-	return false;
-}
-
-//! Resolve the secret holding the AWS identity. When ATTACH names one it must be an aws/s3
-//! secret; otherwise we look for exactly one, preferring 'aws' over 's3'.
-unique_ptr<SecretEntry> FindAwsSecret(ClientContext &context, const string &secret_name) {
-	auto &secret_manager = SecretManager::Get(context);
-	auto transaction = CatalogTransaction::GetSystemCatalogTransaction(context);
-
-	if (!secret_name.empty()) {
-		auto secret_entry = secret_manager.GetSecretByName(transaction, secret_name);
-		if (!secret_entry) {
-			throw BinderException("Secret with name \"%s\" not found", secret_name);
-		}
-		const auto &type = secret_entry->secret->GetType().GetIdentifierName();
-		if (!IsAwsSecretType(type)) {
-			throw BinderException("Secret \"%s\" is of type \"%s\", but attaching a Redshift cluster requires a "
-			                      "secret of type \"aws\" or \"s3\"",
-			                      secret_name, type);
-		}
-		return secret_entry;
-	}
-
-	auto all_secrets = secret_manager.AllSecrets(transaction);
-	for (const auto &wanted_type : AWS_SECRET_TYPES) {
-		vector<const SecretEntry *> matches;
-		for (const auto &entry : all_secrets) {
-			if (entry.secret->GetType().GetIdentifierName() == wanted_type) {
-				matches.push_back(&entry);
-			}
-		}
-		if (matches.size() > 1) {
-			throw BinderException("Found %d secrets of type \"%s\"; name the one to use, e.g. "
-			                      "ATTACH '<cluster-id>' AS db (TYPE redshift, SECRET <secret_name>)",
-			                      matches.size(), wanted_type);
-		}
-		if (matches.size() == 1) {
-			return make_uniq<SecretEntry>(*matches[0]);
-		}
-	}
-	throw BinderException("No AWS credentials found. Create a secret holding them, e.g. "
-	                      "CREATE SECRET (TYPE aws, PROVIDER credential_chain, REGION '<region>')");
-}
-
-string ResolveRegion(ClientContext &context, const string &attach_region, const KeyValueSecret &secret) {
-	// An s3 secret's region is the bucket region, which need not be the cluster's, so an explicit
-	// ATTACH region wins over it. Past those two, fall back to the same sources CREATE SECRET uses.
-	auto explicit_region = attach_region.empty() ? GetSecretString(secret, "region") : attach_region;
-	auto region = ResolveAwsRegion(context, explicit_region, "");
-	if (region.empty()) {
-		throw InvalidConfigurationException(
-		    "No AWS region found for the Redshift cluster. Pass it to ATTACH, e.g. "
-		    "ATTACH '<cluster-id>' AS db (TYPE redshift, REGION '<region>'), set it on the secret, "
-		    "or configure the AWS_REGION environment variable");
-	}
-	return region;
-}
-
 std::shared_ptr<Aws::Auth::AWSCredentialsProvider> BuildProvider(const KeyValueSecret &secret) {
 	auto key_id = GetSecretString(secret, "key_id");
 	auto secret_key = GetSecretString(secret, "secret");
@@ -170,11 +98,6 @@ std::shared_ptr<Aws::Auth::AWSCredentialsProvider> BuildProvider(const KeyValueS
 	}
 	return Aws::MakeShared<Aws::Auth::SimpleAWSCredentialsProvider>("DuckDBRedshift", key_id.c_str(),
 	                                                                secret_key.c_str(), session_token.c_str());
-}
-
-optional_ptr<StorageExtension> FindPostgresStorageExtension(const DBConfig &config) {
-	// Registered as "postgres_scanner", which is what "postgres" aliases to.
-	return StorageExtension::Find(config, ExtensionHelper::ApplyExtensionAlias(POSTGRES_EXTENSION_NAME));
 }
 
 //! `ATTACH '<cluster-id>' AS db (TYPE redshift, SECRET <aws-or-s3-secret>)`.
@@ -200,7 +123,18 @@ unique_ptr<Catalog> RedshiftAttach(optional_ptr<StorageExtensionInfo> storage_in
 	auto attach_options = ParseAttachOptions(options);
 	auto secret_entry = FindAwsSecret(context, attach_options.secret_name);
 	const auto &secret = dynamic_cast<const KeyValueSecret &>(*secret_entry->secret);
-	auto region = ResolveRegion(context, attach_options.region, secret);
+
+	// An s3 secret's region is the bucket region, which need not be the cluster's, so an explicit
+	// ATTACH region wins over it. Past those two, fall back to the sources CREATE SECRET uses.
+	auto explicit_region =
+	    attach_options.region.empty() ? GetSecretString(secret, "region") : attach_options.region;
+	auto region = ResolveAwsRegion(context, explicit_region, "");
+	if (region.empty()) {
+		throw InvalidConfigurationException(
+		    "No AWS region found for the Redshift cluster. Pass it to ATTACH, e.g. "
+		    "ATTACH '<cluster-id>' AS db (TYPE redshift, REGION '<region>'), set it on the secret, "
+		    "or configure the AWS_REGION environment variable");
+	}
 
 	// Resolve the postgres extension before spending API calls on a connection we cannot open.
 	auto &db_config = DBConfig::GetConfig(context);

@@ -1,6 +1,6 @@
 #include "aws_secret.hpp"
 #include "aws_client.hpp"
-#include "utils/region_utils.hpp"
+#include "utils/utils.hpp"
 
 #include "duckdb/common/case_insensitive_map.hpp"
 #include "duckdb/common/exception.hpp"
