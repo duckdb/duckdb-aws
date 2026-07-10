@@ -21,9 +21,8 @@ Aws::Client::ClientConfiguration BuildClientConfigWithCa();
 //! `chain` is a ';'-separated list of provider names; see
 //! DuckDBCustomAWSCredentialsProviderChain in aws_secret.cpp for the grammar.
 std::shared_ptr<Aws::Auth::AWSCredentialsProvider>
-BuildAwsCredentialsProvider(const std::string &chain, bool require_credentials,
-                            const std::string &profile = "", const std::string &assume_role_arn = "",
-                            const std::string &external_id = "", const std::string &web_identity_token_file = "",
-                            const std::string &session_name = "");
+BuildAwsCredentialsProvider(const std::string &chain, bool require_credentials, const std::string &profile = "",
+                            const std::string &assume_role_arn = "", const std::string &external_id = "",
+                            const std::string &web_identity_token_file = "", const std::string &session_name = "");
 
 } // namespace duckdb
