@@ -3,6 +3,7 @@
 
 #include "duckdb/common/case_insensitive_map.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/logging/logger.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 
 #include <aws/core/Aws.h>
@@ -518,13 +519,13 @@ BuildAwsCredentialsProvider(const std::string &chain, bool require_credentials, 
 	if (chain.empty()) {
 		if (!profile.empty()) {
 			return Aws::MakeShared<Aws::Auth::ProfileConfigFileAWSCredentialsProvider>("DuckDBAwsProfile",
-			                                                                            profile.c_str());
+			                                                                           profile.c_str());
 		}
 		return Aws::MakeShared<Aws::Auth::DefaultAWSCredentialsProviderChain>("DuckDBAwsDefault");
 	}
 	return Aws::MakeShared<DuckDBCustomAWSCredentialsProviderChain>("DuckDBCustomChain", chain, require_credentials,
-	                                                                 profile, assume_role_arn, external_id,
-	                                                                 web_identity_token_file, session_name);
+	                                                                profile, assume_role_arn, external_id,
+	                                                                web_identity_token_file, session_name);
 }
 
 void CreateAwsSecretFunctions::InitializeCurlCertificates(DatabaseInstance &db) {
