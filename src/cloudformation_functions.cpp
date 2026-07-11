@@ -430,16 +430,16 @@ static void CloudFormationCreateStackFun(ClientContext &context, TableFunctionIn
 		capabilities.emplace_back(FromAws(Aws::CloudFormation::Model::CapabilityMapper::GetNameForCapability(c)));
 	}
 
-	output.SetValue(0, 0, handle);
-	output.SetValue(1, 0, Value(resolved.stack_name));
-	output.SetValue(2, 0, Value(region));
-	output.SetValue(
-	    3, 0, Value::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR, std::move(param_keys), std::move(param_values)));
-	output.SetValue(4, 0,
-	                Value::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR, std::move(tag_keys), std::move(tag_values)));
-	output.SetValue(5, 0, Value::LIST(LogicalType::VARCHAR, std::move(capabilities)));
-	output.SetValue(6, 0, resolved.description.empty() ? Value() : Value(resolved.description));
-	output.SetCardinality(1);
+	output.data[0].Append(handle);
+	output.data[1].Append(Value(resolved.stack_name));
+	output.data[2].Append(Value(region));
+	output.data[3].Append(
+	    Value::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR, std::move(param_keys), std::move(param_values)));
+	output.data[4].Append(
+	    Value::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR, std::move(tag_keys), std::move(tag_values)));
+	output.data[5].Append(Value::LIST(LogicalType::VARCHAR, std::move(capabilities)));
+	output.data[6].Append(resolved.description.empty() ? Value() : Value(resolved.description));
+	output.CheckCardinality(1);
 	data.finished = true;
 }
 
@@ -569,17 +569,17 @@ static void CloudFormationDescribeStackFun(ClientContext &context, TableFunction
 	auto outputs =
 	    Value::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR, std::move(output_keys), std::move(output_values));
 
-	output.SetValue(0, 0, Value(data.handle.region));
-	output.SetValue(1, 0, Value(FromAws(stack.GetStackName())));
-	output.SetValue(2, 0, Value(FromAws(stack.GetStackId())));
-	output.SetValue(3, 0, Value(status));
-	output.SetValue(4, 0, reason.empty() ? Value() : Value(reason));
-	output.SetValue(5, 0, created.empty() ? Value() : Value(created));
-	output.SetValue(6, 0, updated.empty() ? Value() : Value(updated));
-	output.SetValue(7, 0, description.empty() ? Value() : Value(description));
-	output.SetValue(8, 0, tags);
-	output.SetValue(9, 0, outputs);
-	output.SetCardinality(1);
+	output.data[0].Append(Value(data.handle.region));
+	output.data[1].Append(Value(FromAws(stack.GetStackName())));
+	output.data[2].Append(Value(FromAws(stack.GetStackId())));
+	output.data[3].Append(Value(status));
+	output.data[4].Append(reason.empty() ? Value() : Value(reason));
+	output.data[5].Append(created.empty() ? Value() : Value(created));
+	output.data[6].Append(updated.empty() ? Value() : Value(updated));
+	output.data[7].Append(description.empty() ? Value() : Value(description));
+	output.data[8].Append(tags);
+	output.data[9].Append(outputs);
+	output.CheckCardinality(1);
 	data.finished = true;
 }
 
@@ -691,14 +691,14 @@ static void CloudFormationDeleteStackFun(ClientContext &context, TableFunctionIn
 		handle = data.handle_value;
 	}
 
-	output.SetValue(0, 0, handle);
-	output.SetValue(1, 0, data.handle.stack_name.empty() ? Value() : Value(data.handle.stack_name));
-	output.SetValue(2, 0, data.handle.stack_id.empty() ? Value() : Value(data.handle.stack_id));
-	output.SetValue(3, 0, Value(data.handle.region));
-	output.SetValue(4, 0, exists);
-	output.SetValue(5, 0, status);
-	output.SetValue(6, 0, termination_protection);
-	output.SetCardinality(1);
+	output.data[0].Append(handle);
+	output.data[1].Append(data.handle.stack_name.empty() ? Value() : Value(data.handle.stack_name));
+	output.data[2].Append(data.handle.stack_id.empty() ? Value() : Value(data.handle.stack_id));
+	output.data[3].Append(Value(data.handle.region));
+	output.data[4].Append(exists);
+	output.data[5].Append(status);
+	output.data[6].Append(termination_protection);
+	output.CheckCardinality(1);
 	data.finished = true;
 }
 
@@ -829,16 +829,16 @@ static void CloudFormationListStacksFun(ClientContext &context, TableFunctionInp
 	idx_t to_emit = std::min(remaining, (idx_t)STANDARD_VECTOR_SIZE);
 	for (idx_t i = 0; i < to_emit; i++) {
 		auto &r = data.rows[data.cursor + i];
-		output.SetValue(0, i, Value(r.region));
-		output.SetValue(1, i, Value(r.stack_name));
-		output.SetValue(2, i, Value(r.stack_id));
-		output.SetValue(3, i, Value(r.status));
-		output.SetValue(4, i, r.status_reason.empty() ? Value() : Value(r.status_reason));
-		output.SetValue(5, i, r.creation_time.empty() ? Value() : Value(r.creation_time));
-		output.SetValue(6, i, r.last_updated_time.empty() ? Value() : Value(r.last_updated_time));
-		output.SetValue(7, i, r.description.empty() ? Value() : Value(r.description));
+		output.data[0].Append(Value(r.region));
+		output.data[1].Append(Value(r.stack_name));
+		output.data[2].Append(Value(r.stack_id));
+		output.data[3].Append(Value(r.status));
+		output.data[4].Append(r.status_reason.empty() ? Value() : Value(r.status_reason));
+		output.data[5].Append(r.creation_time.empty() ? Value() : Value(r.creation_time));
+		output.data[6].Append(r.last_updated_time.empty() ? Value() : Value(r.last_updated_time));
+		output.data[7].Append(r.description.empty() ? Value() : Value(r.description));
 	}
-	output.SetCardinality(to_emit);
+	output.CheckCardinality(to_emit);
 	data.cursor += to_emit;
 }
 
