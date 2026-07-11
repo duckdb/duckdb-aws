@@ -31,6 +31,13 @@ namespace duckdb {
 
 namespace {
 
+//! Aws::String only differs from duckdb's string when the SDK is built with
+//! USE_AWS_MEMORY_MANAGEMENT (a custom allocator). Copying by range rather than
+//! via the C string is exact under both builds: no strlen, and embedded NULs survive.
+string FromAws(const Aws::String &s) {
+	return {s.data(), s.size()};
+}
+
 //! Case-sensitive, insertion-order-preserving string map. The index map must be
 //! spelled out because the type defaults to case-insensitive matching, which is
 //! wrong for case-sensitive keys like AWS tag keys.
@@ -234,19 +241,19 @@ ResolvedStackRequest ResolveStackRequest(Aws::CloudFormation::CloudFormationClie
 	auto summary_outcome = client.GetTemplateSummary(summary_req);
 	if (!summary_outcome.IsSuccess()) {
 		const auto &err = summary_outcome.GetError();
-		throw IOException("CloudFormation GetTemplateSummary failed: %s - %s", string(err.GetExceptionName().c_str()),
-		                  string(err.GetMessage().c_str()));
+		throw IOException("CloudFormation GetTemplateSummary failed: %s - %s", FromAws(err.GetExceptionName()),
+		                  FromAws(err.GetMessage()));
 	}
 	const auto &summary = summary_outcome.GetResult();
 	resolved.capabilities = summary.GetCapabilities();
-	resolved.description = string(summary.GetDescription().c_str());
+	resolved.description = FromAws(summary.GetDescription());
 
 	// A declared parameter with no default must be supplied by the caller.
 	// Track those separately so we can report the ones left unsatisfied below.
 	std::set<string> declared_params;
 	std::set<string> unsatisfied_params;
 	for (const auto &pd : summary.GetParameters()) {
-		auto key = string(pd.GetParameterKey().c_str());
+		auto key = FromAws(pd.GetParameterKey());
 		declared_params.insert(key);
 		if (!pd.DefaultValueHasBeenSet()) {
 			unsatisfied_params.insert(key);
@@ -259,7 +266,7 @@ ResolvedStackRequest ResolveStackRequest(Aws::CloudFormation::CloudFormationClie
 		if (meta.WasParseSuccessful()) {
 			auto view = meta.View();
 			if (view.KeyExists("StackName")) {
-				metadata_stack_name = string(view.GetString("StackName").c_str());
+				metadata_stack_name = FromAws(view.GetString("StackName"));
 			}
 		}
 	}
@@ -390,10 +397,10 @@ static void CloudFormationCreateStackFun(ClientContext &context, TableFunctionIn
 		auto outcome = cloudformation_client.CreateStack(req);
 		if (!outcome.IsSuccess()) {
 			const auto &err = outcome.GetError();
-			throw IOException("CloudFormation CreateStack failed: %s - %s", string(err.GetExceptionName().c_str()),
-			                  string(err.GetMessage().c_str()));
+			throw IOException("CloudFormation CreateStack failed: %s - %s", FromAws(err.GetExceptionName()),
+			                  FromAws(err.GetMessage()));
 		}
-		string stack_id(outcome.GetResult().GetStackId().c_str());
+		string stack_id = FromAws(outcome.GetResult().GetStackId());
 
 		vector<Value> keys;
 		vector<Value> values;
@@ -409,19 +416,18 @@ static void CloudFormationCreateStackFun(ClientContext &context, TableFunctionIn
 	vector<Value> param_keys;
 	vector<Value> param_values;
 	for (const auto &p : resolved.parameters) {
-		param_keys.emplace_back(string(p.GetParameterKey().c_str()));
-		param_values.emplace_back(string(p.GetParameterValue().c_str()));
+		param_keys.emplace_back(FromAws(p.GetParameterKey()));
+		param_values.emplace_back(FromAws(p.GetParameterValue()));
 	}
 	vector<Value> tag_keys;
 	vector<Value> tag_values;
 	for (const auto &t : resolved.tags) {
-		tag_keys.emplace_back(string(t.GetKey().c_str()));
-		tag_values.emplace_back(string(t.GetValue().c_str()));
+		tag_keys.emplace_back(FromAws(t.GetKey()));
+		tag_values.emplace_back(FromAws(t.GetValue()));
 	}
 	vector<Value> capabilities;
 	for (const auto &c : resolved.capabilities) {
-		capabilities.emplace_back(
-		    string(Aws::CloudFormation::Model::CapabilityMapper::GetNameForCapability(c).c_str()));
+		capabilities.emplace_back(FromAws(Aws::CloudFormation::Model::CapabilityMapper::GetNameForCapability(c)));
 	}
 
 	output.SetValue(0, 0, handle);
@@ -527,8 +533,8 @@ static void CloudFormationDescribeStackFun(ClientContext &context, TableFunction
 	auto outcome = cloudformation_client.DescribeStacks(req);
 	if (!outcome.IsSuccess()) {
 		const auto &err = outcome.GetError();
-		throw IOException("CloudFormation DescribeStacks failed: %s - %s", string(err.GetExceptionName().c_str()),
-		                  string(err.GetMessage().c_str()));
+		throw IOException("CloudFormation DescribeStacks failed: %s - %s", FromAws(err.GetExceptionName()),
+		                  FromAws(err.GetMessage()));
 	}
 	const auto &stacks = outcome.GetResult().GetStacks();
 	if (stacks.empty()) {
@@ -536,35 +542,36 @@ static void CloudFormationDescribeStackFun(ClientContext &context, TableFunction
 	}
 	const auto &stack = stacks[0];
 
-	string status(Aws::CloudFormation::Model::StackStatusMapper::GetNameForStackStatus(stack.GetStackStatus()).c_str());
-	string reason(stack.GetStackStatusReason().c_str());
-	string created(stack.GetCreationTime().ToGmtString(Aws::Utils::DateFormat::ISO_8601).c_str());
+	string status =
+	    FromAws(Aws::CloudFormation::Model::StackStatusMapper::GetNameForStackStatus(stack.GetStackStatus()));
+	string reason = FromAws(stack.GetStackStatusReason());
+	string created = FromAws(stack.GetCreationTime().ToGmtString(Aws::Utils::DateFormat::ISO_8601));
 	string updated;
 	if (stack.LastUpdatedTimeHasBeenSet()) {
-		updated = string(stack.GetLastUpdatedTime().ToGmtString(Aws::Utils::DateFormat::ISO_8601).c_str());
+		updated = FromAws(stack.GetLastUpdatedTime().ToGmtString(Aws::Utils::DateFormat::ISO_8601));
 	}
-	string description(stack.GetDescription().c_str());
+	string description = FromAws(stack.GetDescription());
 
 	vector<Value> tag_keys;
 	vector<Value> tag_values;
 	for (const auto &t : stack.GetTags()) {
-		tag_keys.emplace_back(string(t.GetKey().c_str()));
-		tag_values.emplace_back(string(t.GetValue().c_str()));
+		tag_keys.emplace_back(FromAws(t.GetKey()));
+		tag_values.emplace_back(FromAws(t.GetValue()));
 	}
 	auto tags = Value::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR, std::move(tag_keys), std::move(tag_values));
 
 	vector<Value> output_keys;
 	vector<Value> output_values;
 	for (const auto &o : stack.GetOutputs()) {
-		output_keys.emplace_back(string(o.GetOutputKey().c_str()));
-		output_values.emplace_back(string(o.GetOutputValue().c_str()));
+		output_keys.emplace_back(FromAws(o.GetOutputKey()));
+		output_values.emplace_back(FromAws(o.GetOutputValue()));
 	}
 	auto outputs =
 	    Value::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR, std::move(output_keys), std::move(output_values));
 
 	output.SetValue(0, 0, Value(data.handle.region));
-	output.SetValue(1, 0, Value(string(stack.GetStackName().c_str())));
-	output.SetValue(2, 0, Value(string(stack.GetStackId().c_str())));
+	output.SetValue(1, 0, Value(FromAws(stack.GetStackName())));
+	output.SetValue(2, 0, Value(FromAws(stack.GetStackId())));
 	output.SetValue(3, 0, Value(status));
 	output.SetValue(4, 0, reason.empty() ? Value() : Value(reason));
 	output.SetValue(5, 0, created.empty() ? Value() : Value(created));
@@ -648,8 +655,8 @@ static void CloudFormationDeleteStackFun(ClientContext &context, TableFunctionIn
 		} else {
 			const auto &stack = stacks[0];
 			exists = Value::BOOLEAN(true);
-			status = Value(string(
-			    Aws::CloudFormation::Model::StackStatusMapper::GetNameForStackStatus(stack.GetStackStatus()).c_str()));
+			status = Value(
+			    FromAws(Aws::CloudFormation::Model::StackStatusMapper::GetNameForStackStatus(stack.GetStackStatus())));
 			if (stack.EnableTerminationProtectionHasBeenSet()) {
 				termination_protection = Value::BOOLEAN(stack.GetEnableTerminationProtection());
 			}
@@ -659,11 +666,11 @@ static void CloudFormationDeleteStackFun(ClientContext &context, TableFunctionIn
 		// CloudFormation reports an absent stack as ValidationError. DeleteStack is
 		// idempotent there - it succeeds - so a dry run must report the absence
 		// rather than raise, or it would predict a failure that never happens.
-		if (string(err.GetExceptionName().c_str()) == "ValidationError") {
+		if (FromAws(err.GetExceptionName()) == "ValidationError") {
 			exists = Value::BOOLEAN(false);
 		} else if (data.dry_run) {
-			throw IOException("CloudFormation DescribeStacks failed: %s - %s", string(err.GetExceptionName().c_str()),
-			                  string(err.GetMessage().c_str()));
+			throw IOException("CloudFormation DescribeStacks failed: %s - %s", FromAws(err.GetExceptionName()),
+			                  FromAws(err.GetMessage()));
 		}
 	}
 
@@ -676,8 +683,8 @@ static void CloudFormationDeleteStackFun(ClientContext &context, TableFunctionIn
 		auto outcome = cloudformation_client.DeleteStack(req);
 		if (!outcome.IsSuccess()) {
 			const auto &err = outcome.GetError();
-			throw IOException("CloudFormation DeleteStack failed: %s - %s", string(err.GetExceptionName().c_str()),
-			                  string(err.GetMessage().c_str()));
+			throw IOException("CloudFormation DeleteStack failed: %s - %s", FromAws(err.GetExceptionName()),
+			                  FromAws(err.GetMessage()));
 		}
 		// Pass-through: echo the input handle byte-for-byte. Any extra keys the
 		// caller put in (annotations, timestamps, custom metadata) survive intact.
@@ -793,24 +800,24 @@ static void CloudFormationListStacksFun(ClientContext &context, TableFunctionInp
 			auto outcome = cloudformation_client.ListStacks(req);
 			if (!outcome.IsSuccess()) {
 				const auto &err = outcome.GetError();
-				throw IOException("CloudFormation ListStacks failed: %s - %s", string(err.GetExceptionName().c_str()),
-				                  string(err.GetMessage().c_str()));
+				throw IOException("CloudFormation ListStacks failed: %s - %s", FromAws(err.GetExceptionName()),
+				                  FromAws(err.GetMessage()));
 			}
 			const auto &res = outcome.GetResult();
 			for (const auto &s : res.GetStackSummaries()) {
 				CloudFormationListStacksRow row;
 				row.region = data.region;
-				row.stack_name = string(s.GetStackName().c_str());
-				row.stack_id = string(s.GetStackId().c_str());
-				row.status = string(
-				    Aws::CloudFormation::Model::StackStatusMapper::GetNameForStackStatus(s.GetStackStatus()).c_str());
-				row.status_reason = string(s.GetStackStatusReason().c_str());
-				row.creation_time = string(s.GetCreationTime().ToGmtString(Aws::Utils::DateFormat::ISO_8601).c_str());
+				row.stack_name = FromAws(s.GetStackName());
+				row.stack_id = FromAws(s.GetStackId());
+				row.status =
+				    FromAws(Aws::CloudFormation::Model::StackStatusMapper::GetNameForStackStatus(s.GetStackStatus()));
+				row.status_reason = FromAws(s.GetStackStatusReason());
+				row.creation_time = FromAws(s.GetCreationTime().ToGmtString(Aws::Utils::DateFormat::ISO_8601));
 				if (s.LastUpdatedTimeHasBeenSet()) {
 					row.last_updated_time =
-					    string(s.GetLastUpdatedTime().ToGmtString(Aws::Utils::DateFormat::ISO_8601).c_str());
+					    FromAws(s.GetLastUpdatedTime().ToGmtString(Aws::Utils::DateFormat::ISO_8601));
 				}
-				row.description = string(s.GetTemplateDescription().c_str());
+				row.description = FromAws(s.GetTemplateDescription());
 				data.rows.push_back(row);
 			}
 			next_token = res.GetNextToken();
