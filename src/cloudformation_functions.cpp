@@ -278,7 +278,7 @@ ResolvedStackRequest ResolveStackRequest(Aws::CloudFormation::CloudFormationClie
 		// Explicit name
 		if (data.name_arg.size() > MAX_STACK_NAME_LEN) {
 			throw InvalidInputException("cloudformation_create_stack: explicit name '%s' is %llu chars; max %llu "
-			                            "(to keep the resulting CFN stack ARN within the 128-char API limit)",
+			                            "(resulting CFN stack ARN length is bounded to 128 chars)",
 			                            data.name_arg, (unsigned long long)data.name_arg.size(),
 			                            (unsigned long long)MAX_STACK_NAME_LEN);
 		}
