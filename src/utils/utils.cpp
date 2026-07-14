@@ -2,6 +2,7 @@
 
 #include "aws_client.hpp"
 
+#include "duckdb/catalog/catalog.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/database.hpp"
@@ -105,11 +106,60 @@ unique_ptr<SecretEntry> FindAwsSecret(ClientContext &context, const string &secr
 	                      "CREATE SECRET (TYPE aws, PROVIDER credential_chain, REGION '<region>')");
 }
 
+string GetSecretString(const KeyValueSecret &secret, const string &key) {
+	auto value = secret.TryGetValue(Identifier(key));
+	if (value.IsNull()) {
+		return "";
+	}
+	return value.ToString();
+}
+
+std::shared_ptr<Aws::Auth::AWSCredentialsProvider> CredentialsProviderFromSecret(const KeyValueSecret &secret,
+                                                                                 const string &service) {
+	auto key_id = GetSecretString(secret, "key_id");
+	auto secret_key = GetSecretString(secret, "secret");
+	auto session_token = GetSecretString(secret, "session_token");
+	if (key_id.empty() || secret_key.empty()) {
+		throw InvalidConfigurationException(
+		    "Secret \"%s\" holds no AWS credentials (no 'key_id'/'secret'), so it cannot be used to reach %s",
+		    secret.GetName().GetIdentifierName(), service);
+	}
+	return Aws::MakeShared<Aws::Auth::SimpleAWSCredentialsProvider>(service.c_str(), key_id.c_str(), secret_key.c_str(),
+	                                                                session_token.c_str());
+}
+
+string EscapeConnectionValue(const string &value) {
+	string result = "'";
+	for (auto c : value) {
+		if (c == '\\' || c == '\'') {
+			result += '\\';
+		}
+		result += c;
+	}
+	result += "'";
+	return result;
+}
+
 const char *const POSTGRES_EXTENSION_NAME = "postgres";
 
 optional_ptr<StorageExtension> FindPostgresStorageExtension(const DBConfig &config) {
 	// Registered as "postgres_scanner", which is what "postgres" aliases to.
 	return StorageExtension::Find(config, ExtensionHelper::ApplyExtensionAlias(POSTGRES_EXTENSION_NAME));
+}
+
+optional_ptr<StorageExtension> RequirePostgresStorageExtension(ClientContext &context, const string &attach_type) {
+	auto &db_config = DBConfig::GetConfig(context);
+	auto postgres_extension = FindPostgresStorageExtension(db_config);
+	if (!postgres_extension) {
+		Catalog::TryAutoLoad(context, POSTGRES_EXTENSION_NAME);
+		postgres_extension = FindPostgresStorageExtension(db_config);
+	}
+	if (!postgres_extension || !postgres_extension->attach) {
+		throw InvalidConfigurationException("Attaching %s requires the postgres extension, which could not be loaded. "
+		                                    "Run 'INSTALL postgres; LOAD postgres;' and retry",
+		                                    attach_type);
+	}
+	return postgres_extension;
 }
 
 } // namespace duckdb

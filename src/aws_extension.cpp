@@ -1,6 +1,7 @@
 #include "aws_secret.hpp"
 #include "aws_extension.hpp"
 #include "cloudformation_functions.hpp"
+#include "rds/rds_utils.hpp"
 #include "redshift/redshift_utils.hpp"
 
 #include "duckdb.hpp"
@@ -24,6 +25,9 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	// Makes `ATTACH '<cluster-id>' (TYPE redshift, ...)` resolve to the redshift storage extension.
 	Redshift::RegisterStorageExtension(loader);
+
+	// Same for `ATTACH '<db-cluster-id>' (TYPE rds, ...)`.
+	Rds::RegisterStorageExtension(loader);
 
 	CloudFormationFunctions::Register(loader);
 }
