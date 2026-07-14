@@ -17,7 +17,7 @@ jobs:
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@main
     with:
       extension_name: aws
-      duckdb_version: f0af2e1b4462143158289d5bb8028d52ee1f3342
+      duckdb_version: 2009475939c7b5ada2e55cc74843339bd9be79e3
       ci_tools_version: main
       exclude_archs: 'wasm_mvp;wasm_eh;wasm_threads;windows_amd64_rtools;windows_amd64_mingw' # Doesn't work anyway: env local file or env access possible
 
@@ -28,8 +28,17 @@ jobs:
     secrets: inherit
     with:
       extension_name: aws
-      duckdb_version: f0af2e1b4462143158289d5bb8028d52ee1f3342
+      duckdb_version: 2009475939c7b5ada2e55cc74843339bd9be79e3
       ci_tools_version: main
       exclude_archs: 'wasm_mvp;wasm_eh;wasm_threads;windows_amd64_rtools;windows_amd64_mingw' # Doesn't work anyway: env local file or env access possible
       deploy_latest: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}
       deploy_versioned: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}
+
+  code-quality-check:
+    name: Code Quality Check
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_code_quality.yml@main
+    with:
+      extension_name: iceberg
+      duckdb_version: 2009475939c7b5ada2e55cc74843339bd9be79e3
+      ci_tools_version: main
+      format_checks: 'format'
