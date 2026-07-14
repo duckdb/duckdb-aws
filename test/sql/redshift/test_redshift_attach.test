@@ -1,0 +1,77 @@
+# name: test/sql/redshift/test_redshift_attach.test
+# description: test attaching a redshift cluster discovered via DescribeClusters
+# group: [redshift]
+
+require aws
+
+require parquet
+
+# The 'aws' secret type is registered by httpfs.
+require httpfs
+
+require postgres_scanner
+
+# This test hits a real Redshift cluster + a real AWS identity, so it only runs
+# when the test cluster is available. The runner must already be authenticated to
+# AWS in a way that matches the CHAIN below (e.g. `aws sso login`).
+require-env REDSHIFT_TEST_SERVER_AVAILABLE 1
+
+statement ok
+SET allow_persistent_secrets=false
+
+# Redshift has no secret type of its own: attaching a cluster only needs an AWS identity,
+# which is what an ordinary 'aws' secret holds.
+# NOTE: adjust CHAIN/PROFILE to match how the runner authenticates to AWS.
+statement ok
+CREATE SECRET redshift_creds (
+     TYPE aws,
+    PROVIDER credential_chain,
+    profile 'personal_not_root',
+    CHAIN 'config',
+    REGION 'eu-central-1',
+);
+
+# The resolved AWS credentials must be redacted in the secret listing.
+query I
+SELECT secret_string LIKE '%redacted%' FROM (FROM duckdb_secrets() WHERE name = 'redshift_creds');
+----
+true
+
+
+# In this ATTACH call, two API calls should be made to AWS redshift services.
+# 1 DescribeClusters with `aws redshift describe-clusters --cluster-identifier redshift-cluster-1`
+# 2 GetClusterCredentialsWithIAM, to mint a short-lived db username and password.
+# `TYPE redshift` is handled by the aws extension, which resolves the cluster and then hands
+# the resulting connection string to the postgres extension.
+statement ok
+ATTACH 'redshift-cluster-1' AS redshift_db (TYPE redshift);
+
+statement ok
+select * from (show all tables) where database = 'redshift_db';
+
+# The dev database should expose exactly 7 tables.
+query I
+SELECT count(*) FROM (SHOW ALL TABLES) WHERE database = 'redshift_db';
+----
+7
+
+query IIIII
+select * from redshift_db.public.venue order by venueid limit 10;
+----
+1	Toyota Park	Bridgeview	IL	0
+2	Columbus Crew Stadium	Columbus	OH	0
+3	RFK Stadium	Washington	DC	0
+4	CommunityAmerica Ballpark	Kansas City	KS	0
+5	Gillette Stadium	Foxborough	MA	68756
+6	New York Giants Stadium	East Rutherford	NJ	80242
+7	BMO Field	Toronto	ON	0
+8	The Home Depot Center	Carson	CA	0
+9	Dick's Sporting Goods Park	Commerce City	CO	0
+10	Pizza Hut Park	Frisco	TX	0
+
+
+statement ok
+DETACH redshift_db
+
+statement ok
+DROP SECRET redshift_creds

@@ -133,6 +133,10 @@ const string &SessionId() {
 constexpr idx_t MAX_STACK_NAME_LEN = 34;
 constexpr idx_t MAX_PREFIX_LEN = MAX_STACK_NAME_LEN - 12 - 1; // 21: '<prefix>-<12hex>'
 
+//! Reserved option keys configure the AWS client; everything else in `options`
+//! must match a parameter the template declares.
+const std::set<string> RESERVED_OPTION_KEYS = {
+    "region", "chain", "profile", "assume_role_arn", "external_id", "web_identity_token_file", "session_name"};
 } // namespace
 
 //===--------------------------------------------------------------------===//
