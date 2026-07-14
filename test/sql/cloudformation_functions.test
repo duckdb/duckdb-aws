@@ -6,20 +6,62 @@ require no_extension_autoloading "EXPECTED: Test relies on explicit INSTALL and 
 
 # Before LOAD aws, the functions do not exist.
 statement error
-SELECT * FROM cloudformation_create_stack('x', NULL, MAP {'region': 'us-east-1'});
+SELECT * FROM cloudformation_create_stack('x', region := 'us-east-1');
 ----
 
 require aws
 
 # cloudformation_create_stack: a NULL template is rejected at bind time.
 statement error
-SELECT * FROM cloudformation_create_stack(NULL, NULL, MAP {'region': 'us-east-1'});
+SELECT * FROM cloudformation_create_stack(NULL, region := 'us-east-1');
 ----
 template argument must not be NULL
 
+# The template is the only positional argument. name/options are named now, so the
+# old three-positional-argument form no longer binds.
+statement error
+SELECT * FROM cloudformation_create_stack('AWSTemplateFormatVersion: 2010-09-09', NULL, MAP {'region': 'us-east-1'});
+----
+
 # cloudformation_create_stack: region is required (checked before any AWS call).
 statement error
-SELECT * FROM cloudformation_create_stack('AWSTemplateFormatVersion: 2010-09-09', NULL, MAP {'InstanceType': 't3.micro'});
+SELECT * FROM cloudformation_create_stack('AWSTemplateFormatVersion: 2010-09-09', template_parameters := MAP {'InstanceType': 't3.micro'});
+----
+region is required
+
+# Credentials are not per-call configuration: they come from CREATE SECRET, as
+# they do for describe_stack/delete_stack/list_stacks. So the keys that used to be
+# reserved inside `options` are not accepted as named parameters either.
+statement error
+SELECT * FROM cloudformation_create_stack('AWSTemplateFormatVersion: 2010-09-09', region := 'us-east-1', profile := 'p');
+----
+profile
+
+# dry_run does not bypass argument validation: it skips the mutation, nothing else.
+statement error
+SELECT * FROM cloudformation_create_stack('AWSTemplateFormatVersion: 2010-09-09', template_parameters := MAP {'InstanceType': 't3.micro'}, dry_run := true);
+----
+region is required
+
+# dry_run is a typed BOOLEAN, so an unparseable value is rejected rather than
+# quietly falling back to false and creating a real stack.
+statement error
+SELECT * FROM cloudformation_create_stack('AWSTemplateFormatVersion: 2010-09-09', region := 'us-east-1', dry_run := 'maybe');
+----
+Could not convert string 'maybe' to BOOL
+
+# The output schema does not depend on dry_run. Column resolution happens before
+# the runtime region check, so a missing column would surface as a binder error
+# rather than the 'region is required' expected below.
+statement error
+SELECT handle, stack_name, region, parameters, tags, capabilities, description
+FROM cloudformation_create_stack('AWSTemplateFormatVersion: 2010-09-09', dry_run := true);
+----
+region is required
+
+statement error
+SELECT handle, stack_name, region, parameters, tags, capabilities, description
+FROM cloudformation_create_stack('AWSTemplateFormatVersion: 2010-09-09');
 ----
 region is required
 
@@ -46,6 +88,40 @@ statement error
 SELECT * FROM cloudformation_delete_stack(MAP {'stack_name': 's'});
 ----
 handle is missing 'region'
+
+# dry_run does not bypass handle validation on delete either.
+statement error
+SELECT * FROM cloudformation_delete_stack(MAP {'stack_name': 's'}, dry_run := true);
+----
+handle is missing 'region'
+
+# dry_run on delete is the same typed BOOLEAN. A value that failed to parse must
+# not fall through to false and delete a real stack.
+statement error
+SELECT * FROM cloudformation_delete_stack(MAP {'stack_name': 's', 'region': 'us-east-1'}, dry_run := 'maybe');
+----
+Could not convert string 'maybe' to BOOL
+
+# cloudformation_delete_stack exposes the same columns with and without dry_run.
+# A missing column would surface as a binder error rather than the handle error.
+statement error
+SELECT handle, stack_name, stack_id, region, exists, status, termination_protection
+FROM cloudformation_delete_stack(MAP {'stack_name': 's'}, dry_run := true);
+----
+handle is missing 'region'
+
+statement error
+SELECT handle, stack_name, stack_id, region, exists, status, termination_protection
+FROM cloudformation_delete_stack(MAP {'stack_name': 's'});
+----
+handle is missing 'region'
+
+# A dry-run create returns a NULL handle, which delete_stack must refuse rather
+# than silently treat as a deletable stack.
+statement error
+SELECT * FROM cloudformation_delete_stack(NULL::MAP(VARCHAR, VARCHAR), dry_run := true);
+----
+handle must contain 'stack_id' or 'stack_name'
 
 # duckdb_aws_session_id returns a non-empty string.
 query I
