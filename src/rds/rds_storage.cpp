@@ -173,7 +173,23 @@ unique_ptr<Catalog> RdsAttach(optional_ptr<StorageExtensionInfo> storage_info, C
 	// an aws/s3 secret holds none of them.
 	options.options["secret"] = Value(secret.GetName().GetIdentifierName());
 
-	return postgres_extension->attach(postgres_extension->storage_info.get(), context, db, name, info, options);
+	try {
+		return postgres_extension->attach(postgres_extension->storage_info.get(), context, db, name, info, options);
+	} catch (std::exception &ex) {
+		auto message = PostgresAttachErrorMessage(ex, token);
+		auto error_message = StringUtil::Format("Unable to connect to RDS instance '%s': %s", instance_id, message);
+		if (StringUtil::Contains(message, "password authentication failed")) {
+			// RDS hands the token to Postgres as an ordinary password, so a database user that has
+			// not been switched over to IAM authentication rejects it as one - and says nothing
+			// about IAM, because as far as it knows a password simply did not match.
+			error_message += StringUtil::Format("\nCheck that user '%s' exists on the instance and has rds_iam "
+			                                    "privileges (`GRANT rds_iam TO \"%s\";`, run as the master user)."
+			                                    "\nThe AWS identity behind the secret must also be allowed "
+			                                    "'rds-db:connect' privileges as that user.",
+			                                    user, user);
+		}
+		throw IOException(error_message);
+	}
 }
 
 unique_ptr<TransactionManager> RdsCreateTransactionManager(optional_ptr<StorageExtensionInfo> storage_info,

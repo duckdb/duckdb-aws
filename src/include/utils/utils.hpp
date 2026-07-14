@@ -57,4 +57,11 @@ optional_ptr<StorageExtension> FindPostgresStorageExtension(const DBConfig &conf
 //! `attach_type` only names the caller in the error thrown when it cannot be loaded.
 optional_ptr<StorageExtension> RequirePostgresStorageExtension(ClientContext &context, const string &attach_type);
 
+//! The message to report for a failed postgres attach. Postgres quotes the entire connection
+//! string back, which buries the server's own diagnostic and puts `password` - for Redshift and
+//! RDS a live, AWS-generated credential - in the error and in whatever log it lands in. Returns
+//! the server's message alone when the connection got far enough to produce one, and otherwise
+//! the full message with the password redacted.
+string PostgresAttachErrorMessage(std::exception &ex, const string &password);
+
 } // namespace duckdb

@@ -3,7 +3,9 @@
 #include "aws_client.hpp"
 
 #include "duckdb/catalog/catalog.hpp"
+#include "duckdb/common/error_data.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/string_util.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/extension_helper.hpp"
@@ -160,6 +162,20 @@ optional_ptr<StorageExtension> RequirePostgresStorageExtension(ClientContext &co
 		                                    attach_type);
 	}
 	return postgres_extension;
+}
+
+string PostgresAttachErrorMessage(std::exception &ex, const string &password) {
+	ErrorData error(ex);
+	auto message = StringUtil::Replace(error.RawMessage(), password, "...");
+	// Everything the server says is prefixed with its severity, and everything before that is the
+	// connection string we passed in - including the password, which is why cutting here is enough
+	// on its own. A connection that never reached the server has no such message, and there the
+	// redaction above is what removes the password.
+	auto server_message = message.find("FATAL:");
+	if (server_message != string::npos) {
+		return message.substr(server_message);
+	}
+	return message;
 }
 
 } // namespace duckdb

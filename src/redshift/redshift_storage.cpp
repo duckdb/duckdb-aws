@@ -140,7 +140,12 @@ unique_ptr<Catalog> RedshiftAttach(optional_ptr<StorageExtensionInfo> storage_in
 	// ...) from a secret and an aws/s3 secret holds none of them.
 	options.options["secret"] = Value(secret.GetName().GetIdentifierName());
 
-	return postgres_extension->attach(postgres_extension->storage_info.get(), context, db, name, info, options);
+	try {
+		return postgres_extension->attach(postgres_extension->storage_info.get(), context, db, name, info, options);
+	} catch (std::exception &ex) {
+		auto message = PostgresAttachErrorMessage(ex, credentials.db_password);
+		throw IOException("Unable to connect to Redshift cluster '%s': %s", cluster_id, message);
+	}
 }
 
 unique_ptr<TransactionManager> RedshiftCreateTransactionManager(optional_ptr<StorageExtensionInfo> storage_info,
