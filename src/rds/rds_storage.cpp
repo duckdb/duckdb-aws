@@ -13,6 +13,7 @@
 #include "duckdb/main/settings.hpp"
 #include "duckdb/parser/parsed_data/attach_info.hpp"
 #include "duckdb/storage/storage_extension.hpp"
+#include "duckdb/transaction/transaction_manager.hpp"
 
 namespace duckdb {
 
@@ -112,10 +113,15 @@ unique_ptr<Catalog> RdsAttach(optional_ptr<StorageExtensionInfo> storage_info, C
 	// Resolved after the engine check, so an unsupported engine does not first demand postgres.
 	auto postgres_extension = RequirePostgresStorageExtension(context, "an RDS instance");
 
-	// Anything ATTACH pins explicitly wins over what the instance reports - e.g. DATABASE for an
-	// instance that has no initial database.
+	// Anything ATTACH pins explicitly wins over what the instance reports.
 	auto host = attach_options.host.empty() ? instance.endpoint_address : attach_options.host;
 	auto db_name = attach_options.db_name.empty() ? instance.db_name : attach_options.db_name;
+	if (db_name.empty()) {
+		// An instance created without an initial database reports none, and libpq then defaults
+		// dbname to the *user* name, which is never a database that exists here. Every Postgres
+		// engine provisions 'postgres', and the engine check above has established this is one.
+		db_name = "postgres";
+	}
 
 	auto port = instance.endpoint_port;
 	if (!attach_options.port.empty()) {
@@ -152,12 +158,10 @@ unique_ptr<Catalog> RdsAttach(optional_ptr<StorageExtensionInfo> storage_info, C
 	auto token = Rds::GenerateAuthToken(provider, host, port, region, user);
 
 	// RDS rejects an IAM login over an unencrypted connection.
-	string connection_string =
-	    "host=" + EscapeConnectionValue(host) + " port=" + EscapeConnectionValue(to_string(port)) +
-	    " user=" + EscapeConnectionValue(user) + " password=" + EscapeConnectionValue(token) + " sslmode='require'";
-	if (!db_name.empty()) {
-		connection_string += " dbname=" + EscapeConnectionValue(db_name);
-	}
+	string connection_string = "host=" + EscapeConnectionValue(host) +
+	                           " port=" + EscapeConnectionValue(to_string(port)) +
+	                           " user=" + EscapeConnectionValue(user) + " password=" + EscapeConnectionValue(token) +
+	                           " sslmode='require'" + " dbname=" + EscapeConnectionValue(db_name);
 
 	// Hand the postgres extension a plain connection string as the attach path.
 	info.path = connection_string;
