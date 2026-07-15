@@ -4,6 +4,7 @@
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/database.hpp"
+#include "duckdb/main/materialized_query_result.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/main/external_resource_type_registry.hpp"
 
@@ -13,6 +14,11 @@ namespace duckdb {
 // param. Its Outputs expose the keys read by the status callback below (Endpoint, Token).
 static constexpr const char *QUACK_ON_EC2_TEMPLATE =
     "https://test-wasm-carlo.s3.us-east-1.amazonaws.com/duckdb-quack-ec2-template.yaml";
+
+// The external-resource type name, also stamped as a stack tag at create time so the list callback can
+// discover quack-on-ec2 stacks by filtering DescribeStacks output on it.
+static constexpr const char *QUACK_ON_EC2_TYPE = "aws:cloudformation:quack-on-ec2";
+static constexpr const char *RESOURCE_TYPE_TAG = "duckdb-external-resource-type";
 
 namespace {
 
@@ -87,6 +93,12 @@ static void QuackCreateFun(ClientContext &context, TableFunctionInput &data_p, D
 		auto template_params = Value::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR, tp_keys, tp_values);
 		sql += ", template_parameters := " + template_params.ToSQLString();
 	}
+	// Provenance tag so the list callback can discover these stacks by filtering on it (added to, not
+	// replacing, cloudformation_create_stack's own auto-tags like created-by).
+	vector<Value> tag_keys {Value(string(RESOURCE_TYPE_TAG))};
+	vector<Value> tag_values {Value(string(QUACK_ON_EC2_TYPE))};
+	auto resource_tag = Value::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR, tag_keys, tag_values);
+	sql += ", tags := " + resource_tag.ToSQLString();
 	sql += ")";
 
 	Connection con(DatabaseInstance::GetDatabase(context));
@@ -162,6 +174,91 @@ static void QuackDestroyFun(ClientContext &context, TableFunctionInput &data_p, 
 	state.done = true;
 }
 
+// list(params MAP) -> TABLE(handle MAP, reference VARCHAR, state VARCHAR, metadata MAP). Discovers existing
+// quack-on-ec2 stacks (identified by the provenance tag stamped at create) and shapes each into a row whose
+// `handle` is byte-identical to what create returns, so it round-trips through status/destroy verbatim. The
+// connect blob (uri/token) is deliberately NOT surfaced here — list is discovery; resolve/status produce that.
+struct QuackListState : public GlobalTableFunctionState {
+	unique_ptr<MaterializedQueryResult> result;
+	idx_t cursor = 0;
+	bool ran = false;
+};
+
+static unique_ptr<GlobalTableFunctionState> QuackListInit(ClientContext &, TableFunctionInitInput &) {
+	return make_uniq<QuackListState>();
+}
+
+static unique_ptr<FunctionData> QuackListBind(ClientContext &, TableFunctionBindInput &input,
+                                              vector<LogicalType> &return_types, vector<string> &names) {
+	auto result = make_uniq<QuackAdapterBindData>();
+	result->input = input.inputs[0];
+	names.emplace_back("handle");
+	return_types.emplace_back(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
+	names.emplace_back("reference");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("state");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("metadata");
+	return_types.emplace_back(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
+	return std::move(result);
+}
+
+static void QuackListFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	auto &state = data_p.global_state->Cast<QuackListState>();
+	auto &bind = data_p.bind_data->Cast<QuackAdapterBindData>();
+
+	if (!state.ran) {
+		// Optional 'region' param: if given, list just that region; otherwise sweep all regions — the parallel
+		// fan-out lives inside cloudformation_describe_stacks, so this stays a single-call SQL adapter.
+		string one_region;
+		if (!bind.input.IsNull()) {
+			for (auto &entry : MapValue::GetChildren(bind.input)) {
+				auto &kv = StructValue::GetChildren(entry);
+				auto key = kv[0].IsNull() ? string() : StringValue::Get(kv[0]);
+				if (key == "region" && !kv[1].IsNull()) {
+					one_region = StringValue::Get(kv[1]);
+				}
+			}
+		}
+		string source = one_region.empty()
+		                    ? "cloudformation_describe_stacks()"
+		                    : "cloudformation_describe_stacks(" + Value(one_region).ToSQLString() + ")";
+
+		auto sql =
+		    "SELECT MAP {'stack_name': stack_name, 'stack_id': stack_id, 'region': region} AS handle, "
+		    "       stack_id AS reference, "
+		    "       CASE WHEN status IN ('CREATE_COMPLETE', 'UPDATE_COMPLETE') THEN 'ready' "
+		    "            WHEN status LIKE 'DELETE_%' THEN 'deleting' "
+		    "            WHEN status LIKE '%ROLLBACK%' OR status LIKE '%FAILED%' THEN 'failed' "
+		    "            ELSE 'pending' END AS state, "
+		    "       MAP {'stack_status': status, 'creation_time': creation_time, "
+		    "            'last_updated_time': last_updated_time, 'description': description} AS metadata "
+		    "FROM " +
+		    source + " WHERE region_error IS NULL AND tags[" + Value(string(RESOURCE_TYPE_TAG)).ToSQLString() +
+		    "] = " + Value(string(QUACK_ON_EC2_TYPE)).ToSQLString();
+
+		Connection con(DatabaseInstance::GetDatabase(context));
+		state.result = con.Query(sql);
+		if (state.result->HasError()) {
+			throw IOException("quack-on-ec2 list failed: %s", state.result->GetError());
+		}
+		state.ran = true;
+	}
+
+	idx_t total = state.result->RowCount();
+	idx_t remaining = total - state.cursor;
+	idx_t to_emit = remaining < (idx_t)STANDARD_VECTOR_SIZE ? remaining : (idx_t)STANDARD_VECTOR_SIZE;
+	for (idx_t i = 0; i < to_emit; i++) {
+		idx_t row = state.cursor + i;
+		output.data[0].Append(state.result->GetValue(0, row));
+		output.data[1].Append(state.result->GetValue(1, row));
+		output.data[2].Append(state.result->GetValue(2, row));
+		output.data[3].Append(state.result->GetValue(3, row));
+	}
+	output.CheckCardinality(to_emit);
+	state.cursor += to_emit;
+}
+
 } // namespace
 
 void QuackOnEc2Resource::Register(ExtensionLoader &loader) {
@@ -174,6 +271,10 @@ void QuackOnEc2Resource::Register(ExtensionLoader &loader) {
 	loader.RegisterFunction(status_fn);
 	TableFunction destroy_fn("__aws__cloudformation__quack_on_ec2__destroy", {map_vv}, QuackDestroyFun, QuackDestroyBind, QuackAdapterInit);
 	loader.RegisterFunction(destroy_fn);
+	// Registered as a plain callable function only. Wiring it into the resource-type registry (a `list_function`
+	// slot) is a separate duckdb-side change, done elsewhere.
+	TableFunction list_fn("__aws__cloudformation__quack_on_ec2__list", {map_vv}, QuackListFun, QuackListBind, QuackListInit);
+	loader.RegisterFunction(list_fn);
 
 	// Register the resource type on the C++ side (origin = "extension"), so `LOAD aws;` is all a user needs.
 	ExternalResourceType type;

@@ -7,9 +7,11 @@
 #include "duckdb/common/insertion_order_preserving_map.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/uuid.hpp"
+#include "duckdb/function/function_set.hpp"
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
+#include "duckdb/parallel/task_executor.hpp"
 
 #include <aws/cloudformation/CloudFormationClient.h>
 #include <aws/cloudformation/model/Capability.h>
@@ -847,6 +849,251 @@ static void CloudFormationListStacksFun(ClientContext &context, TableFunctionInp
 }
 
 //===--------------------------------------------------------------------===//
+// cloudformation_describe_stacks([region | region_list])
+//
+// DescribeStacks with no stack name: every stack in the region(s) (paginated),
+// carrying tags and outputs — the tag-and-output-bearing counterpart to the
+// tag-less cloudformation_list_stacks. DELETE_COMPLETE stacks are not returned.
+//
+// Three overloads: no argument sweeps all default regions in parallel; a single
+// VARCHAR is one region (its error is thrown); a LIST(VARCHAR) is those regions
+// in parallel. The parallel variants fan out one task per region over DuckDB's
+// scheduler and SKIP a region that errors (denied/unreachable) rather than
+// failing the whole sweep.
+//===--------------------------------------------------------------------===//
+
+// Default-enabled commercial regions swept by the no-argument overload. Hardcoded for now; live enumeration
+// (ec2:DescribeRegions / account:ListRegions) is the accuracy follow-up so newly-enabled opt-in regions are
+// not silently missed.
+static const char *const AWS_DEFAULT_REGIONS[] = {
+    "us-east-1",      "us-east-2",      "us-west-1",      "us-west-2",      "ca-central-1", "sa-east-1",
+    "eu-west-1",      "eu-west-2",      "eu-west-3",      "eu-central-1",   "eu-north-1",   "ap-south-1",
+    "ap-northeast-1", "ap-northeast-2", "ap-northeast-3", "ap-southeast-1", "ap-southeast-2"};
+
+struct CloudFormationDescribeStacksRow {
+	string region;
+	string stack_name;
+	string stack_id;
+	string status;
+	string status_reason;
+	string creation_time;
+	string last_updated_time;
+	string description;
+	Value tags;
+	Value outputs;
+	// Empty for a real stack; the AWS error message for a failed-region sentinel row (region set, all stack
+	// columns NULL). Discriminates the two row kinds: real stacks have region_error IS NULL.
+	string region_error;
+};
+
+// Fetch all stacks in one region (paginated), appending to `out`. Throws on AWS error.
+static void DescribeRegionStacks(const string &region, vector<CloudFormationDescribeStacksRow> &out) {
+	auto provider = BuildAwsCredentialsProvider("", /*require_credentials=*/true);
+	auto cfg = BuildClientConfigWithCa();
+	cfg.region = region.c_str();
+	Aws::CloudFormation::CloudFormationClient cloudformation_client(provider, cfg);
+
+	Aws::String next_token;
+	do {
+		Aws::CloudFormation::Model::DescribeStacksRequest req;
+		if (!next_token.empty()) {
+			req.SetNextToken(next_token);
+		}
+		auto outcome = cloudformation_client.DescribeStacks(req);
+		if (!outcome.IsSuccess()) {
+			const auto &err = outcome.GetError();
+			throw IOException("CloudFormation DescribeStacks failed: %s - %s", FromAws(err.GetExceptionName()),
+			                  FromAws(err.GetMessage()));
+		}
+		const auto &res = outcome.GetResult();
+		for (const auto &stack : res.GetStacks()) {
+			CloudFormationDescribeStacksRow row;
+			row.region = region;
+			row.stack_name = FromAws(stack.GetStackName());
+			row.stack_id = FromAws(stack.GetStackId());
+			row.status =
+			    FromAws(Aws::CloudFormation::Model::StackStatusMapper::GetNameForStackStatus(stack.GetStackStatus()));
+			row.status_reason = FromAws(stack.GetStackStatusReason());
+			row.creation_time = FromAws(stack.GetCreationTime().ToGmtString(Aws::Utils::DateFormat::ISO_8601));
+			if (stack.LastUpdatedTimeHasBeenSet()) {
+				row.last_updated_time = FromAws(stack.GetLastUpdatedTime().ToGmtString(Aws::Utils::DateFormat::ISO_8601));
+			}
+			row.description = FromAws(stack.GetDescription());
+
+			vector<Value> tag_keys;
+			vector<Value> tag_values;
+			for (const auto &t : stack.GetTags()) {
+				tag_keys.emplace_back(FromAws(t.GetKey()));
+				tag_values.emplace_back(FromAws(t.GetValue()));
+			}
+			row.tags = Value::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR, std::move(tag_keys), std::move(tag_values));
+
+			vector<Value> output_keys;
+			vector<Value> output_values;
+			for (const auto &o : stack.GetOutputs()) {
+				output_keys.emplace_back(FromAws(o.GetOutputKey()));
+				output_values.emplace_back(FromAws(o.GetOutputValue()));
+			}
+			row.outputs = Value::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR, std::move(output_keys),
+			                         std::move(output_values));
+
+			out.push_back(std::move(row));
+		}
+		next_token = res.GetNextToken();
+	} while (!next_token.empty());
+}
+
+// One region's DescribeStacks as a scheduler task. Catches its own AWS error (never PushError, which would
+// abort the whole sweep via WorkOnTasks) and replaces its slot with a single 'region_error' sentinel row, so
+// a dead region is surfaced-but-not-fatal instead of silently vanishing.
+struct DescribeRegionTask : public BaseExecutorTask {
+	DescribeRegionTask(TaskExecutor &executor, string region_p, vector<CloudFormationDescribeStacksRow> &slot_p)
+	    : BaseExecutorTask(executor), region(std::move(region_p)), slot(slot_p) {
+	}
+	void ExecuteTask() override {
+		try {
+			DescribeRegionStacks(region, slot);
+		} catch (const std::exception &e) {
+			EmitError(e.what());
+		} catch (...) {
+			EmitError("unknown error");
+		}
+	}
+	void EmitError(const string &message) {
+		slot.clear();
+		CloudFormationDescribeStacksRow err;
+		err.region = region;
+		err.region_error = message;
+		err.tags = Value(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));    // NULL
+		err.outputs = Value(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR)); // NULL
+		slot.push_back(std::move(err));
+	}
+	string region;
+	vector<CloudFormationDescribeStacksRow> &slot;
+};
+
+struct CloudFormationDescribeStacksBindData : public TableFunctionData {
+	vector<string> regions;
+	bool throw_on_region_error = false; // true only for the single-VARCHAR overload
+	bool initialized = false;
+	vector<CloudFormationDescribeStacksRow> rows;
+	idx_t cursor = 0;
+};
+
+static unique_ptr<FunctionData> CloudFormationDescribeStacksBind(ClientContext &context, TableFunctionBindInput &input,
+                                                                 vector<LogicalType> &return_types,
+                                                                 vector<string> &names) {
+	auto result = make_uniq<CloudFormationDescribeStacksBindData>();
+
+	if (input.inputs.empty()) {
+		// No argument: sweep all default regions in parallel.
+		for (auto *r : AWS_DEFAULT_REGIONS) {
+			result->regions.emplace_back(r);
+		}
+	} else if (input.inputs[0].type().id() == LogicalTypeId::LIST) {
+		// Explicit region list: parallel, skip-on-error.
+		if (input.inputs[0].IsNull()) {
+			throw InvalidInputException("cloudformation_describe_stacks: region list must not be NULL");
+		}
+		for (auto &child : ListValue::GetChildren(input.inputs[0])) {
+			if (child.IsNull()) {
+				continue;
+			}
+			auto r = StringValue::Get(child);
+			if (!r.empty()) {
+				result->regions.push_back(r);
+			}
+		}
+		if (result->regions.empty()) {
+			throw InvalidInputException("cloudformation_describe_stacks: region list must not be empty");
+		}
+	} else {
+		// Single explicit region: surface its error rather than silently skipping.
+		if (input.inputs[0].IsNull()) {
+			throw InvalidInputException("cloudformation_describe_stacks: region must not be NULL");
+		}
+		auto r = StringValue::Get(input.inputs[0]);
+		if (r.empty()) {
+			throw InvalidInputException("cloudformation_describe_stacks: region must not be empty");
+		}
+		result->regions.push_back(r);
+		result->throw_on_region_error = true;
+	}
+
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("region");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("stack_name");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("stack_id");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("status");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("status_reason");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("creation_time");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("last_updated_time");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("description");
+	return_types.emplace_back(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
+	names.emplace_back("tags");
+	return_types.emplace_back(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
+	names.emplace_back("outputs");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("region_error");
+
+	return std::move(result);
+}
+
+static void CloudFormationDescribeStacksFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	auto &data = (CloudFormationDescribeStacksBindData &)*data_p.bind_data;
+
+	if (!data.initialized) {
+		if (data.throw_on_region_error) {
+			// Single explicit region: run inline and let its error propagate.
+			DescribeRegionStacks(data.regions[0], data.rows);
+		} else {
+			// Parallel fan-out: one task per region into its own slot; a region that errors is skipped. Fixed-size
+			// `slots` so the vector never reallocates while tasks hold references into it.
+			vector<vector<CloudFormationDescribeStacksRow>> slots(data.regions.size());
+			TaskExecutor executor(context);
+			for (idx_t i = 0; i < data.regions.size(); i++) {
+				executor.ScheduleTask(make_uniq<DescribeRegionTask>(executor, data.regions[i], slots[i]));
+			}
+			executor.WorkOnTasks();
+			for (auto &slot : slots) {
+				for (auto &row : slot) {
+					data.rows.push_back(std::move(row));
+				}
+			}
+		}
+		data.initialized = true;
+	}
+
+	idx_t remaining = data.rows.size() - data.cursor;
+	idx_t to_emit = std::min(remaining, (idx_t)STANDARD_VECTOR_SIZE);
+	for (idx_t i = 0; i < to_emit; i++) {
+		auto &r = data.rows[data.cursor + i];
+		// stack_name/stack_id/status are always set for a real stack and empty for a 'region_error' sentinel,
+		// so empty -> NULL cleanly distinguishes the two without special-casing.
+		output.data[0].Append(Value(r.region));
+		output.data[1].Append(r.stack_name.empty() ? Value() : Value(r.stack_name));
+		output.data[2].Append(r.stack_id.empty() ? Value() : Value(r.stack_id));
+		output.data[3].Append(r.status.empty() ? Value() : Value(r.status));
+		output.data[4].Append(r.status_reason.empty() ? Value() : Value(r.status_reason));
+		output.data[5].Append(r.creation_time.empty() ? Value() : Value(r.creation_time));
+		output.data[6].Append(r.last_updated_time.empty() ? Value() : Value(r.last_updated_time));
+		output.data[7].Append(r.description.empty() ? Value() : Value(r.description));
+		output.data[8].Append(r.tags);
+		output.data[9].Append(r.outputs);
+		output.data[10].Append(r.region_error.empty() ? Value() : Value(r.region_error));
+	}
+	output.CheckCardinality(to_emit);
+	data.cursor += to_emit;
+}
+
+//===--------------------------------------------------------------------===//
 // duckdb_aws_session_id() scalar function
 //===--------------------------------------------------------------------===//
 
@@ -889,6 +1136,17 @@ void CloudFormationFunctions::Register(ExtensionLoader &loader) {
 	                      CloudFormationListStacksBind);
 	list_fn.named_parameters["status_filter"] = LogicalType::LIST(LogicalType::VARCHAR);
 	loader.RegisterFunction(list_fn);
+
+	// Overloaded: no arg -> all default regions (parallel); VARCHAR -> one region; LIST(VARCHAR) -> those
+	// regions (parallel). Bind dispatches on the argument shape.
+	TableFunctionSet describe_all_set("cloudformation_describe_stacks");
+	describe_all_set.AddFunction(
+	    TableFunction({}, CloudFormationDescribeStacksFun, CloudFormationDescribeStacksBind));
+	describe_all_set.AddFunction(
+	    TableFunction({LogicalType::VARCHAR}, CloudFormationDescribeStacksFun, CloudFormationDescribeStacksBind));
+	describe_all_set.AddFunction(TableFunction({LogicalType::LIST(LogicalType::VARCHAR)},
+	                                           CloudFormationDescribeStacksFun, CloudFormationDescribeStacksBind));
+	loader.RegisterFunction(describe_all_set);
 
 	ScalarFunction session_id_fn("duckdb_aws_session_id", {}, LogicalType::VARCHAR, DuckDBAwsSessionIdFunction);
 	loader.RegisterFunction(session_id_fn);
