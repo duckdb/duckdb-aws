@@ -10,10 +10,10 @@ duckdb_extension_load(aws
 # Currently Disabled since this will not build on CI. To get CI working you (most likely)
 # need to copy the vcpkg_ports/libpq in the duckdb/duckdb-postgres repo. 
 # For now commented out so unblock development
-duckdb_extension_load(postgres_scanner
-    DONT_LINK
-    GIT_URL https://github.com/duckdb/duckdb-postgres
-    GIT_TAG 74b8d3f71365b351073e9853bfcd70a612bc1488
-    SUBMODULES database-connector
-    APPLY_PATCHES
-)
+#duckdb_extension_load(postgres_scanner
+#    DONT_LINK
+#    GIT_URL https://github.com/duckdb/duckdb-postgres
+#    GIT_TAG 74b8d3f71365b351073e9853bfcd70a612bc1488
+#    SUBMODULES database-connector
+#    APPLY_PATCHES
+#)
