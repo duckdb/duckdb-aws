@@ -866,8 +866,8 @@ static void CloudFormationListStacksFun(ClientContext &context, TableFunctionInp
 // (ec2:DescribeRegions / account:ListRegions) is the accuracy follow-up so newly-enabled opt-in regions are
 // not silently missed.
 static const char *const AWS_DEFAULT_REGIONS[] = {
-    "us-east-1",      "us-east-2",      "us-west-1",      "us-west-2",      "ca-central-1", "sa-east-1",
-    "eu-west-1",      "eu-west-2",      "eu-west-3",      "eu-central-1",   "eu-north-1",   "ap-south-1",
+    "us-east-1",      "us-east-2",      "us-west-1",      "us-west-2",      "ca-central-1",  "sa-east-1",
+    "eu-west-1",      "eu-west-2",      "eu-west-3",      "eu-central-1",   "eu-north-1",    "ap-south-1",
     "ap-northeast-1", "ap-northeast-2", "ap-northeast-3", "ap-southeast-1", "ap-southeast-2"};
 
 struct CloudFormationDescribeStacksRow {
@@ -916,7 +916,8 @@ static void DescribeRegionStacks(const string &region, vector<CloudFormationDesc
 			row.status_reason = FromAws(stack.GetStackStatusReason());
 			row.creation_time = FromAws(stack.GetCreationTime().ToGmtString(Aws::Utils::DateFormat::ISO_8601));
 			if (stack.LastUpdatedTimeHasBeenSet()) {
-				row.last_updated_time = FromAws(stack.GetLastUpdatedTime().ToGmtString(Aws::Utils::DateFormat::ISO_8601));
+				row.last_updated_time =
+				    FromAws(stack.GetLastUpdatedTime().ToGmtString(Aws::Utils::DateFormat::ISO_8601));
 			}
 			row.description = FromAws(stack.GetDescription());
 
@@ -926,7 +927,8 @@ static void DescribeRegionStacks(const string &region, vector<CloudFormationDesc
 				tag_keys.emplace_back(FromAws(t.GetKey()));
 				tag_values.emplace_back(FromAws(t.GetValue()));
 			}
-			row.tags = Value::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR, std::move(tag_keys), std::move(tag_values));
+			row.tags =
+			    Value::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR, std::move(tag_keys), std::move(tag_values));
 
 			vector<Value> output_keys;
 			vector<Value> output_values;
@@ -1140,8 +1142,7 @@ void CloudFormationFunctions::Register(ExtensionLoader &loader) {
 	// Overloaded: no arg -> all default regions (parallel); VARCHAR -> one region; LIST(VARCHAR) -> those
 	// regions (parallel). Bind dispatches on the argument shape.
 	TableFunctionSet describe_all_set("cloudformation_describe_stacks");
-	describe_all_set.AddFunction(
-	    TableFunction({}, CloudFormationDescribeStacksFun, CloudFormationDescribeStacksBind));
+	describe_all_set.AddFunction(TableFunction({}, CloudFormationDescribeStacksFun, CloudFormationDescribeStacksBind));
 	describe_all_set.AddFunction(
 	    TableFunction({LogicalType::VARCHAR}, CloudFormationDescribeStacksFun, CloudFormationDescribeStacksBind));
 	describe_all_set.AddFunction(TableFunction({LogicalType::LIST(LogicalType::VARCHAR)},

@@ -131,14 +131,13 @@ static void QuackStatusFun(ClientContext &context, TableFunctionInput &data_p, D
 	}
 	auto &bind = data_p.bind_data->Cast<QuackAdapterBindData>();
 	Connection con(DatabaseInstance::GetDatabase(context));
-	auto sql =
-	    "SELECT CASE WHEN status = 'CREATE_COMPLETE' THEN 'ready' "
-	    "            WHEN status LIKE '%ROLLBACK%' OR status LIKE '%FAILED%' THEN 'failed' "
-	    "            ELSE 'pending' END AS state, "
-	    "       MAP {'uri': outputs['QuackURI'], 'attached_db_type': 'quack', "
-	    "            'token': split_part(split_part(outputs['Token'], '{\"1\":\"', 2), '\"}', 1)} AS result "
-	    "FROM cloudformation_describe_stack(" +
-	    bind.input.ToSQLString() + ")";
+	auto sql = "SELECT CASE WHEN status = 'CREATE_COMPLETE' THEN 'ready' "
+	           "            WHEN status LIKE '%ROLLBACK%' OR status LIKE '%FAILED%' THEN 'failed' "
+	           "            ELSE 'pending' END AS state, "
+	           "       MAP {'uri': outputs['QuackURI'], 'attached_db_type': 'quack', "
+	           "            'token': split_part(split_part(outputs['Token'], '{\"1\":\"', 2), '\"}', 1)} AS result "
+	           "FROM cloudformation_describe_stack(" +
+	           bind.input.ToSQLString() + ")";
 	auto res = con.Query(sql);
 	if (res->HasError()) {
 		throw IOException("quack-on-ec2 status failed: %s", res->GetError());
@@ -220,22 +219,20 @@ static void QuackListFun(ClientContext &context, TableFunctionInput &data_p, Dat
 				}
 			}
 		}
-		string source = one_region.empty()
-		                    ? "cloudformation_describe_stacks()"
-		                    : "cloudformation_describe_stacks(" + Value(one_region).ToSQLString() + ")";
+		string source = one_region.empty() ? "cloudformation_describe_stacks()"
+		                                   : "cloudformation_describe_stacks(" + Value(one_region).ToSQLString() + ")";
 
-		auto sql =
-		    "SELECT MAP {'stack_name': stack_name, 'stack_id': stack_id, 'region': region} AS handle, "
-		    "       stack_id AS reference, "
-		    "       CASE WHEN status IN ('CREATE_COMPLETE', 'UPDATE_COMPLETE') THEN 'ready' "
-		    "            WHEN status LIKE 'DELETE_%' THEN 'deleting' "
-		    "            WHEN status LIKE '%ROLLBACK%' OR status LIKE '%FAILED%' THEN 'failed' "
-		    "            ELSE 'pending' END AS state, "
-		    "       MAP {'stack_status': status, 'creation_time': creation_time, "
-		    "            'last_updated_time': last_updated_time, 'description': description} AS metadata "
-		    "FROM " +
-		    source + " WHERE region_error IS NULL AND tags[" + Value(string(RESOURCE_TYPE_TAG)).ToSQLString() +
-		    "] = " + Value(string(QUACK_ON_EC2_TYPE)).ToSQLString();
+		auto sql = "SELECT MAP {'stack_name': stack_name, 'stack_id': stack_id, 'region': region} AS handle, "
+		           "       stack_id AS reference, "
+		           "       CASE WHEN status IN ('CREATE_COMPLETE', 'UPDATE_COMPLETE') THEN 'ready' "
+		           "            WHEN status LIKE 'DELETE_%' THEN 'deleting' "
+		           "            WHEN status LIKE '%ROLLBACK%' OR status LIKE '%FAILED%' THEN 'failed' "
+		           "            ELSE 'pending' END AS state, "
+		           "       MAP {'stack_status': status, 'creation_time': creation_time, "
+		           "            'last_updated_time': last_updated_time, 'description': description} AS metadata "
+		           "FROM " +
+		           source + " WHERE region_error IS NULL AND tags[" + Value(string(RESOURCE_TYPE_TAG)).ToSQLString() +
+		           "] = " + Value(string(QUACK_ON_EC2_TYPE)).ToSQLString();
 
 		Connection con(DatabaseInstance::GetDatabase(context));
 		state.result = con.Query(sql);
@@ -265,15 +262,19 @@ void QuackOnEc2Resource::Register(ExtensionLoader &loader) {
 	auto map_vv = LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR);
 
 	// Native callbacks (no SQL macros): thin adapters over cloudformation_*.
-	TableFunction create_fn("__aws__cloudformation__quack_on_ec2__create", {map_vv}, QuackCreateFun, QuackCreateBind, QuackAdapterInit);
+	TableFunction create_fn("__aws__cloudformation__quack_on_ec2__create", {map_vv}, QuackCreateFun, QuackCreateBind,
+	                        QuackAdapterInit);
 	loader.RegisterFunction(create_fn);
-	TableFunction status_fn("__aws__cloudformation__quack_on_ec2__status", {map_vv}, QuackStatusFun, QuackStatusBind, QuackAdapterInit);
+	TableFunction status_fn("__aws__cloudformation__quack_on_ec2__status", {map_vv}, QuackStatusFun, QuackStatusBind,
+	                        QuackAdapterInit);
 	loader.RegisterFunction(status_fn);
-	TableFunction destroy_fn("__aws__cloudformation__quack_on_ec2__destroy", {map_vv}, QuackDestroyFun, QuackDestroyBind, QuackAdapterInit);
+	TableFunction destroy_fn("__aws__cloudformation__quack_on_ec2__destroy", {map_vv}, QuackDestroyFun,
+	                         QuackDestroyBind, QuackAdapterInit);
 	loader.RegisterFunction(destroy_fn);
 	// Registered as a plain callable function only. Wiring it into the resource-type registry (a `list_function`
 	// slot) is a separate duckdb-side change, done elsewhere.
-	TableFunction list_fn("__aws__cloudformation__quack_on_ec2__list", {map_vv}, QuackListFun, QuackListBind, QuackListInit);
+	TableFunction list_fn("__aws__cloudformation__quack_on_ec2__list", {map_vv}, QuackListFun, QuackListBind,
+	                      QuackListInit);
 	loader.RegisterFunction(list_fn);
 
 	// Register the resource type on the C++ side (origin = "extension"), so `LOAD aws;` is all a user needs.
