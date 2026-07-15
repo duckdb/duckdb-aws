@@ -18,6 +18,10 @@ namespace duckdb {
 //! https://docs.aws.amazon.com/sdkref/latest/guide/feature-region.html
 string ResolveAwsRegion(ClientContext &context, const string &explicit_region, const string &profile_name);
 
+//! The default-enabled commercial AWS regions, used as the sweep set for multi-region listing functions
+//! (e.g. the no-argument cloudformation_describe_stacks). Hardcoded for now — see the FIXME in utils.cpp.
+const vector<string> &GetDefaultAwsRegions();
+
 //! Secret types that carry an AWS identity, in the order they should be preferred: 'aws' is the
 //! generic one, 's3' holds the same credentials alongside bucket settings.
 const vector<string> &AwsSecretTypes();

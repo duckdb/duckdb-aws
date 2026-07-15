@@ -53,6 +53,20 @@ string ResolveAwsRegion(ClientContext &context, const string &explicit_region, c
 	return RegionFromProfile(profile_name);
 }
 
+const vector<string> &GetDefaultAwsRegions() {
+	// FIXME: hardcoded, default-enabled commercial regions only. Replace with live enumeration
+	// (ec2:DescribeRegions or account:ListRegions) so newly-enabled opt-in regions are picked up automatically
+	// and aws-cn / aws-us-gov callers get their own partition's regions (a client's credentials are partition-
+	// scoped, so DescribeRegions run from the caller's region is inherently partition-correct). Blocked on
+	// linking the ec2 (or account) SDK component, which is not currently built. Until then, a caller using
+	// non-commercial credentials sees every region below fail as an `error` sentinel row.
+	static const vector<string> regions = {
+	    "us-east-1",      "us-east-2",      "us-west-1",      "us-west-2",      "ca-central-1", "sa-east-1",
+	    "eu-west-1",      "eu-west-2",      "eu-west-3",      "eu-central-1",   "eu-north-1",   "ap-south-1",
+	    "ap-northeast-1", "ap-northeast-2", "ap-northeast-3", "ap-southeast-1", "ap-southeast-2"};
+	return regions;
+}
+
 const vector<string> &AwsSecretTypes() {
 	static const vector<string> aws_secret_types = {"aws", "s3"};
 	return aws_secret_types;

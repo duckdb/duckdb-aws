@@ -1,5 +1,6 @@
 #include "cloudformation_functions.hpp"
 #include "aws_client.hpp"
+#include "utils/utils.hpp"
 
 #include "duckdb.hpp"
 #include "duckdb/common/case_insensitive_map.hpp"
@@ -862,14 +863,6 @@ static void CloudFormationListStacksFun(ClientContext &context, TableFunctionInp
 // failing the whole sweep.
 //===--------------------------------------------------------------------===//
 
-// Default-enabled commercial regions swept by the no-argument overload. Hardcoded for now; live enumeration
-// (ec2:DescribeRegions / account:ListRegions) is the accuracy follow-up so newly-enabled opt-in regions are
-// not silently missed.
-static const char *const AWS_DEFAULT_REGIONS[] = {
-    "us-east-1",      "us-east-2",      "us-west-1",      "us-west-2",      "ca-central-1",  "sa-east-1",
-    "eu-west-1",      "eu-west-2",      "eu-west-3",      "eu-central-1",   "eu-north-1",    "ap-south-1",
-    "ap-northeast-1", "ap-northeast-2", "ap-northeast-3", "ap-southeast-1", "ap-southeast-2"};
-
 struct CloudFormationDescribeStacksRow {
 	string region;
 	string stack_name;
@@ -989,9 +982,7 @@ static unique_ptr<FunctionData> CloudFormationDescribeStacksBind(ClientContext &
 
 	if (input.inputs.empty()) {
 		// No argument: sweep all default regions in parallel.
-		for (auto *r : AWS_DEFAULT_REGIONS) {
-			result->regions.emplace_back(r);
-		}
+		result->regions = GetDefaultAwsRegions();
 	} else if (input.inputs[0].type().id() == LogicalTypeId::LIST) {
 		// Explicit region list: parallel, skip-on-error.
 		if (input.inputs[0].IsNull()) {
