@@ -231,7 +231,7 @@ static void QuackListFun(ClientContext &context, TableFunctionInput &data_p, Dat
 		           "       MAP {'stack_status': status, 'creation_time': creation_time, "
 		           "            'last_updated_time': last_updated_time, 'description': description} AS metadata "
 		           "FROM " +
-		           source + " WHERE region_error IS NULL AND tags[" + Value(string(RESOURCE_TYPE_TAG)).ToSQLString() +
+		           source + " WHERE error IS NULL AND tags[" + Value(string(RESOURCE_TYPE_TAG)).ToSQLString() +
 		           "] = " + Value(string(QUACK_ON_EC2_TYPE)).ToSQLString();
 
 		Connection con(DatabaseInstance::GetDatabase(context));

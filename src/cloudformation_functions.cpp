@@ -875,8 +875,9 @@ struct CloudFormationDescribeStacksRow {
 	Value tags;
 	Value outputs;
 	// Empty for a real stack; the AWS error message for a failed-region sentinel row (region set, all stack
-	// columns NULL). Discriminates the two row kinds: real stacks have region_error IS NULL.
-	string region_error;
+	// columns NULL). Discriminates the two row kinds: real stacks have error IS NULL. Named generically (not
+	// region_error) so it can carry other, non-region error conditions later.
+	string error;
 };
 
 // Fetch all stacks in one region (paginated), appending to `out`. Throws on AWS error.
@@ -939,7 +940,7 @@ static void DescribeRegionStacks(const string &region, vector<CloudFormationDesc
 }
 
 // One region's DescribeStacks as a scheduler task. Catches its own AWS error (never PushError, which would
-// abort the whole sweep via WorkOnTasks) and replaces its slot with a single 'region_error' sentinel row, so
+// abort the whole sweep via WorkOnTasks) and replaces its slot with a single 'error' sentinel row, so
 // a dead region is surfaced-but-not-fatal instead of silently vanishing.
 struct DescribeRegionTask : public BaseExecutorTask {
 	DescribeRegionTask(TaskExecutor &executor, string region_p, vector<CloudFormationDescribeStacksRow> &slot_p)
@@ -958,7 +959,7 @@ struct DescribeRegionTask : public BaseExecutorTask {
 		slot.clear();
 		CloudFormationDescribeStacksRow err;
 		err.region = region;
-		err.region_error = message;
+		err.error = message;
 		err.tags = Value(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));    // NULL
 		err.outputs = Value(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR)); // NULL
 		slot.push_back(std::move(err));
@@ -1034,7 +1035,7 @@ static unique_ptr<FunctionData> CloudFormationDescribeStacksBind(ClientContext &
 	return_types.emplace_back(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
 	names.emplace_back("outputs");
 	return_types.emplace_back(LogicalType::VARCHAR);
-	names.emplace_back("region_error");
+	names.emplace_back("error");
 
 	return std::move(result);
 }
@@ -1068,7 +1069,7 @@ static void CloudFormationDescribeStacksFun(ClientContext &context, TableFunctio
 	idx_t to_emit = std::min(remaining, (idx_t)STANDARD_VECTOR_SIZE);
 	for (idx_t i = 0; i < to_emit; i++) {
 		auto &r = data.rows[data.cursor + i];
-		// stack_name/stack_id/status are always set for a real stack and empty for a 'region_error' sentinel,
+		// stack_name/stack_id/status are always set for a real stack and empty for an 'error' sentinel,
 		// so empty -> NULL cleanly distinguishes the two without special-casing.
 		output.data[0].Append(Value(r.region));
 		output.data[1].Append(r.stack_name.empty() ? Value() : Value(r.stack_name));
@@ -1080,7 +1081,7 @@ static void CloudFormationDescribeStacksFun(ClientContext &context, TableFunctio
 		output.data[7].Append(r.description.empty() ? Value() : Value(r.description));
 		output.data[8].Append(r.tags);
 		output.data[9].Append(r.outputs);
-		output.data[10].Append(r.region_error.empty() ? Value() : Value(r.region_error));
+		output.data[10].Append(r.error.empty() ? Value() : Value(r.error));
 	}
 	output.CheckCardinality(to_emit);
 	data.cursor += to_emit;
