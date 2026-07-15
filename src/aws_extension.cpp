@@ -2,6 +2,7 @@
 #include "aws_extension.hpp"
 #include "cloudformation_functions.hpp"
 #include "rds/rds_utils.hpp"
+#include "quack_on_ec2_resource.hpp"
 #include "redshift/redshift_utils.hpp"
 
 #include "duckdb.hpp"
@@ -30,6 +31,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	Rds::RegisterStorageExtension(loader);
 
 	CloudFormationFunctions::Register(loader);
+	QuackOnEc2Resource::Register(loader);
 }
 
 void AwsExtension::Load(ExtensionLoader &loader) {
