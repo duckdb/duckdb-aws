@@ -30,28 +30,6 @@ struct RedshiftAttachOptions {
 	int duration_seconds = 0;
 };
 
-string GetSecretString(const KeyValueSecret &secret, const string &key) {
-	auto value = secret.TryGetValue(Identifier(key));
-	if (value.IsNull()) {
-		return "";
-	}
-	return value.ToString();
-}
-
-//! Quote a value for a libpq connection string. Backslashes and single quotes must be escaped
-//! with a backslash; quoting the whole value keeps empty values and embedded spaces valid.
-string EscapeConnectionValue(const string &value) {
-	string result = "'";
-	for (auto c : value) {
-		if (c == '\\' || c == '\'') {
-			result += '\\';
-		}
-		result += c;
-	}
-	result += "'";
-	return result;
-}
-
 RedshiftAttachOptions ParseAttachOptions(AttachOptions &options) {
 	RedshiftAttachOptions parsed;
 	// Consumed options are erased, since postgres throws on any option it does not recognize.
@@ -86,19 +64,6 @@ RedshiftAttachOptions ParseAttachOptions(AttachOptions &options) {
 		it = options.options.erase(it);
 	}
 	return parsed;
-}
-
-std::shared_ptr<Aws::Auth::AWSCredentialsProvider> BuildProvider(const KeyValueSecret &secret) {
-	auto key_id = GetSecretString(secret, "key_id");
-	auto secret_key = GetSecretString(secret, "secret");
-	auto session_token = GetSecretString(secret, "session_token");
-	if (key_id.empty() || secret_key.empty()) {
-		throw InvalidConfigurationException(
-		    "Secret \"%s\" holds no AWS credentials (no 'key_id'/'secret'), so it cannot be used to reach Redshift",
-		    secret.GetName().GetIdentifierName());
-	}
-	return Aws::MakeShared<Aws::Auth::SimpleAWSCredentialsProvider>("DuckDBRedshift", key_id.c_str(),
-	                                                                secret_key.c_str(), session_token.c_str());
 }
 
 //! `ATTACH '<cluster-id>' AS db (TYPE redshift, SECRET <aws-or-s3-secret>)`.
@@ -137,18 +102,9 @@ unique_ptr<Catalog> RedshiftAttach(optional_ptr<StorageExtensionInfo> storage_in
 	}
 
 	// Resolve the postgres extension before spending API calls on a connection we cannot open.
-	auto &db_config = DBConfig::GetConfig(context);
-	auto postgres_extension = FindPostgresStorageExtension(db_config);
-	if (!postgres_extension) {
-		Catalog::TryAutoLoad(context, POSTGRES_EXTENSION_NAME);
-		postgres_extension = FindPostgresStorageExtension(db_config);
-	}
-	if (!postgres_extension || !postgres_extension->attach) {
-		throw InvalidConfigurationException("Attaching a Redshift cluster requires the postgres extension, which could "
-		                                    "not be loaded. Run 'INSTALL postgres; LOAD postgres;' and retry");
-	}
+	auto postgres_extension = RequirePostgresStorageExtension(context, "a Redshift cluster");
 
-	auto provider = BuildProvider(secret);
+	auto provider = CredentialsProviderFromSecret(secret, "Redshift");
 
 	// Anything ATTACH pins explicitly wins over what the cluster reports, so when it pins all of
 	// them there is nothing left to discover - skip the call rather than require the caller to
@@ -184,7 +140,12 @@ unique_ptr<Catalog> RedshiftAttach(optional_ptr<StorageExtensionInfo> storage_in
 	// ...) from a secret and an aws/s3 secret holds none of them.
 	options.options["secret"] = Value(secret.GetName().GetIdentifierName());
 
-	return postgres_extension->attach(postgres_extension->storage_info.get(), context, db, name, info, options);
+	try {
+		return postgres_extension->attach(postgres_extension->storage_info.get(), context, db, name, info, options);
+	} catch (std::exception &ex) {
+		auto message = PostgresAttachErrorMessage(ex, credentials.db_password);
+		throw IOException("Unable to connect to Redshift cluster '%s': %s", cluster_id, message);
+	}
 }
 
 unique_ptr<TransactionManager> RedshiftCreateTransactionManager(optional_ptr<StorageExtensionInfo> storage_info,
