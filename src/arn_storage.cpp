@@ -113,6 +113,20 @@ static optional_ptr<StorageExtension> GetBackend(AttachedDatabase &db, const Arn
 	return backend;
 }
 
+//! The ARN determines these options, so setting them in ATTACH is always an error, even to the same value.
+//! Keys in info.options preserve the case the user typed, hence the case-insensitive scan.
+static void ApplyTargetOptions(AttachInfo &info, const ArnTarget &target) {
+	for (auto &option : target.options) {
+		for (auto &existing : info.options) {
+			if (StringUtil::CIEquals(existing.first, option.first)) {
+				throw InvalidInputException("ATTACH option '%s' is derived from the ARN and cannot be set explicitly",
+				                            existing.first);
+			}
+		}
+		info.options[option.first] = option.second;
+	}
+}
+
 static unique_ptr<Catalog> ArnAttach(optional_ptr<StorageExtensionInfo> storage_info, ClientContext &context,
                                      AttachedDatabase &db, const string &name, AttachInfo &info,
                                      AttachOptions &options) {
@@ -120,9 +134,7 @@ static unique_ptr<Catalog> ArnAttach(optional_ptr<StorageExtensionInfo> storage_
 	auto target = ResolveArnTarget(arn);
 
 	info.path = target.path;
-	for (auto &option : target.options) {
-		info.options[option.first] = option.second;
-	}
+	ApplyTargetOptions(info, target);
 
 	auto backend = GetBackend(db, target, arn.raw);
 	if (!backend->attach) {
