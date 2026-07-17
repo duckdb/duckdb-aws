@@ -2,6 +2,7 @@
 
 #include "duckdb/common/case_insensitive_map.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/main/database.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 
 #include <aws/core/Aws.h>
@@ -43,6 +44,12 @@ static struct {
 	const string default_ = "exists";
 } CreateAwsSecretValidation;
 
+//! Note: this is a partial duplication of duckdb's GetDefaultUserAgent()
+//! It needs to be reimplemented since the format is not compatible
+static string DuckDBAwsUserAgentAppId() {
+	return "duckdb/" + string(DuckDB::LibraryVersion());
+}
+
 //! Build a ClientConfiguration with the detected CA file path applied (if any).
 //! This is required because libcurl is statically linked from a RHEL-based
 //! manylinux image, so its default CA path is /etc/pki/tls/certs/ca-bundle.crt,
@@ -54,6 +61,12 @@ static Aws::Client::ClientConfiguration BuildClientConfigWithCa() {
 	Aws::Client::ClientConfiguration cfg;
 	if (!SELECTED_CURL_CERT_PATH.empty()) {
 		cfg.caFile = SELECTED_CURL_CERT_PATH;
+	}
+	// Identify DuckDB in the User-Agent, unless the user has already configured an app
+	// id (via AWS_SDK_UA_APP_ID or the sdk_ua_app_id profile key, which the
+	// ClientConfiguration constructor loads into cfg.appId): their value wins.
+	if (cfg.appId.empty()) {
+		cfg.appId = DuckDBAwsUserAgentAppId();
 	}
 	return cfg;
 }
@@ -137,12 +150,10 @@ public:
 				aws_profile.SetExternalId(external_id);
 				AddSTSProvider(aws_profile);
 			} else if (item == "sso") {
-				// Pass an explicit ClientConfiguration so the SSO portal HTTPS call
-				// uses the detected CA path. See BuildClientConfigWithCa() comment.
-				auto sso_config = Aws::MakeShared<Aws::Client::ClientConfiguration>("DuckDBAwsSSO");
-				if (!SELECTED_CURL_CERT_PATH.empty()) {
-					sso_config->caFile = SELECTED_CURL_CERT_PATH;
-				}
+				// Pass an explicit ClientConfiguration so the SSO portal HTTPS call uses
+				// the detected CA path and the DuckDB app id. See BuildClientConfigWithCa().
+				auto sso_config = Aws::MakeShared<Aws::Client::ClientConfiguration>("DuckDBAwsSSO",
+				                                                                    BuildClientConfigWithCa());
 				if (profile.empty()) {
 					AddProvider(std::make_shared<Aws::Auth::SSOCredentialsProvider>(Aws::String(), sso_config));
 				} else {
