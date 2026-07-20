@@ -10,11 +10,20 @@
 #include <aws/core/http/HttpRequest.h>
 #include <aws/core/http/standard/StandardHttpRequest.h>
 #include <aws/core/http/standard/StandardHttpResponse.h>
-#ifndef __EMSCRIPTEN__
 // The opt-out path (aws_network_calls_via_duckdb = false) hands back the SDK's
-// own transport. Under emscripten curl is not built, so this is native-only and
-// the setting is effectively forced on there.
+// own transport, which differs per platform: WinHTTP on Windows, curl elsewhere.
+// The SDK only installs the headers for the transport it was built with, so this
+// selection has to mirror the SDK's own DefaultHttpClientFactory. Under emscripten
+// neither is built, so there the setting is effectively forced on.
+#ifdef __EMSCRIPTEN__
+#define AWS_HTTP_SDK_FALLBACK 0
+#else
+#define AWS_HTTP_SDK_FALLBACK 1
+#ifdef _WIN32
+#include <aws/core/http/windows/WinHttpSyncHttpClient.h>
+#else
 #include <aws/core/http/curl/CurlHttpClient.h>
+#endif
 #endif
 
 #include <sstream>
@@ -111,7 +120,7 @@ public:
 
 	std::shared_ptr<Aws::Http::HttpResponse>
 	MakeRequest(const std::shared_ptr<Aws::Http::HttpRequest> &request,
-	            Aws::Utils::RateLimits::RateLimiterInterface *, // read limiter unused
+	            Aws::Utils::RateLimits::RateLimiterInterface *,                  // read limiter unused
 	            Aws::Utils::RateLimits::RateLimiterInterface *) const override { // write limiter unused
 		auto aws_response = Aws::MakeShared<Aws::Http::Standard::StandardHttpResponse>("DuckDBAwsHttp", request);
 
@@ -169,8 +178,8 @@ public:
 			case RequestType::PUT_REQUEST: {
 				body_buffer = ReadRequestBody(request);
 				string content_type = request->GetContentType().c_str();
-				PutRequestInfo info(url, headers, *params, const_data_ptr_cast(body_buffer.c_str()),
-				                    body_buffer.size(), content_type);
+				PutRequestInfo info(url, headers, *params, const_data_ptr_cast(body_buffer.c_str()), body_buffer.size(),
+				                    content_type);
 				info.try_request = true;
 				response = client->Put(info);
 				break;
@@ -196,8 +205,7 @@ public:
 				return aws_response;
 			}
 
-			aws_response->SetResponseCode(
-			    static_cast<Aws::Http::HttpResponseCode>(static_cast<int>(response->status)));
+			aws_response->SetResponseCode(static_cast<Aws::Http::HttpResponseCode>(static_cast<int>(response->status)));
 			for (const auto &header : response->headers) {
 				aws_response->AddHeader(header.first.c_str(), header.second.c_str());
 			}
@@ -225,23 +233,29 @@ public:
 
 	std::shared_ptr<Aws::Http::HttpClient>
 	CreateHttpClient(const Aws::Client::ClientConfiguration &config) const override {
-#ifndef __EMSCRIPTEN__
-		// Opt-out (native only): hand back the SDK's own curl transport, exactly as
-		// the default factory would, so behaviour matches a build without this bridge.
+#if AWS_HTTP_SDK_FALLBACK
+		// Opt-out (native only): hand back the SDK's own transport, exactly as the
+		// default factory would, so behaviour matches a build without this bridge.
 		if (!NetworkCallsViaDuckDB(db)) {
+#ifdef _WIN32
+			return Aws::MakeShared<Aws::Http::WinHttpSyncHttpClient>("DuckDBAwsHttp", config);
+#else
 			return Aws::MakeShared<Aws::Http::CurlHttpClient>("DuckDBAwsHttp", config);
+#endif
 		}
 #endif
 		return Aws::MakeShared<DuckDBAwsHttpClient>("DuckDBAwsHttp", db);
 	}
 
-	std::shared_ptr<Aws::Http::HttpRequest> CreateHttpRequest(const Aws::String &uri, Aws::Http::HttpMethod method,
-	                                                          const Aws::IOStreamFactory &streamFactory) const override {
+	std::shared_ptr<Aws::Http::HttpRequest>
+	CreateHttpRequest(const Aws::String &uri, Aws::Http::HttpMethod method,
+	                  const Aws::IOStreamFactory &streamFactory) const override {
 		return CreateHttpRequest(Aws::Http::URI(uri), method, streamFactory);
 	}
 
-	std::shared_ptr<Aws::Http::HttpRequest> CreateHttpRequest(const Aws::Http::URI &uri, Aws::Http::HttpMethod method,
-	                                                          const Aws::IOStreamFactory &streamFactory) const override {
+	std::shared_ptr<Aws::Http::HttpRequest>
+	CreateHttpRequest(const Aws::Http::URI &uri, Aws::Http::HttpMethod method,
+	                  const Aws::IOStreamFactory &streamFactory) const override {
 		auto request = Aws::MakeShared<Aws::Http::Standard::StandardHttpRequest>("DuckDBAwsHttp", uri, method);
 		request->SetResponseStreamFactory(streamFactory);
 		return request;
