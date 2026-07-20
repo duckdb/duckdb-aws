@@ -1,5 +1,6 @@
 #include "aws_secret.hpp"
 #include "aws_extension.hpp"
+#include "aws_http_client.hpp"
 #include "cloudformation_functions.hpp"
 #include "rds/rds_utils.hpp"
 #include "quack_on_ec2_resource.hpp"
@@ -20,6 +21,10 @@ namespace duckdb {
 static void LoadInternal(ExtensionLoader &loader) {
 	Aws::SDKOptions options;
 	Aws::InitAPI(options);
+
+	// Route all AWS SDK HTTP through DuckDB's HTTPUtil (curl via httpfs natively,
+	// browser fetch under wasm). Must run before any AWS client is constructed.
+	RegisterDuckDBAwsHttpClientFactory(loader.GetDatabaseInstance());
 
 	CreateAwsSecretFunctions::InitializeCurlCertificates(loader.GetDatabaseInstance());
 	CreateAwsSecretFunctions::Register(loader);
