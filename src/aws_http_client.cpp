@@ -2,6 +2,7 @@
 
 #include "duckdb/common/http_util.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/common/types/value.hpp"
 #include "duckdb/main/database.hpp"
 
 #include <aws/core/http/HttpClient.h>
@@ -9,6 +10,12 @@
 #include <aws/core/http/HttpRequest.h>
 #include <aws/core/http/standard/StandardHttpRequest.h>
 #include <aws/core/http/standard/StandardHttpResponse.h>
+#ifndef __EMSCRIPTEN__
+// The opt-out path (aws_network_calls_via_duckdb = false) hands back the SDK's
+// own transport. Under emscripten curl is not built, so this is native-only and
+// the setting is effectively forced on there.
+#include <aws/core/http/curl/CurlHttpClient.h>
+#endif
 
 #include <sstream>
 
@@ -20,7 +27,22 @@
 
 namespace duckdb {
 
+//! The setting that toggles this bridge. Default true: all AWS SDK network calls
+//! go through DuckDB's HTTPUtil. Set false (native only) to fall back to the SDK's
+//! own HTTP transport.
+static constexpr const char *NETWORK_VIA_DUCKDB_SETTING = "aws_network_calls_via_duckdb";
+
 namespace {
+
+//! Read the toggle from the database's current settings. Defaults to true when the
+//! option is unset or unreadable, so the bridge is on unless explicitly disabled.
+bool NetworkCallsViaDuckDB(DatabaseInstance &db) {
+	Value value;
+	if (db.TryGetCurrentSetting(NETWORK_VIA_DUCKDB_SETTING, value) && !value.IsNull()) {
+		return BooleanValue::Get(value);
+	}
+	return true;
+}
 
 RequestType ToDuckDBRequestType(Aws::Http::HttpMethod method) {
 	switch (method) {
@@ -202,7 +224,14 @@ public:
 	}
 
 	std::shared_ptr<Aws::Http::HttpClient>
-	CreateHttpClient(const Aws::Client::ClientConfiguration &) const override {
+	CreateHttpClient(const Aws::Client::ClientConfiguration &config) const override {
+#ifndef __EMSCRIPTEN__
+		// Opt-out (native only): hand back the SDK's own curl transport, exactly as
+		// the default factory would, so behaviour matches a build without this bridge.
+		if (!NetworkCallsViaDuckDB(db)) {
+			return Aws::MakeShared<Aws::Http::CurlHttpClient>("DuckDBAwsHttp", config);
+		}
+#endif
 		return Aws::MakeShared<DuckDBAwsHttpClient>("DuckDBAwsHttp", db);
 	}
 
