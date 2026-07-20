@@ -24,6 +24,7 @@ set(EXTENSION_SOURCES
     src/arn_storage.cpp
     src/aws_default_secret_storage.cpp
     src/aws_extension.cpp
+    src/aws_http_client.cpp
     src/aws_secret.cpp
     src/cloudformation_functions.cpp
     src/create_aws_legacy_function_stubs.cpp
