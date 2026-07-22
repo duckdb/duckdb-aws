@@ -4,6 +4,7 @@
 
 #include "duckdb/common/case_insensitive_map.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/logging/logger.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 
@@ -445,11 +446,23 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 		result->secret_map["secret"] = Value(credentials.GetAWSSecretKey());
 		result->secret_map["session_token"] = Value(credentials.GetSessionToken());
 
-		// Store credential expiration as epoch seconds so consumers (e.g., duckdb-iceberg)
+		// Store credential expiration as epoch milliseconds so consumers (e.g., duckdb-iceberg)
 		// can refresh proactively at ~80% TTL instead of guessing with a fixed timer.
-		auto expiration = credentials.GetExpiration();
-		if (expiration != Aws::Utils::DateTime()) {
-			result->secret_map["expiration_epoch"] = Value::BIGINT(expiration.Seconds());
+		if (chain == "sts") {
+			// For the STS chain we cannot read the real expiration from `credentials.GetExpiration()`:
+			// the SDK's STSAssumeRoleCredentialsProvider builds the returned AWSCredentials with the
+			// 3-arg constructor, which leaves m_expiration at its default sentinel (time_point::max,
+			// i.e. year 294247). The true expiry is kept private in the provider's m_expiry and is
+			// never exposed. Since we always request STS credentials with a duration of
+			// DEFAULT_CREDS_LOAD_FREQ_SECONDS, compute the expiration from now() + that duration.
+			int64_t now_epoch_ms = Timestamp::GetEpochMs(Timestamp::GetCurrentTimestamp());
+			int64_t expiration_epoch_ms = now_epoch_ms + (Aws::Auth::DEFAULT_CREDS_LOAD_FREQ_SECONDS * 1000LL);
+			result->secret_map["expiration_epoch_ms"] = Value::BIGINT(expiration_epoch_ms);
+		} else {
+			auto expiration = credentials.GetExpiration();
+			if (expiration != Aws::Utils::DateTime()) {
+				result->secret_map["expiration_epoch_ms"] = Value::BIGINT(expiration.Millis());
+			}
 		}
 	}
 

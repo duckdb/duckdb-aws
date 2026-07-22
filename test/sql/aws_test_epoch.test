@@ -1,0 +1,45 @@
+# name: test/sql/aws_test_epoch.test
+# description: test integration with iceberg catalog read
+# group: [sql]
+
+require httpfs
+
+require parquet
+
+require aws
+
+require icu
+
+require-env AWS_CONFIG_FILE
+
+require-env AWS_SHARED_CREDENTIALS_FILE
+
+# needs to run against actual aws credentials
+require-env AWS_CREDENTIALS_AVAIABLE
+
+statement ok
+CREATE SECRET glue_secret (
+    TYPE AWS,
+    PROVIDER credential_chain,
+    CHAIN 'sts',
+    ASSUME_ROLE_ARN 'arn:aws:iam::840140254803:role/pyiceberg-etl-role',
+    REGION 'us-east-1'
+);
+
+statement ok
+select sleep_ms(1000);
+
+# test that expiration_epoch_ms is <900 seconds for sts
+query I
+WITH secret_fields AS (
+    FROM duckdb_secrets()
+    SELECT unnest(list_apply(string_split(secret_string, ';'), lambda x: string_split(x, '='))) AS elements
+),
+ttl AS (
+    SELECT elements[2]::BIGINT - epoch_ms(now())::BIGINT AS ttl_ms
+    FROM secret_fields
+    WHERE elements[1] = 'expiration_epoch_ms'
+)
+SELECT ttl_ms > 800000 AND ttl_ms < 900000 FROM ttl;
+----
+true

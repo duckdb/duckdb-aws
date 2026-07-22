@@ -6,6 +6,8 @@ duckdb_extension_load(aws
     LOAD_TESTS
 )
 
+duckdb_extension_load(icu)
+
 # Build the postgres scanner for the redshift action (e.g. redshift attach).
 # Currently Disabled since this will not build on CI. To get CI working you (most likely)
 # need to copy the vcpkg_ports/libpq in the duckdb/duckdb-postgres repo. 
