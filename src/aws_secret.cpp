@@ -10,11 +10,13 @@
 
 #include <aws/core/Aws.h>
 #include <aws/core/auth/AWSCredentialsProviderChain.h>
+#include <aws/core/auth/GeneralHTTPCredentialsProvider.h>
 #include <aws/core/auth/SSOCredentialsProvider.h>
 #include <aws/core/auth/STSCredentialsProvider.h>
 #include <aws/core/client/ClientConfiguration.h>
 #include <aws/core/config/AWSConfigFileProfileConfigLoader.h>
 #include <aws/core/config/AWSProfileConfigLoaderBase.h>
+#include <aws/core/platform/Environment.h>
 #include <aws/identity-management/auth/STSAssumeRoleCredentialsProvider.h>
 #include <aws/rds/RDSClient.h>
 #include <aws/sts/STSClient.h>
@@ -152,6 +154,24 @@ public:
 				/* Credentials provider implementation that loads credentials from the Amazon EC2 Instance Metadata
 				 * Service. */
 				AddProvider(std::make_shared<Aws::Auth::InstanceProfileCredentialsProvider>());
+			} else if (item == "container") {
+				// Container credentials (ECS task role, EKS Pod Identity): resolved from the endpoint
+				// advertised by the AWS_CONTAINER_* environment variables the container runtime sets,
+				// constructed the same way the SDK's DefaultAWSCredentialsProviderChain does it.
+				// https://docs.aws.amazon.com/sdkref/latest/guide/feature-container-credentials.html
+				using Aws::Auth::GeneralHTTPCredentialsProvider;
+				auto container_provider = std::make_shared<GeneralHTTPCredentialsProvider>(
+				    Aws::Environment::GetEnv(GeneralHTTPCredentialsProvider::AWS_CONTAINER_CREDENTIALS_RELATIVE_URI),
+				    Aws::Environment::GetEnv(GeneralHTTPCredentialsProvider::AWS_CONTAINER_CREDENTIALS_FULL_URI),
+				    Aws::Environment::GetEnv(GeneralHTTPCredentialsProvider::AWS_CONTAINER_AUTHORIZATION_TOKEN),
+				    Aws::Environment::GetEnv(GeneralHTTPCredentialsProvider::AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE));
+				if (!container_provider->IsValid()) {
+					throw InvalidConfigurationException(
+					    "Chain value 'container' requires container credentials to be available: "
+					    "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI or AWS_CONTAINER_CREDENTIALS_FULL_URI must be set in "
+					    "the environment (ECS and EKS Pod Identity set these automatically)");
+				}
+				AddProvider(std::move(container_provider));
 			} else if (item == "web_identity") {
 				Aws::Client::ClientConfiguration::CredentialProviderConfiguration config;
 				if (!assume_role_arn.empty()) {
@@ -240,8 +260,8 @@ static string ConstructErrorMessage(string chain, string profile, string assume_
 	// these chains "generate" new aws keys. See their documentation in the header file
 	// https://github.com/aws/aws-sdk-cpp/blob/main/src/aws-cpp-sdk-core/include/aws/core/auth/AWSCredentialsProvider.h
 	// if a roll is assumed, secrets are also "generated"
-	if (chain == "sts" || chain == "sso" || chain == "instance" || chain == "process" || chain == "web_identity" ||
-	    !assume_role.empty()) {
+	if (chain == "sts" || chain == "sso" || chain == "instance" || chain == "container" || chain == "process" ||
+	    chain == "web_identity" || !assume_role.empty()) {
 		verb = "generate";
 	}
 	string prefix = StringUtil::Format("Secret Validation Failure: during `%s` using the following:\n", verb);
