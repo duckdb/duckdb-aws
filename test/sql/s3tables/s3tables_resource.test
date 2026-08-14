@@ -1,0 +1,54 @@
+# name: test/sql/s3tables/s3tables_resource.test
+# description: the aws:s3tables:table-bucket external-resource type and its callbacks
+# group: [s3tables]
+
+require no_extension_autoloading "EXPECTED: Test relies on explicit INSTALL and LOAD"
+
+require aws
+
+# The type is registered from C++ (origin 'extension'), so LOAD aws is all a user needs.
+query IIIIII
+SELECT name, kind, origin, create_function, status_function, list_function
+FROM duckdb_external_resource_types() WHERE name = 'aws:s3tables:table-bucket';
+----
+aws:s3tables:table-bucket	catalog	extension	__aws__s3tables__table_bucket__create	__aws__s3tables__table_bucket__status	__aws__s3tables__table_bucket__list
+
+# A destroy callback is registered too — teardown is the half that needs the cascade.
+query I
+SELECT destroy_function FROM duckdb_external_resource_types() WHERE name = 'aws:s3tables:table-bucket';
+----
+__aws__s3tables__table_bucket__destroy
+
+# The handle is a single 'arn' key: the ARN already encodes partition, region, account and name,
+# so nothing can drift out of sync with what the list callback emits. A handle without it is
+# refused by name, before any AWS call.
+statement error
+SELECT * FROM __aws__s3tables__table_bucket__status(MAP {'region': 'eu-central-1'});
+----
+handle is missing 'arn'
+
+statement error
+SELECT * FROM __aws__s3tables__table_bucket__destroy(MAP {'name': 'x'});
+----
+handle is missing 'arn'
+
+# The status callback validates the ARN it is handed — this is the adoption path, since
+# REGISTER EXTERNAL RESOURCE skips create and resolves a user-supplied handle through here.
+statement error
+SELECT * FROM __aws__s3tables__table_bucket__status(MAP {'arn': 'not-an-arn'});
+----
+expected a table bucket ARN
+
+# Provisioning through the framework reaches the create callback and, from there, the AWS call:
+# without credentials it fails there rather than anywhere earlier in the chain.
+statement error
+CREATE EXTERNAL RESOURCE 'aws:s3tables:table-bucket' AS bucket_x (REGION 'eu-central-1');
+----
+<REGEX>:.*__aws__s3tables__table_bucket__create.*
+
+# Adoption of an existing bucket goes through status, not create.
+statement error
+REGISTER EXTERNAL RESOURCE 'aws:s3tables:table-bucket' AS bucket_y
+FROM MAP {'arn': 'arn:aws:s3tables:eu-central-1:123456789012:bucket/nope'};
+----
+<REGEX>:.*__aws__s3tables__table_bucket__status.*
