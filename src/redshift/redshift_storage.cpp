@@ -148,6 +148,10 @@ unique_ptr<Catalog> RedshiftAttach(optional_ptr<StorageExtensionInfo> storage_in
 	// Hand the postgres extension a plain connection string as the attach path.
 	info.path = connection_string;
 
+	// The postgres catalog would otherwise identify this connection by the connection string above,
+	// which holds the temporary credentials. Label it with the cluster it was attached as instead.
+	options.options["connect_display"] = Value(cluster_id);
+
 	// Postgres must be given a secret name it can resolve: with none it falls back to the
 	// implicit '__default_postgres' secret, which it probes in the 'local_file' storage - and
 	// that throws outright when persistent secrets are disabled. Naming the aws/s3 secret we
