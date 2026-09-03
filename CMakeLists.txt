@@ -26,6 +26,9 @@ set(EXTENSION_SOURCES src/arn_storage.cpp src/aws_extension.cpp src/aws_secret.c
                       src/quack_on_ec2_resource.cpp
                       src/redshift/redshift_utils.cpp src/redshift/redshift_storage.cpp
                       src/utils/utils.cpp)
+if(EMSCRIPTEN)
+    list(APPEND EXTENSION_SOURCES src/wasm_compat.c)
+endif()
 add_library(${EXTENSION_NAME} STATIC ${EXTENSION_SOURCES})
 
 set(PARAMETERS "-warnings")
