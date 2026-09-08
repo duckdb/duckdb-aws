@@ -1,0 +1,95 @@
+# name: test/sql/s3tables/s3tables_functions.test
+# description: argument handling of the s3tables_* control-plane functions (no AWS call is made)
+# group: [s3tables]
+
+require no_extension_autoloading "EXPECTED: Test relies on explicit INSTALL and LOAD"
+
+# Before LOAD aws, the functions do not exist.
+statement error
+SELECT * FROM s3tables_table_buckets('eu-central-1');
+----
+
+require aws
+
+# Every ARN-taking function validates its ARN at bind time, before any client is built.
+statement error
+SELECT * FROM s3tables_namespaces('not-an-arn');
+----
+expected a table bucket ARN
+
+statement error
+SELECT * FROM s3tables_namespaces('arn:aws:s3:eu-central-1:123456789012:bucket/x');
+----
+is an ARN for service 's3', not 's3tables'
+
+# The region is what the client is built from, so an ARN without one cannot be served.
+statement error
+SELECT * FROM s3tables_tables('arn:aws:s3tables::123456789012:bucket/x');
+----
+does not specify a region
+
+# A table ARN shares the 'bucket/' resource prefix with its bucket; it must not be mistaken
+# for a bucket whose name happens to contain slashes.
+statement error
+SELECT * FROM s3tables_tables('arn:aws:s3tables:eu-central-1:123456789012:bucket/x/table/y');
+----
+names an object inside a table bucket
+
+statement error
+SELECT * FROM s3tables_namespaces(NULL);
+----
+must not be NULL
+
+statement error
+SELECT * FROM s3tables_tables('arn:aws:s3tables:eu-central-1:123456789012:bucket/x', '');
+----
+namespace must not be empty
+
+# s3tables_table_buckets overloads: one region, a region list, or (no argument) every default region.
+statement error
+SELECT * FROM s3tables_table_buckets('');
+----
+region must not be empty
+
+statement error
+SELECT * FROM s3tables_table_buckets([]::VARCHAR[]);
+----
+region list must not be empty
+
+# A NULL list binds to the single-region overload (the cast wins over the LIST one), so the
+# message names a region rather than a list — either way it is refused at bind time.
+statement error
+SELECT * FROM s3tables_table_buckets(NULL::VARCHAR[]);
+----
+region must not be NULL
+
+# The delete function takes either the ARN or the handle MAP the external-resource framework
+# passes around, so a handle without an 'arn' key is rejected by name.
+statement error
+SELECT * FROM s3tables_delete_table_bucket(MAP {'region': 'eu-central-1'});
+----
+handle is missing 'arn'
+
+statement error
+SELECT * FROM s3tables_delete_table_bucket('arn:aws:s3tables:eu-central-1:123456789012:table/x');
+----
+expected a table *bucket* ARN
+
+# create: the name is required, and a region has to come from somewhere.
+statement error
+SELECT * FROM s3tables_create_table_bucket(NULL);
+----
+bucket name must not be NULL
+
+statement error
+SELECT * FROM s3tables_create_table_bucket('');
+----
+bucket name must not be empty
+
+# dry_run stops before the mutation: no bucket exists, so the handle and ARN stay NULL while
+# the name and the resolved region are echoed back.
+query IIII
+SELECT handle, arn, name, region
+FROM s3tables_create_table_bucket('duckdb-test-bucket', region := 'eu-central-1', dry_run := true);
+----
+NULL	NULL	duckdb-test-bucket	eu-central-1

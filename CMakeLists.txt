@@ -24,6 +24,7 @@ add_compile_definitions(DUCKDB_AWS_GIT_SHA="${DUCKDB_AWS_GIT_SHA}")
 set(EXTENSION_SOURCES src/arn_storage.cpp src/aws_extension.cpp src/aws_secret.cpp src/cloudformation_functions.cpp
                       src/rds/rds_utils.cpp src/rds/rds_storage.cpp
                       src/quack_on_ec2_resource.cpp
+                      src/s3tables_functions.cpp src/s3tables_resource.cpp
                       src/redshift/redshift_utils.cpp src/redshift/redshift_storage.cpp
                       src/utils/utils.cpp)
 add_library(${EXTENSION_NAME} STATIC ${EXTENSION_SOURCES})
@@ -34,7 +35,7 @@ build_loadable_extension(${TARGET_NAME} ${PARAMETERS} ${EXTENSION_SOURCES})
 # Weirdly we need to manually do this; otherwise, linking against
 # ${AWSSDK_LINK_LIBRARIES} fails for some reason
 find_package(ZLIB REQUIRED)
-find_package(AWSSDK REQUIRED COMPONENTS core sso sts identity-management rds redshift cloudformation)
+find_package(AWSSDK REQUIRED COMPONENTS core sso sts identity-management rds redshift cloudformation s3tables)
 
 # Build static lib
 target_include_directories(${EXTENSION_NAME}

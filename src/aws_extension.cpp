@@ -5,6 +5,8 @@
 #include "rds/rds_utils.hpp"
 #include "quack_on_ec2_resource.hpp"
 #include "redshift/redshift_utils.hpp"
+#include "s3tables_functions.hpp"
+#include "s3tables_resource.hpp"
 
 #include "duckdb.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
@@ -33,6 +35,11 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	CloudFormationFunctions::Register(loader);
 	QuackOnEc2Resource::Register(loader);
+
+	// Listing + lifecycle over the S3 Tables control plane.
+	S3TablesFunctions::Register(loader);
+	// The aws:s3tables:table-bucket external-resource type, built on those functions.
+	S3TablesResource::Register(loader);
 }
 
 void AwsExtension::Load(ExtensionLoader &loader) {

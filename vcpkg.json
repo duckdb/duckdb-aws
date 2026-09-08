@@ -4,7 +4,7 @@
     "zlib",
     {
       "name": "aws-sdk-cpp",
-      "features": [ "sso", "sts" , "identity-management", "rds", "redshift", "cloudformation"]
+      "features": [ "sso", "sts" , "identity-management", "rds", "redshift", "cloudformation", "s3tables"]
     },
     "openssl",
     "curl"
