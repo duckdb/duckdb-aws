@@ -46,6 +46,18 @@ namespace duckdb {
 
 static constexpr const char *NETWORK_VIA_DUCKDB_SETTING = "aws_network_calls_via_duckdb";
 
+//! Set by AwsInstanceBinding for the duration of an operation, so the process-global
+//! factory can tell which DatabaseInstance an AWS client is being built for.
+static thread_local weak_ptr<DatabaseInstance> bound_instance;
+
+AwsInstanceBinding::AwsInstanceBinding(DatabaseInstance &db) : previous(bound_instance) {
+	bound_instance = weak_ptr<DatabaseInstance>(db.shared_from_this());
+}
+
+AwsInstanceBinding::~AwsInstanceBinding() {
+	bound_instance = previous;
+}
+
 namespace {
 
 //! Defaults to true, so the bridge is on unless explicitly disabled. Registered as a
@@ -340,10 +352,21 @@ public:
 #endif
 	}
 
+	//! Prefer the instance bound for this operation; fall back to the one that registered
+	//! this factory, which is all we have for AWS clients built outside any binding (the
+	//! SDK's own internal clients, say).
+	weak_ptr<DatabaseInstance> ResolveInstance() const {
+		if (!bound_instance.expired()) {
+			return bound_instance;
+		}
+		return db;
+	}
+
 	std::shared_ptr<Aws::Http::HttpClient>
 	CreateHttpClient(const Aws::Client::ClientConfiguration &config) const override {
+		auto resolved = ResolveInstance();
 #if AWS_HTTP_SDK_FALLBACK
-		auto db_instance = db.lock();
+		auto db_instance = resolved.lock();
 		if (db_instance && !NetworkCallsViaDuckDB(*db_instance)) {
 			// Opt-out (native only): behave exactly as the SDK's default factory would.
 #if AWS_HTTP_SDK_FALLBACK_CURL
@@ -363,7 +386,7 @@ public:
 		// and proxy, configured by DuckDB's http settings. Forwarding the SDK's values would
 		// override those with defaults nobody asked for (its requestTimeoutMs of 3000 would
 		// cut DuckDB's 30s timeout to 3s) and point TLS at a CA path we guessed.
-		return Aws::MakeShared<DuckDBAwsHttpClient>("DuckDBAwsHttp", db);
+		return Aws::MakeShared<DuckDBAwsHttpClient>("DuckDBAwsHttp", resolved);
 	}
 
 	std::shared_ptr<Aws::Http::HttpRequest>

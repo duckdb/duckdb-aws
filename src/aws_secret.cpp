@@ -1,3 +1,5 @@
+#include "aws_http_client.hpp"
+#include "duckdb/main/database.hpp"
 #include "aws_secret.hpp"
 #include "aws_client.hpp"
 #include "rds/rds_utils.hpp"
@@ -336,6 +338,7 @@ unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &context
 		throw PermissionException(
 		    "The credential_chain provider cannot be used when external access is disabled (enable_external_access)");
 	}
+	AwsInstanceBinding aws_binding(DatabaseInstance::GetDatabase(context));
 	Aws::Auth::AWSCredentials credentials;
 
 	string profile = TryGetStringParam(input, "profile");
