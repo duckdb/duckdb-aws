@@ -163,11 +163,7 @@ string ReadRequestBody(const std::shared_ptr<Aws::Http::HttpRequest> &request) {
 
 class DuckDBAwsHttpClient : public Aws::Http::HttpClient {
 public:
-	DuckDBAwsHttpClient(weak_ptr<DatabaseInstance> db_p, const Aws::Client::ClientConfiguration &config)
-	    : db(std::move(db_p)), request_timeout_ms(config.requestTimeoutMs), verify_ssl(config.verifySSL),
-	      follow_redirects(config.followRedirects != Aws::Client::FollowRedirectsPolicy::NEVER),
-	      proxy_host(config.proxyHost.c_str()), proxy_port(config.proxyPort),
-	      proxy_username(config.proxyUserName.c_str()), proxy_password(config.proxyPassword.c_str()) {
+	explicit DuckDBAwsHttpClient(weak_ptr<DatabaseInstance> db_p) : db(std::move(db_p)) {
 	}
 
 	std::shared_ptr<Aws::Http::HttpResponse>
@@ -202,7 +198,6 @@ public:
 			if (!params->logger) {
 				params->logger = db_instance->GetLogManager().GlobalLoggerReference();
 			}
-			ApplyClientConfig(*params);
 
 			HTTPHeaders headers(*db_instance);
 			for (const auto &header : request->GetHeaders()) {
@@ -323,37 +318,7 @@ public:
 	}
 
 private:
-	//! Carry over the parts of the SDK's ClientConfiguration that HTTPParams can express.
-	//! connectTimeoutMs and caFile/caPath have no equivalent: the transport's own CA store
-	//! and DuckDB's http settings govern those on this path.
-	void ApplyClientConfig(HTTPParams &params) const {
-		if (request_timeout_ms > 0) {
-			auto timeout_ms = NumericCast<uint64_t>(request_timeout_ms);
-			params.timeout = timeout_ms / 1000;
-			params.timeout_usec = (timeout_ms % 1000) * 1000;
-		}
-		params.follow_location = follow_redirects;
-		if (!verify_ssl) {
-			params.override_verify_ssl = true;
-			params.verify_ssl = false;
-		}
-		if (!proxy_host.empty()) {
-			params.http_proxy = proxy_host;
-			params.http_proxy_port = proxy_port;
-			params.http_proxy_username = proxy_username;
-			params.http_proxy_password = proxy_password;
-		}
-	}
-
-private:
 	weak_ptr<DatabaseInstance> db;
-	long request_timeout_ms;
-	bool verify_ssl;
-	bool follow_redirects;
-	string proxy_host;
-	idx_t proxy_port;
-	string proxy_username;
-	string proxy_password;
 };
 
 class DuckDBAwsHttpClientFactory : public Aws::Http::HttpClientFactory {
@@ -388,8 +353,17 @@ public:
 			return Aws::MakeShared<Aws::Http::WinHttpSyncHttpClient>("DuckDBAwsHttp", config);
 #endif
 		}
+#else
+		(void)config;
 #endif
-		return Aws::MakeShared<DuckDBAwsHttpClient>("DuckDBAwsHttp", db, config);
+		// The bridge deliberately ignores ClientConfiguration. Every config in this extension
+		// comes from BuildClientConfigWithCa(), i.e. SDK defaults plus a caFile detected for
+		// the SDK's statically linked curl -- none of it is user intent expressed through
+		// DuckDB. On this path the transport is httpfs, which owns its own CA store, timeouts
+		// and proxy, configured by DuckDB's http settings. Forwarding the SDK's values would
+		// override those with defaults nobody asked for (its requestTimeoutMs of 3000 would
+		// cut DuckDB's 30s timeout to 3s) and point TLS at a CA path we guessed.
+		return Aws::MakeShared<DuckDBAwsHttpClient>("DuckDBAwsHttp", db);
 	}
 
 	std::shared_ptr<Aws::Http::HttpRequest>
