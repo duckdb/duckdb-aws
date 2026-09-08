@@ -318,8 +318,7 @@ public:
 				response_body = std::move(response->body);
 			}
 			if (!response_body.empty()) {
-				aws_response->GetResponseBody().write(response_body.data(),
-				                                      NumericCast<int64_t>(response_body.size()));
+				aws_response->GetResponseBody().write(response_body.data(), NumericCast<int64_t>(response_body.size()));
 			}
 		} catch (std::exception &ex) {
 			aws_response->SetResponseCode(Aws::Http::HttpResponseCode::REQUEST_NOT_MADE);
