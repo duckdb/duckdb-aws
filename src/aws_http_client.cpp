@@ -10,11 +10,9 @@
 #include <aws/core/http/HttpRequest.h>
 #include <aws/core/http/standard/StandardHttpRequest.h>
 #include <aws/core/http/standard/StandardHttpResponse.h>
-// The opt-out path (aws_network_calls_via_duckdb = false) hands back the SDK's
-// own transport, which differs per platform: WinHTTP on Windows, curl elsewhere.
-// The SDK only installs the headers for the transport it was built with, so this
-// selection has to mirror the SDK's own DefaultHttpClientFactory. Under emscripten
-// neither is built, so there the setting is effectively forced on.
+// Mirrors the SDK's DefaultHttpClientFactory: only the transport the SDK was built
+// with has its headers installed. Under emscripten neither exists, so the bridge is
+// the only path there and the opt-out setting is ignored.
 #ifdef __EMSCRIPTEN__
 #define AWS_HTTP_SDK_FALLBACK 0
 #else
@@ -28,23 +26,13 @@
 
 #include <sstream>
 
-// Bridge: an aws-sdk-cpp HttpClientFactory whose HttpClient forwards every request
-// to DuckDB's polymorphic HTTPUtil (HTTPUtil::Get(db)). We only ever call the base
-// HTTPUtil virtual methods; the actual transport is whatever the DatabaseInstance
-// has registered (httpfs curl on native, browser fetch under wasm). See
-// aws_http_client.hpp for why this is the extension's HTTP path on all platforms.
-
 namespace duckdb {
 
-//! The setting that toggles this bridge. Default true: all AWS SDK network calls
-//! go through DuckDB's HTTPUtil. Set false (native only) to fall back to the SDK's
-//! own HTTP transport.
 static constexpr const char *NETWORK_VIA_DUCKDB_SETTING = "aws_network_calls_via_duckdb";
 
 namespace {
 
-//! Read the toggle from the database's current settings. Defaults to true when the
-//! option is unset or unreadable, so the bridge is on unless explicitly disabled.
+//! Defaults to true, so the bridge is on unless explicitly disabled.
 bool NetworkCallsViaDuckDB(DatabaseInstance &db) {
 	Value value;
 	if (db.TryGetCurrentSetting(NETWORK_VIA_DUCKDB_SETTING, value) && !value.IsNull()) {
@@ -64,25 +52,21 @@ RequestType ToDuckDBRequestType(Aws::Http::HttpMethod method) {
 	case Aws::Http::HttpMethod::HTTP_DELETE:
 		return RequestType::DELETE_REQUEST;
 	default:
-		// AWS query-protocol services (STS/RDS/Redshift/CloudFormation) issue POST
-		// with a form-urlencoded body; PATCH/OPTIONS also map here as best-effort.
+		// Query-protocol services (STS/RDS/Redshift/CloudFormation) POST; PATCH/OPTIONS
+		// map here as best-effort.
 		return RequestType::POST_REQUEST;
 	}
 }
 
-//! DuckDB's HTTPUtil::DecomposeURL requires a '/' after the authority (it does
-//! url.find('/', 8) and throws "URL needs to contain a '/' after the host"
-//! otherwise). The AWS SDK serializes query-protocol endpoints
-//! (STS/RDS/Redshift/CloudFormation) as a bare host with an empty path, e.g.
-//! "https://cloudformation.us-east-1.amazonaws.com", so add the missing '/'.
-//! SigV4 canonicalizes an empty path to "/" too, so this stays consistent with
-//! what was signed.
+//! HTTPUtil::DecomposeURL throws unless a '/' follows the authority, but the SDK
+//! serializes query-protocol endpoints as a bare host ("https://cloudformation.
+//! us-east-1.amazonaws.com"). SigV4 canonicalizes an empty path to "/" as well, so
+//! adding it keeps the URL consistent with what was signed.
 string EnsureUrlHasPath(string url) {
 	auto scheme_pos = url.find("://");
 	idx_t authority_start = (scheme_pos == string::npos) ? 0 : scheme_pos + 3;
 	auto sep_pos = url.find_first_of("/?#", authority_start);
 	if (sep_pos == string::npos) {
-		// "https://host" -> "https://host/"
 		return url + "/";
 	}
 	if (url[sep_pos] != '/') {
@@ -92,18 +76,14 @@ string EnsureUrlHasPath(string url) {
 	return url;
 }
 
-//! Read the AWS request's body stream fully into a string (for POST/PUT).
 string ReadRequestBody(const std::shared_ptr<Aws::Http::HttpRequest> &request) {
 	const auto &body = request->GetContentBody();
 	if (!body) {
 		return string();
 	}
-	// Rewind BEFORE reading. The SDK signs the request by hashing this same stream
-	// (SigV4 payload hash), which leaves the read position at end-of-stream. Reading
-	// from there yields an empty body, so the POST goes out with no form data — e.g.
-	// "Action=ListStacks&Version=2010-05-15" for the query protocol — and AWS replies
-	// <UnknownOperationException/> (no Action to route). Reset again afterwards so any
-	// later consumer still sees the whole body.
+	// Rewind BEFORE reading: SigV4 hashes this same stream when signing, leaving it at
+	// end-of-stream. Reading from there sends an empty body and AWS answers
+	// <UnknownOperationException/>. Rewind afterwards too, for any later consumer.
 	body->clear();
 	body->seekg(0, std::ios_base::beg);
 	std::stringstream ss;
@@ -132,11 +112,9 @@ public:
 
 			HTTPHeaders headers(db);
 			for (const auto &header : request->GetHeaders()) {
-				// The browser forbids scripts from setting these (Fetch "forbidden
-				// header names") and sets them itself — host from the URL, content-length
-				// from the body — logging "Refused to set unsafe header" otherwise. SigV4
-				// signs 'host', but the browser reproduces the same value from the URL, so
-				// the signature still validates. Skip them so the wasm client does not try.
+				// Fetch forbids scripts from setting these and derives them itself (host
+				// from the URL, content-length from the body). SigV4 signs 'host', but the
+				// browser reproduces the same value, so the signature still validates.
 				auto lower = StringUtil::Lower(header.first.c_str());
 				if (lower == "host" || lower == "content-length") {
 					continue;
@@ -234,8 +212,7 @@ public:
 	std::shared_ptr<Aws::Http::HttpClient>
 	CreateHttpClient(const Aws::Client::ClientConfiguration &config) const override {
 #if AWS_HTTP_SDK_FALLBACK
-		// Opt-out (native only): hand back the SDK's own transport, exactly as the
-		// default factory would, so behaviour matches a build without this bridge.
+		// Opt-out (native only): behave exactly as the SDK's default factory would.
 		if (!NetworkCallsViaDuckDB(db)) {
 #ifdef _WIN32
 			return Aws::MakeShared<Aws::Http::WinHttpSyncHttpClient>("DuckDBAwsHttp", config);
