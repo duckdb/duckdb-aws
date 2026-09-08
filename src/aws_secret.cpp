@@ -1,3 +1,5 @@
+#include "aws_http_client.hpp"
+#include "duckdb/main/database.hpp"
 #include "aws_secret.hpp"
 #include "aws_client.hpp"
 #include "utils/utils.hpp"
@@ -345,6 +347,7 @@ CreateRDSSecretWithProvider(std::shared_ptr<DuckDBCustomAWSCredentialsProviderCh
 
 //! This is the actual callback function
 static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &context, CreateSecretInput &input) {
+	AwsInstanceBinding aws_binding(DatabaseInstance::GetDatabase(context));
 	Aws::Auth::AWSCredentials credentials;
 
 	string profile = TryGetStringParam(input, "profile");

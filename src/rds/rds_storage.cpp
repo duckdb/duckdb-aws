@@ -1,3 +1,4 @@
+#include "aws_http_client.hpp"
 #include "rds/rds_utils.hpp"
 
 #include "aws_client.hpp"
@@ -77,6 +78,7 @@ unique_ptr<Catalog> RdsAttach(optional_ptr<StorageExtensionInfo> storage_info, C
 	if (!Settings::Get<EnableExternalAccessSetting>(context)) {
 		throw PermissionException("Attaching RDS databases is disabled through configuration");
 	}
+	AwsInstanceBinding aws_binding(DatabaseInstance::GetDatabase(context));
 
 	auto instance_id = info.path;
 	if (instance_id.empty()) {

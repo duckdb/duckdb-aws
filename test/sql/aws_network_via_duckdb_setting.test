@@ -1,0 +1,33 @@
+# name: test/sql/aws_network_via_duckdb_setting.test
+# description: aws_network_calls_via_duckdb must be global, so the AWS HTTP client factory can read it
+# group: [sql]
+
+require aws
+
+query I
+SELECT current_setting('aws_network_calls_via_duckdb')::BOOLEAN;
+----
+true
+
+statement ok con1
+SET aws_network_calls_via_duckdb=false;
+
+# The client factory reads this off the DatabaseInstance, which only sees the global
+# DBConfig - a session-scoped value would be invisible there and a plain SET would
+# silently do nothing. A second connection observing the change proves it landed globally.
+query I con2
+SELECT current_setting('aws_network_calls_via_duckdb')::BOOLEAN;
+----
+false
+
+statement ok con2
+SET GLOBAL aws_network_calls_via_duckdb=true;
+
+query I con1
+SELECT current_setting('aws_network_calls_via_duckdb')::BOOLEAN;
+----
+true
+
+statement error con1
+SET aws_network_calls_via_duckdb='not a boolean';
+----
