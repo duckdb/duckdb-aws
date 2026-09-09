@@ -19,6 +19,7 @@ jobs:
       extension_name: aws
       duckdb_version: 9c21294d984dfe9a1da5d055b5fce3e8a0d634b2
       ci_tools_version: main
+      vcpkg_commit: cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3 # Release 2026.06.24
       exclude_archs: 'wasm_mvp;wasm_eh;wasm_threads;windows_amd64_rtools;windows_amd64_mingw' # Doesn't work anyway: env local file or env access possible
 
   duckdb-stable-deploy:
