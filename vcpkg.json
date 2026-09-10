@@ -19,5 +19,11 @@
       }
     ]
   },
+  "overrides": [
+    {
+      "name": "aws-sdk-cpp",
+      "version": "1.11.702"
+    }
+  ],
   "builtin-baseline" : "cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3"
 }
