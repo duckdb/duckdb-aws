@@ -488,7 +488,9 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 		result->secret_map["refresh_info"] = Value::STRUCT(struct_fields);
 	}
 
-	if (!credentials.IsExpiredOrEmpty()) {
+	// Static credentials from the profile provider are usable even when a newer
+	// AWS SDK reports them as expired.
+	if (!credentials.IsEmpty()) {
 		result->secret_map["key_id"] = Value(credentials.GetAWSAccessKeyId());
 		result->secret_map["secret"] = Value(credentials.GetAWSSecretKey());
 		result->secret_map["session_token"] = Value(credentials.GetSessionToken());
