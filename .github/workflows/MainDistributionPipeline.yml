@@ -17,7 +17,7 @@ jobs:
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@main
     with:
       extension_name: aws
-      duckdb_version: 9c21294d984dfe9a1da5d055b5fce3e8a0d634b2
+      duckdb_version: fc4002c6e36f1e2d17d7c5b1a604777d69238d2b
       ci_tools_version: main
       exclude_archs: 'wasm_mvp;wasm_eh;wasm_threads;windows_amd64_rtools;windows_amd64_mingw' # Doesn't work anyway: env local file or env access possible
 
@@ -28,7 +28,7 @@ jobs:
     secrets: inherit
     with:
       extension_name: aws
-      duckdb_version: 9c21294d984dfe9a1da5d055b5fce3e8a0d634b2
+      duckdb_version: fc4002c6e36f1e2d17d7c5b1a604777d69238d2b
       ci_tools_version: main
       exclude_archs: 'wasm_mvp;wasm_eh;wasm_threads;windows_amd64_rtools;windows_amd64_mingw' # Doesn't work anyway: env local file or env access possible
       deploy_latest: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}
@@ -39,6 +39,6 @@ jobs:
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_code_quality.yml@main
     with:
       extension_name: aws
-      duckdb_version: 9c21294d984dfe9a1da5d055b5fce3e8a0d634b2
+      duckdb_version: fc4002c6e36f1e2d17d7c5b1a604777d69238d2b
       ci_tools_version: main
       format_checks: 'format'
