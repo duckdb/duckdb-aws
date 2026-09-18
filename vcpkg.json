@@ -14,16 +14,10 @@
       {
         "kind": "git",
         "repository": "https://github.com/duckdb/vcpkg-duckdb-ports",
-        "baseline": "869bddccca976e0abe25894356e7f49e77765169",
-        "packages": [ "vcpkg-cmake" ]
+        "baseline": "4a39aaaace793e256039aaf0cf4f10a96cfe08b3",
+        "packages": [ "vcpkg-cmake", "aws-sdk-cpp" ]
       }
     ]
   },
-  "overrides": [
-    {
-      "name": "aws-sdk-cpp",
-      "version": "1.11.702"
-    }
-  ],
   "builtin-baseline" : "cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3"
 }
