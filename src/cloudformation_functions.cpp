@@ -1118,8 +1118,8 @@ void CloudFormationFunctions::Register(ExtensionLoader &loader) {
 		        // fall through to false and create a real stack.
 		        .Add("dry_run", LogicalType::BOOLEAN);
 	    });
-	TableFunction create_fn("cloudformation_create_stack", std::move(create_signature),
-	                        CloudFormationCreateStackFun, CloudFormationCreateStackBind);
+	TableFunction create_fn("cloudformation_create_stack", std::move(create_signature), CloudFormationCreateStackFun,
+	                        CloudFormationCreateStackBind);
 	loader.RegisterFunction(create_fn);
 
 	FunctionSignature describe_signature;
