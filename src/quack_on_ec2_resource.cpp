@@ -106,7 +106,7 @@ static void QuackCreateFun(ClientContext &context, TableFunctionInput &data_p, D
 	if (res->HasError()) {
 		throw IOException("quack-on-ec2 create failed: %s", res->GetError());
 	}
-	output.data[0].Append(res->GetValue(0, 0));
+	output.data[0].Append(res->Collection().GetValue(0, 0));
 	state.done = true;
 }
 
@@ -142,8 +142,9 @@ static void QuackStatusFun(ClientContext &context, TableFunctionInput &data_p, D
 	if (res->HasError()) {
 		throw IOException("quack-on-ec2 status failed: %s", res->GetError());
 	}
-	output.data[0].Append(res->GetValue(0, 0));
-	output.data[1].Append(res->GetValue(1, 0));
+	auto rows = res->Collection().GetRows();
+	output.data[0].Append(rows.GetValue(0, 0));
+	output.data[1].Append(rows.GetValue(1, 0));
 	state.done = true;
 }
 
@@ -245,12 +246,13 @@ static void QuackListFun(ClientContext &context, TableFunctionInput &data_p, Dat
 	idx_t total = state.result->RowCount();
 	idx_t remaining = total - state.cursor;
 	idx_t to_emit = remaining < (idx_t)STANDARD_VECTOR_SIZE ? remaining : (idx_t)STANDARD_VECTOR_SIZE;
+	auto rows = state.result->Collection().GetRows();
 	for (idx_t i = 0; i < to_emit; i++) {
 		idx_t row = state.cursor + i;
-		output.data[0].Append(state.result->GetValue(0, row));
-		output.data[1].Append(state.result->GetValue(1, row));
-		output.data[2].Append(state.result->GetValue(2, row));
-		output.data[3].Append(state.result->GetValue(3, row));
+		output.data[0].Append(rows.GetValue(0, row));
+		output.data[1].Append(rows.GetValue(1, row));
+		output.data[2].Append(rows.GetValue(2, row));
+		output.data[3].Append(rows.GetValue(3, row));
 	}
 	output.CheckCardinality(to_emit);
 	state.cursor += to_emit;
@@ -262,18 +264,22 @@ void QuackOnEc2Resource::Register(ExtensionLoader &loader) {
 	auto map_vv = LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR);
 
 	// Native callbacks (no SQL macros): thin adapters over cloudformation_*.
-	TableFunction create_fn("__aws__cloudformation__quack_on_ec2__create", {map_vv}, QuackCreateFun, QuackCreateBind,
+	TableFunction create_fn("__aws__cloudformation__quack_on_ec2__create",
+	                        FunctionSignature().AddPositionalOnly("input", map_vv), QuackCreateFun, QuackCreateBind,
 	                        QuackAdapterInit);
 	loader.RegisterFunction(create_fn);
-	TableFunction status_fn("__aws__cloudformation__quack_on_ec2__status", {map_vv}, QuackStatusFun, QuackStatusBind,
+	TableFunction status_fn("__aws__cloudformation__quack_on_ec2__status",
+	                        FunctionSignature().AddPositionalOnly("input", map_vv), QuackStatusFun, QuackStatusBind,
 	                        QuackAdapterInit);
 	loader.RegisterFunction(status_fn);
-	TableFunction destroy_fn("__aws__cloudformation__quack_on_ec2__destroy", {map_vv}, QuackDestroyFun,
-	                         QuackDestroyBind, QuackAdapterInit);
+	TableFunction destroy_fn("__aws__cloudformation__quack_on_ec2__destroy",
+	                         FunctionSignature().AddPositionalOnly("input", map_vv), QuackDestroyFun, QuackDestroyBind,
+	                         QuackAdapterInit);
 	loader.RegisterFunction(destroy_fn);
 	// Also wired into the resource-type registry below (as this type's `list_function`), so
 	// `SHOW ALL EXTERNAL RESOURCES` can discover existing stacks that are not locally managed.
-	TableFunction list_fn("__aws__cloudformation__quack_on_ec2__list", {map_vv}, QuackListFun, QuackListBind,
+	TableFunction list_fn("__aws__cloudformation__quack_on_ec2__list",
+	                      FunctionSignature().AddPositionalOnly("input", map_vv), QuackListFun, QuackListBind,
 	                      QuackListInit);
 	loader.RegisterFunction(list_fn);
 

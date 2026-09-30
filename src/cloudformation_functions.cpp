@@ -1107,39 +1107,52 @@ void CloudFormationFunctions::Register(ExtensionLoader &loader) {
 
 	// The template is the only positional argument: it is what the verb acts on.
 	// Everything else modifies the call.
-	TableFunction create_fn("cloudformation_create_stack", {LogicalType::VARCHAR}, CloudFormationCreateStackFun,
-	                        CloudFormationCreateStackBind);
-	create_fn.named_parameters["name"] = LogicalType::VARCHAR;
-	create_fn.named_parameters["region"] = LogicalType::VARCHAR;
-	create_fn.named_parameters["template_parameters"] = map_vv;
-	create_fn.named_parameters["tags"] = map_vv;
-	// Typed BOOLEAN rather than a string key: a value that failed to parse would
-	// fall through to false and create a real stack.
-	create_fn.named_parameters["dry_run"] = LogicalType::BOOLEAN;
+	FunctionSignature create_signature;
+	create_signature.AddParameter("template", LogicalType::VARCHAR)
+	    .WithTypedKwargs("options", [&](TypedKwargs &options) {
+		    options.Add("name", LogicalType::VARCHAR)
+		        .Add("region", LogicalType::VARCHAR)
+		        .Add("template_parameters", map_vv)
+		        .Add("tags", map_vv)
+		        // Typed BOOLEAN rather than a string key: a value that failed to parse would
+		        // fall through to false and create a real stack.
+		        .Add("dry_run", LogicalType::BOOLEAN);
+	    });
+	TableFunction create_fn("cloudformation_create_stack", std::move(create_signature),
+	                        CloudFormationCreateStackFun, CloudFormationCreateStackBind);
 	loader.RegisterFunction(create_fn);
 
-	TableFunction describe_fn("cloudformation_describe_stack", {map_vv}, CloudFormationDescribeStackFun,
-	                          CloudFormationDescribeStackBind);
+	FunctionSignature describe_signature;
+	describe_signature.AddParameter("handle", map_vv);
+	TableFunction describe_fn("cloudformation_describe_stack", std::move(describe_signature),
+	                          CloudFormationDescribeStackFun, CloudFormationDescribeStackBind);
 	loader.RegisterFunction(describe_fn);
 
-	TableFunction delete_fn("cloudformation_delete_stack", {map_vv}, CloudFormationDeleteStackFun,
+	FunctionSignature delete_signature;
+	delete_signature.AddParameter("handle", map_vv).WithTypedKwargs("options", [&](TypedKwargs &options) {
+		options.Add("dry_run", LogicalType::BOOLEAN);
+	});
+	TableFunction delete_fn("cloudformation_delete_stack", std::move(delete_signature), CloudFormationDeleteStackFun,
 	                        CloudFormationDeleteStackBind);
-	delete_fn.named_parameters["dry_run"] = LogicalType::BOOLEAN;
 	loader.RegisterFunction(delete_fn);
 
-	TableFunction list_fn("cloudformation_list_stacks", {LogicalType::VARCHAR}, CloudFormationListStacksFun,
+	FunctionSignature list_signature;
+	list_signature.AddParameter("region", LogicalType::VARCHAR).WithTypedKwargs("options", [&](TypedKwargs &options) {
+		options.Add("status_filter", LogicalType::LIST(LogicalType::VARCHAR));
+	});
+	TableFunction list_fn("cloudformation_list_stacks", std::move(list_signature), CloudFormationListStacksFun,
 	                      CloudFormationListStacksBind);
-	list_fn.named_parameters["status_filter"] = LogicalType::LIST(LogicalType::VARCHAR);
 	loader.RegisterFunction(list_fn);
 
 	// Overloaded: no arg -> all default regions (parallel); VARCHAR -> one region; LIST(VARCHAR) -> those
 	// regions (parallel). Bind dispatches on the argument shape.
 	TableFunctionSet describe_all_set("cloudformation_describe_stacks");
 	describe_all_set.AddFunction(TableFunction({}, CloudFormationDescribeStacksFun, CloudFormationDescribeStacksBind));
-	describe_all_set.AddFunction(
-	    TableFunction({LogicalType::VARCHAR}, CloudFormationDescribeStacksFun, CloudFormationDescribeStacksBind));
-	describe_all_set.AddFunction(TableFunction({LogicalType::LIST(LogicalType::VARCHAR)},
+	describe_all_set.AddFunction(TableFunction(FunctionSignature().AddPositionalOnly("region", LogicalType::VARCHAR),
 	                                           CloudFormationDescribeStacksFun, CloudFormationDescribeStacksBind));
+	describe_all_set.AddFunction(
+	    TableFunction(FunctionSignature().AddPositionalOnly("regions", LogicalType::LIST(LogicalType::VARCHAR)),
+	                  CloudFormationDescribeStacksFun, CloudFormationDescribeStacksBind));
 	loader.RegisterFunction(describe_all_set);
 
 	ScalarFunction session_id_fn("duckdb_aws_session_id", {}, LogicalType::VARCHAR, DuckDBAwsSessionIdFunction);
