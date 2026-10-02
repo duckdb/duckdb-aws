@@ -1,7 +1,5 @@
 #include "utils/utils.hpp"
 
-#include "aws_client.hpp"
-
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/common/error_data.hpp"
 #include "duckdb/common/exception.hpp"
@@ -10,6 +8,7 @@
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/extension_helper.hpp"
 
+#include <aws/core/config/ConfigAndCredentialsCacheManager.h>
 #include <cstdlib>
 
 namespace duckdb {
@@ -35,7 +34,8 @@ string RegionFromEnvironment() {
 }
 
 string RegionFromProfile(const string &profile_name) {
-	auto profile = GetAwsProfile(profile_name.empty() ? "default" : profile_name, false);
+	auto derived_name = profile_name.empty() ? "default" : profile_name;
+	auto profile = Aws::Config::GetCachedConfigProfile(derived_name);
 	return profile.GetRegion().c_str();
 }
 
