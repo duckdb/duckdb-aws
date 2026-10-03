@@ -14,7 +14,10 @@ require postgres_scanner
 # This test hits a real Redshift cluster + a real AWS identity, so it only runs
 # when the test cluster is available. The runner must already be authenticated to
 # AWS in a way that matches the CHAIN below (e.g. `aws sso login`).
-require-env REDSHIFT_TEST_SERVER_AVAILABLE 1
+
+require-env AWS_REDSHIFT_CLUSTER_NAME
+
+require-env AWS_PROFILE
 
 statement ok
 SET allow_persistent_secrets=false
@@ -26,8 +29,8 @@ statement ok
 CREATE SECRET redshift_creds (
 	TYPE aws,
 	PROVIDER credential_chain,
-	profile 'personal_not_root',
-	CHAIN 'config',
+    profile '{AWS_PROFILE}',
+    CHAIN 'config',
 	REGION 'eu-central-1',
 );
 
@@ -38,12 +41,12 @@ SELECT secret_string LIKE '%redacted%' FROM (FROM duckdb_secrets() WHERE name = 
 true
 
 # In this ATTACH call, two API calls should be made to AWS redshift services.
-# 1 DescribeClusters with `aws redshift describe-clusters --cluster-identifier redshift-cluster-1`
+# 1 DescribeClusters with the generated cluster identifier.
 # 2 GetClusterCredentialsWithIAM, to mint a short-lived db username and password.
 # `TYPE redshift` is handled by the aws extension, which resolves the cluster and then hands
 # the resulting connection string to the postgres extension.
 statement ok
-ATTACH 'redshift-cluster-1' AS redshift_db (TYPE redshift);
+ATTACH '{AWS_REDSHIFT_CLUSTER_NAME}' AS redshift_db (TYPE redshift);
 
 statement ok
 select * from (show all tables) where database = 'redshift_db';

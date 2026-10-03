@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# Removes the Redshift cluster and supporting resources created by create_redshift_test_cluster.sh.
+set -euo pipefail
+
+export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-eu-central-1}"
+# PREFIX keeps resource names unique in a shared account.
+PREFIX="${PREFIX:-$(id -un)}"
+CLUSTER="$PREFIX-redshift-$AWS_DEFAULT_REGION"
+ROLE="$CLUSTER-tickit-loader"
+SECURITY_GROUP="$CLUSTER-client"
+MANAGED_BY="duckdb-redshift-test"
+TOTAL_STEPS=4
+
+step() {
+	echo
+	echo "[$1/$TOTAL_STEPS] $2"
+}
+
+delete_cluster() {
+	step 1 "Delete Redshift cluster $CLUSTER"
+
+	if ! aws redshift describe-clusters --cluster-identifier "$CLUSTER" >/dev/null 2>&1; then
+		echo "Cluster is already absent"
+		return
+	fi
+
+	aws redshift delete-cluster --cluster-identifier "$CLUSTER" --skip-final-cluster-snapshot >/dev/null
+	echo "Cluster deletion requested; waiting for it to finish"
+	aws redshift wait cluster-deleted --cluster-identifier "$CLUSTER"
+	echo "Cluster deleted"
+}
+
+delete_loader_role() {
+	step 2 "Delete IAM loader role $ROLE"
+
+	if ! aws iam get-role --role-name "$ROLE" >/dev/null 2>&1; then
+		echo "IAM role is already absent"
+		return
+	fi
+
+	if aws iam get-role-policy --role-name "$ROLE" --policy-name tickit-read >/dev/null 2>&1; then
+		aws iam delete-role-policy --role-name "$ROLE" --policy-name tickit-read
+		echo "Deleted inline policy tickit-read"
+	else
+		echo "Inline policy tickit-read is already absent"
+	fi
+
+	aws iam delete-role --role-name "$ROLE"
+	echo "IAM role deleted"
+}
+
+delete_security_group() {
+	step 3 "Delete dedicated security group $SECURITY_GROUP"
+
+	local security_group_id
+	security_group_id=$(aws ec2 describe-security-groups \
+		--filters Name=group-name,Values="$SECURITY_GROUP" Name=tag:ManagedBy,Values="$MANAGED_BY" Name=tag:Cluster,Values="$CLUSTER" \
+		--query 'SecurityGroups[0].GroupId' --output text)
+
+	if [[ -z "$security_group_id" || "$security_group_id" == "None" ]]; then
+		echo "Dedicated security group is already absent"
+		return
+	fi
+
+	aws ec2 delete-security-group --group-id "$security_group_id"
+	echo "Deleted security group $security_group_id"
+}
+
+print_result() {
+	step 4 "Report cleanup result"
+
+	echo
+	echo "Redshift test resources removed successfully."
+	echo "Cluster identifier: $CLUSTER"
+	echo "IAM role: $ROLE"
+	echo "Security group: $SECURITY_GROUP"
+}
+
+main() {
+	delete_cluster
+	delete_loader_role
+	delete_security_group
+	print_result
+}
+
+main "$@"

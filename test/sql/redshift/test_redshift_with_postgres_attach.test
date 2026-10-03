@@ -14,7 +14,12 @@ require postgres_scanner
 # This test hits a real Redshift cluster + a real AWS identity, so it only runs
 # when the test cluster is available. The runner must already be authenticated to
 # AWS in a way that matches the CHAIN below (e.g. `aws sso login`).
-require-env REDSHIFT_TEST_SERVER_AVAILABLE 1
+
+require-env AWS_REDSHIFT_CLUSTER_NAME
+
+require-env AWS_REDSHIFT_HOST
+
+require-env AWS_PROFILE
 
 statement ok
 SET allow_persistent_secrets=false
@@ -24,7 +29,7 @@ statement ok
 CREATE SECRET redshift_creds (
     TYPE aws,
     PROVIDER credential_chain,
-    profile 'personal_not_root',
+    profile '{AWS_PROFILE}',
     CHAIN 'config',
     REGION 'eu-central-1',
 );
@@ -35,14 +40,13 @@ SELECT secret_string LIKE '%redacted%' FROM (FROM duckdb_secrets() WHERE name = 
 ----
 true
 
-# Pinning the endpoint and the database will skip the DescribeClusters step
-# Only GetClusterCredentialsWithIAM runs. See test_attach_redshift_with_iam_creds.test for the discovered
-# endpoint path.
+# Pinning the endpoint and database skips the DescribeClusters step.
+# Only GetClusterCredentialsWithIAM runs.
 statement ok
-ATTACH 'redshift-cluster-1' AS redshift_db (
+ATTACH '{AWS_REDSHIFT_CLUSTER_NAME}' AS redshift_db (
     TYPE redshift,
     SECRET redshift_creds,
-    HOST 'redshift-cluster-1.czzi0zkl6xg6.eu-central-1.redshift.amazonaws.com',
+    HOST '{AWS_REDSHIFT_HOST}',
     PORT '5439',
     DATABASE 'dev'
 );
