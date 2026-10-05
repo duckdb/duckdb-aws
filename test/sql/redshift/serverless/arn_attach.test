@@ -1,0 +1,115 @@
+# name: test/sql/redshift/serverless/arn_attach.test
+# description: test attaching Redshift Serverless through namespace and workgroup ARNs
+# group: [serverless]
+
+require aws
+
+require parquet
+
+# The 'aws' secret type is registered by httpfs.
+require httpfs
+
+require postgres_scanner
+
+require-env AWS_ACCESS_KEY_ID
+
+require-env AWS_SECRET_ACCESS_KEY
+
+require-env AWS_REGION
+
+require-env AWS_REDSHIFT_SERVERLESS_NAMESPACE_ARN
+
+require-env AWS_REDSHIFT_SERVERLESS_WORKGROUP_ARN
+
+require-env AWS_REDSHIFT_SERVERLESS_UNASSOCIATED_NAMESPACE_ARN
+
+require-env FIRST_DATABASE
+
+require-env SECOND_DATABASE
+
+set ignore_error_messages
+
+
+statement ok
+CREATE SECRET redshift_serverless_s3_creds (
+    TYPE s3,
+    KEY_ID '{AWS_ACCESS_KEY_ID}',
+    SECRET '{AWS_SECRET_ACCESS_KEY}',
+    REGION '{AWS_REGION}'
+);
+
+statement ok
+CREATE SECRET redshift_serverless_aws_creds (
+    TYPE aws,
+    PROVIDER credential_chain,
+    KEY_ID '{AWS_ACCESS_KEY_ID}',
+    SECRET '{AWS_SECRET_ACCESS_KEY}',
+    REGION '{AWS_REGION}'
+);
+
+# A namespace without a workgroup has database metadata but no connection endpoint.
+statement error
+ATTACH '{AWS_REDSHIFT_SERVERLESS_UNASSOCIATED_NAMESPACE_ARN}' AS redshift_serverless_unassociated_namespace (
+    SECRET redshift_serverless_aws_creds
+);
+----
+<REGEX>:.*Redshift Serverless namespace '.*' has no associated workgroup in region '.*'.*
+
+statement ok
+ATTACH '{AWS_REDSHIFT_SERVERLESS_NAMESPACE_ARN}' AS redshift_serverless_namespace_first_db (
+    SECRET redshift_serverless_s3_creds
+);
+
+statement ok
+ATTACH '{AWS_REDSHIFT_SERVERLESS_WORKGROUP_ARN}' AS redshift_serverless_workgroup_first_db (
+    SECRET redshift_serverless_aws_creds,
+    DBNAME '{FIRST_DATABASE}'
+);
+
+statement ok
+ATTACH '{AWS_REDSHIFT_SERVERLESS_WORKGROUP_ARN}' AS redshift_serverless_second_db (
+    SECRET redshift_serverless_aws_creds,
+    DBNAME '{SECOND_DATABASE}'
+);
+
+statement ok
+SELECT * FROM (SHOW ALL TABLES) WHERE database = 'redshift_serverless_namespace_first_db';
+
+statement ok
+SELECT * FROM (SHOW ALL TABLES) WHERE database = 'redshift_serverless_workgroup_first_db';
+
+statement ok
+SELECT * FROM (SHOW ALL TABLES) WHERE database = 'redshift_serverless_second_db';
+
+query II
+SELECT * FROM redshift_serverless_namespace_first_db.public.duckdb_database_fixture ORDER BY id;
+----
+1	redshift-serverless-first-db
+2	duckdb-first-db
+
+query II
+SELECT * FROM redshift_serverless_workgroup_first_db.public.duckdb_database_fixture ORDER BY id;
+----
+1	redshift-serverless-first-db
+2	duckdb-first-db
+
+query II
+SELECT * FROM redshift_serverless_second_db.public.duckdb_database_fixture ORDER BY id;
+----
+1	redshift-serverless-second-db
+2	duckdb-second-db
+
+statement ok
+DETACH redshift_serverless_second_db;
+
+statement ok
+DETACH redshift_serverless_workgroup_first_db;
+
+statement ok
+DETACH redshift_serverless_namespace_first_db;
+
+statement ok
+DROP SECRET redshift_serverless_aws_creds;
+
+statement ok
+DROP SECRET redshift_serverless_s3_creds;
