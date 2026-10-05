@@ -13,11 +13,11 @@ source test/sql/redshift/redshift.env
 
 The script creates a cluster, IAM role, security group, and TICKIT sample data.
 It overwrites `test/sql/redshift/redshift.env` with
-`AWS_REDSHIFT_CLUSTER_NAME`, `AWS_REDSHIFT_ARN`, and `AWS_REDSHIFT_HOST`.
-Set `REDSHIFT_ENV_FILE` to use another path.
+`AWS_REDSHIFT_CLUSTER_NAME`, `AWS_REDSHIFT_ARN`, `AWS_REDSHIFT_HOST`, and
+`AWS_REDSHIFT_DATABASE`. Set `REDSHIFT_ENV_FILE` to use another path.
 
-Resources use your username as `PREFIX` and `eu-central-1` as
-`AWS_DEFAULT_REGION` unless overridden.
+Resources use your username as `PREFIX`, `eu-central-1` as
+`AWS_DEFAULT_REGION`, and `dev` as `AWS_REDSHIFT_DATABASE` unless overridden.
 
 ## Run tests
 
@@ -37,9 +37,10 @@ Run all Redshift tests:
 source test/sql/redshift/redshift.env && ./build/release/test/unittest "test/sql/redshift/*"
 ```
 
-The cluster-ID and pinned-host tests use the selected credential-chain profile.
-`redshift_arn_attach.test` instead requires `AWS_ACCESS_KEY_ID` and
-`AWS_SECRET_ACCESS_KEY` in addition to the generated `AWS_REDSHIFT_ARN`.
+The cluster-ID and pinned-host tests use the selected credential-chain profile
+and `AWS_REDSHIFT_DATABASE` from `redshift.env`.
+`redshift_arn_attach.test` discovers the cluster database and also requires
+`AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`.
 
 `postgres_scanner` is a loadable extension. For an interactive DuckDB session,
 start `./build/release/duckdb -unsigned` and run:

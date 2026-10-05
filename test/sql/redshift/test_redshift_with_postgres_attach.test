@@ -19,6 +19,8 @@ require-env AWS_REDSHIFT_CLUSTER_NAME
 
 require-env AWS_REDSHIFT_HOST
 
+require-env AWS_REDSHIFT_DATABASE
+
 require-env AWS_PROFILE
 
 statement ok
@@ -48,7 +50,7 @@ ATTACH '{AWS_REDSHIFT_CLUSTER_NAME}' AS redshift_db (
     SECRET redshift_creds,
     HOST '{AWS_REDSHIFT_HOST}',
     PORT '5439',
-    DATABASE 'dev'
+    DATABASE '{AWS_REDSHIFT_DATABASE}'
 );
 
 statement ok

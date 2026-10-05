@@ -17,6 +17,8 @@ require postgres_scanner
 
 require-env AWS_REDSHIFT_CLUSTER_NAME
 
+require-env AWS_REDSHIFT_DATABASE
+
 require-env AWS_PROFILE
 
 statement ok
@@ -46,7 +48,10 @@ true
 # `TYPE redshift` is handled by the aws extension, which resolves the cluster and then hands
 # the resulting connection string to the postgres extension.
 statement ok
-ATTACH '{AWS_REDSHIFT_CLUSTER_NAME}' AS redshift_db (TYPE redshift);
+ATTACH '{AWS_REDSHIFT_CLUSTER_NAME}' AS redshift_db (
+    TYPE redshift,
+    DATABASE '{AWS_REDSHIFT_DATABASE}'
+);
 
 statement ok
 select * from (show all tables) where database = 'redshift_db';

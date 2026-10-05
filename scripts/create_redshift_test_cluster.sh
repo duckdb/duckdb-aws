@@ -12,8 +12,7 @@ CLUSTER="$PREFIX-redshift-$AWS_DEFAULT_REGION"
 ROLE="$CLUSTER-tickit-loader"
 SECURITY_GROUP="$CLUSTER-client"
 MANAGED_BY="duckdb-redshift-test"
-DATABASE="${REDSHIFT_DATABASE:-dev}"
-DATABASE_ALIAS="${REDSHIFT_DATABASE_ALIAS:-redshift_db}"
+AWS_REDSHIFT_DATABASE="${AWS_REDSHIFT_DATABASE:-dev}"
 VPC_ID="${REDSHIFT_VPC_ID:-}"
 TOTAL_STEPS=6
 
@@ -122,7 +121,7 @@ create_cluster() {
 	fi
 
 	aws redshift create-cluster --cluster-identifier "$CLUSTER" --node-type ra3.large --cluster-type single-node \
-		--db-name "$DATABASE" --master-username awsuser --manage-master-password --publicly-accessible \
+		--db-name "$AWS_REDSHIFT_DATABASE" --master-username awsuser --manage-master-password --publicly-accessible \
 		--iam-roles "$ROLE_ARN" --default-iam-role-arn "$ROLE_ARN" \
 		--vpc-security-group-ids "$SECURITY_GROUP_ID" >/dev/null
 	echo "Cluster creation requested"
@@ -171,7 +170,7 @@ tickit_tables_exist() {
 
 	statement_id=$(aws redshift-data execute-statement \
 		--cluster-identifier "$CLUSTER" \
-		--database "$DATABASE" \
+		--database "$AWS_REDSHIFT_DATABASE" \
 		--db-user awsuser \
 		--query Id \
 		--output text \
@@ -214,7 +213,7 @@ load_tickit_data() {
 	local statement_id
 	statement_id=$(aws redshift-data batch-execute-statement \
 		--cluster-identifier "$CLUSTER" \
-		--database "$DATABASE" \
+		--database "$AWS_REDSHIFT_DATABASE" \
 		--db-user awsuser \
 		--query Id \
 		--output text \
@@ -233,7 +232,6 @@ print_result() {
 		echo "Could not read the namespace ARN for $CLUSTER" >&2
 		return 1
 	fi
-	export AWS_REDSHIFT_ARN
 
 	AWS_REDSHIFT_HOST=$(aws redshift describe-clusters --cluster-identifier "$CLUSTER" \
 		--query 'Clusters[0].Endpoint.Address' --output text)
@@ -241,22 +239,23 @@ print_result() {
 		echo "Could not read the endpoint host for $CLUSTER" >&2
 		return 1
 	fi
-	export AWS_REDSHIFT_HOST
 
 	echo
 	echo "Redshift cluster created successfully."
 	echo "Cluster identifier: $CLUSTER"
 	echo "Security group: $SECURITY_GROUP ($SECURITY_GROUP_ID)"
-	echo "Database: $DATABASE"
+	echo "Database: $AWS_REDSHIFT_DATABASE"
 	printf "export AWS_REDSHIFT_CLUSTER_NAME='%s'\n" "$CLUSTER"
 	printf "export AWS_REDSHIFT_ARN='%s'\n" "$AWS_REDSHIFT_ARN"
 	printf "export AWS_REDSHIFT_HOST='%s'\n" "$AWS_REDSHIFT_HOST"
+	printf "export AWS_REDSHIFT_DATABASE='%s'\n" "$AWS_REDSHIFT_DATABASE"
 
 	local env_file="${REDSHIFT_ENV_FILE:-$PROJECT_ROOT/test/sql/redshift/redshift.env}"
 	{
 		printf "export AWS_REDSHIFT_CLUSTER_NAME='%s'\n" "$CLUSTER"
 		printf "export AWS_REDSHIFT_ARN='%s'\n" "$AWS_REDSHIFT_ARN"
 		printf "export AWS_REDSHIFT_HOST='%s'\n" "$AWS_REDSHIFT_HOST"
+		printf "export AWS_REDSHIFT_DATABASE='%s'\n" "$AWS_REDSHIFT_DATABASE"
 	} > "$env_file"
 	echo
 	echo "Wrote env vars to $env_file (run: source $env_file)"
