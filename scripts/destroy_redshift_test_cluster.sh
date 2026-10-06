@@ -2,10 +2,10 @@
 # Removes the Redshift cluster and supporting resources created by create_redshift_test_cluster.sh.
 set -euo pipefail
 
-export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-eu-central-1}"
+export AWS_REGION="${AWS_REGION:-eu-central-1}"
 # PREFIX keeps resource names unique in a shared account.
 PREFIX="${PREFIX:-$(id -un)}"
-CLUSTER="$PREFIX-redshift-$AWS_DEFAULT_REGION"
+CLUSTER="$PREFIX-redshift-$AWS_REGION"
 ROLE="$CLUSTER-tickit-loader"
 SECURITY_GROUP="$CLUSTER-client"
 MANAGED_BY="duckdb-redshift-test"

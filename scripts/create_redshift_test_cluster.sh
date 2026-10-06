@@ -5,10 +5,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-eu-central-1}"
+export AWS_REGION="${AWS_REGION:-eu-central-1}"
 # PREFIX keeps resource names unique in a shared account.
 PREFIX="${PREFIX:-$(id -un)}"
-CLUSTER="$PREFIX-redshift-$AWS_DEFAULT_REGION"
+CLUSTER="$PREFIX-redshift-$AWS_REGION"
 ROLE="$CLUSTER-tickit-loader"
 SECURITY_GROUP="$CLUSTER-client"
 MANAGED_BY="duckdb-redshift-test"
@@ -111,7 +111,7 @@ configure_security_group() {
 }
 
 create_cluster() {
-	step 3 "Create Redshift cluster $CLUSTER in $AWS_DEFAULT_REGION"
+	step 3 "Create Redshift cluster $CLUSTER in $AWS_REGION"
 
 	local cluster_status
 	if cluster_status=$(aws redshift describe-clusters --cluster-identifier "$CLUSTER" \
@@ -120,6 +120,7 @@ create_cluster() {
 		return
 	fi
 
+	# This rg.large single-node configuration rejects CreateCluster sample loading.
 	aws redshift create-cluster --cluster-identifier "$CLUSTER" --node-type rg.large --cluster-type single-node \
 		--db-name "$AWS_REDSHIFT_DATABASE" --master-username awsuser --manage-master-password --publicly-accessible \
 		--iam-roles "$ROLE_ARN" --default-iam-role-arn "$ROLE_ARN" \
@@ -249,6 +250,7 @@ print_result() {
 	printf "export AWS_REDSHIFT_ARN='%s'\n" "$AWS_REDSHIFT_ARN"
 	printf "export AWS_REDSHIFT_HOST='%s'\n" "$AWS_REDSHIFT_HOST"
 	printf "export AWS_REDSHIFT_DATABASE='%s'\n" "$AWS_REDSHIFT_DATABASE"
+	printf "export AWS_REGION='%s'\n" "$AWS_REGION"
 
 	local env_file="${REDSHIFT_ENV_FILE:-$PROJECT_ROOT/test/sql/redshift/redshift.env}"
 	{
@@ -256,6 +258,7 @@ print_result() {
 		printf "export AWS_REDSHIFT_ARN='%s'\n" "$AWS_REDSHIFT_ARN"
 		printf "export AWS_REDSHIFT_HOST='%s'\n" "$AWS_REDSHIFT_HOST"
 		printf "export AWS_REDSHIFT_DATABASE='%s'\n" "$AWS_REDSHIFT_DATABASE"
+		printf "export AWS_REGION='%s'\n" "$AWS_REGION"
 	} > "$env_file"
 	echo
 	echo "Wrote env vars to $env_file (run: source $env_file)"

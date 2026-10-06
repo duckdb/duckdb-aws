@@ -17,6 +17,8 @@ require-env AWS_SECRET_ACCESS_KEY
 
 require-env AWS_REDSHIFT_ARN
 
+require-env AWS_REGION
+
 set ignore_error_messages
 
 statement ok
@@ -27,7 +29,7 @@ CREATE SECRET (
     TYPE s3,
     KEY_ID '{AWS_ACCESS_KEY_ID}',
     SECRET '{AWS_SECRET_ACCESS_KEY}',
-    REGION 'eu-central-1'
+    REGION '{AWS_REGION}'
 );
 
 statement ok

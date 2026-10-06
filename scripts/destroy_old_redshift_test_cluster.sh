@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Removes resources made by the create script before names got a prefix and region. Skips what is already gone.
 set -euo pipefail
-export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-eu-central-1}"
+export AWS_REGION="${AWS_REGION:-eu-central-1}"
 CLUSTER=redshift-cluster-1
 ROLE="$CLUSTER-copy"
 

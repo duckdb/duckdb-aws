@@ -6,7 +6,7 @@ These tests connect to a provisioned Redshift cluster through the `aws` extensio
 
 The cluster does not expire or stop automatically. It keeps running, and may continue to incur AWS charges, until the cleanup script removes it with its IAM role and security group.
 
-The cluster name is `$PREFIX-redshift-$AWS_DEFAULT_REGION`. Cluster creation is idempotent: rerunning the script reuses a cluster with the same name. Different usernames create separate clusters. Users share a cluster only when they use the existing `PREFIX` and region. Set `PREFIX` explicitly to choose shared or isolated clusters.
+The cluster name is `$PREFIX-redshift-$AWS_REGION`. Cluster creation is idempotent: rerunning the script reuses a cluster with the same name. Different usernames create separate clusters. Users share a cluster only when they use the existing `PREFIX` and region. Set `PREFIX` explicitly to choose shared or isolated clusters.
 
 ### Create a test cluster
 
@@ -17,9 +17,9 @@ From the repository root:
 source test/sql/redshift/redshift.env
 ```
 
-The script creates the cluster, its IAM role and security group, and the TICKIT sample data. It writes `AWS_REDSHIFT_CLUSTER_NAME`, `AWS_REDSHIFT_ARN`, `AWS_REDSHIFT_HOST`, and `AWS_REDSHIFT_DATABASE` to `test/sql/redshift/redshift.env`. Set `REDSHIFT_ENV_FILE` to write these variables elsewhere.
+The script creates the cluster, its IAM role and security group, and the TICKIT sample data. It writes `AWS_REDSHIFT_CLUSTER_NAME`, `AWS_REDSHIFT_ARN`, `AWS_REDSHIFT_HOST`, `AWS_REDSHIFT_DATABASE`, and `AWS_REGION` to `test/sql/redshift/redshift.env`. `AWS_REGION` is the region selected for the cluster. Set `REDSHIFT_ENV_FILE` to write these variables elsewhere.
 
-By default, `PREFIX` is the local Unix account name returned by `id -un`. `AWS_DEFAULT_REGION` defaults to `eu-central-1`, and `AWS_REDSHIFT_DATABASE` defaults to `dev`. Set `PREFIX` explicitly to override it, for example: `PREFIX=my-test-cluster ./scripts/create_redshift_test_cluster.sh`.
+By default, `PREFIX` is the local Unix account name returned by `id -un`, and `AWS_REDSHIFT_DATABASE` is `dev`. `AWS_REGION` defaults to `eu-central-1`. Set `PREFIX` explicitly to override it, for example: `PREFIX=my-test-cluster ./scripts/create_redshift_test_cluster.sh`.
 
 #### TICKIT sample data
 

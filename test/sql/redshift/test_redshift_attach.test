@@ -21,6 +21,8 @@ require-env AWS_REDSHIFT_DATABASE
 
 require-env AWS_PROFILE
 
+require-env AWS_REGION
+
 statement ok
 SET allow_persistent_secrets=false
 
@@ -33,7 +35,7 @@ CREATE SECRET redshift_creds (
 	PROVIDER credential_chain,
     profile '{AWS_PROFILE}',
     CHAIN 'config',
-	REGION 'eu-central-1',
+	REGION '{AWS_REGION}',
 );
 
 # The resolved AWS credentials must be redacted in the secret listing.
