@@ -120,7 +120,7 @@ create_cluster() {
 		return
 	fi
 
-	aws redshift create-cluster --cluster-identifier "$CLUSTER" --node-type ra3.large --cluster-type single-node \
+	aws redshift create-cluster --cluster-identifier "$CLUSTER" --node-type rg.large --cluster-type single-node \
 		--db-name "$AWS_REDSHIFT_DATABASE" --master-username awsuser --manage-master-password --publicly-accessible \
 		--iam-roles "$ROLE_ARN" --default-iam-role-arn "$ROLE_ARN" \
 		--vpc-security-group-ids "$SECURITY_GROUP_ID" >/dev/null
