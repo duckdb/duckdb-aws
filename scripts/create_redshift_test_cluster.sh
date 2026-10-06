@@ -15,6 +15,58 @@ MANAGED_BY="duckdb-redshift-test"
 AWS_REDSHIFT_DATABASE="${AWS_REDSHIFT_DATABASE:-dev}"
 VPC_ID="${REDSHIFT_VPC_ID:-}"
 TOTAL_STEPS=6
+FORCE=false
+
+usage() {
+	cat <<EOF
+Usage: $(basename "$0") [--force]
+
+Without --force, this script only lists the Redshift test resources it would create. With --force, it creates the cluster and supporting resources, loads the TICKIT sample data, and writes the test environment file.
+
+Environment:
+  PREFIX="resource_prefix"         Prefix the names of created resources (default: local username).
+  AWS_REGION="desired_region"      Create resources in a specific AWS region (default: eu-central-1).
+
+Options:
+  --force                          Create the resources.
+  -h, --help                       Show this help.
+EOF
+}
+
+parse_args() {
+	while (($#)); do
+		case "$1" in
+			--force)
+				FORCE=true
+				;;
+			-h | --help)
+				usage
+				exit 0
+				;;
+			*)
+				echo "Unknown argument: $1" >&2
+				usage >&2
+				exit 2
+				;;
+		esac
+		shift
+	done
+}
+
+print_plan() {
+	local env_file="${REDSHIFT_ENV_FILE:-$PROJECT_ROOT/test/sql/redshift/redshift.env}"
+
+	echo "The following Redshift test resources will be created:"
+	echo "  Redshift cluster: $CLUSTER"
+	echo "  IAM loader role: $ROLE"
+	echo "  Security group: $SECURITY_GROUP"
+	echo "  TICKIT sample tables and data in database: $AWS_REDSHIFT_DATABASE"
+	echo "  Test environment file: $env_file"
+	echo "  Resource prefix: $PREFIX"
+	echo "  AWS region: $AWS_REGION"
+	echo
+	echo "Run $(basename "$0") --force to create them."
+}
 
 step() {
 	echo
@@ -265,6 +317,12 @@ print_result() {
 }
 
 main() {
+	parse_args "$@"
+	if [[ "$FORCE" != true ]]; then
+		print_plan
+		return
+	fi
+
 	configure_loader_role
 	configure_security_group
 	create_cluster

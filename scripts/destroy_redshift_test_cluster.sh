@@ -10,6 +10,54 @@ ROLE="$CLUSTER-tickit-loader"
 SECURITY_GROUP="$CLUSTER-client"
 MANAGED_BY="duckdb-redshift-test"
 TOTAL_STEPS=4
+FORCE=false
+
+usage() {
+	cat <<EOF
+Usage: $(basename "$0") [--force]
+
+Without --force, this script only lists the Redshift test resources it would destroy. With --force, it permanently deletes the cluster without creating a final snapshot and removes its supporting IAM role and security group.
+
+Environment:
+  PREFIX="resource_prefix"         Select resources with this name prefix (default: local username).
+  AWS_REGION="desired_region"      Select resources in a specific AWS region (default: eu-central-1).
+
+Options:
+  --force                          Destroy the resources.
+  -h, --help                       Show this help.
+EOF
+}
+
+parse_args() {
+	while (($#)); do
+		case "$1" in
+			--force)
+				FORCE=true
+				;;
+			-h | --help)
+				usage
+				exit 0
+				;;
+			*)
+				echo "Unknown argument: $1" >&2
+				usage >&2
+				exit 2
+				;;
+		esac
+		shift
+	done
+}
+
+print_plan() {
+	echo "The following Redshift test resources will be destroyed:"
+	echo "  Redshift cluster: $CLUSTER (without creating a final snapshot)"
+	echo "  IAM loader role: $ROLE (including inline policy tickit-read)"
+	echo "  Security group: $SECURITY_GROUP"
+	echo "  Resource prefix: $PREFIX"
+	echo "  AWS region: $AWS_REGION"
+	echo
+	echo "Run $(basename "$0") --force to destroy them."
+}
 
 step() {
 	echo
@@ -77,6 +125,12 @@ print_result() {
 }
 
 main() {
+	parse_args "$@"
+	if [[ "$FORCE" != true ]]; then
+		print_plan
+		return
+	fi
+
 	delete_cluster
 	delete_loader_role
 	delete_security_group

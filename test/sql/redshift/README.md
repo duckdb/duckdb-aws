@@ -14,12 +14,13 @@ From the repository root:
 
 ```bash
 ./scripts/create_redshift_test_cluster.sh
+./scripts/create_redshift_test_cluster.sh --force
 source test/sql/redshift/redshift.env
 ```
 
-The script creates the cluster, its IAM role and security group, and the TICKIT sample data. It writes `AWS_REDSHIFT_CLUSTER_NAME`, `AWS_REDSHIFT_ARN`, `AWS_REDSHIFT_HOST`, `AWS_REDSHIFT_DATABASE`, and `AWS_REGION` to `test/sql/redshift/redshift.env`. `AWS_REGION` is the region selected for the cluster. Set `REDSHIFT_ENV_FILE` to write these variables elsewhere.
+Without `--force`, the script only lists the resources it will create. With `--force`, it creates the cluster, its IAM role and security group, and the TICKIT sample data. It writes `AWS_REDSHIFT_CLUSTER_NAME`, `AWS_REDSHIFT_ARN`, `AWS_REDSHIFT_HOST`, `AWS_REDSHIFT_DATABASE`, and `AWS_REGION` to `test/sql/redshift/redshift.env`. `AWS_REGION` is the region selected for the cluster. Set `REDSHIFT_ENV_FILE` to write these variables elsewhere.
 
-By default, `PREFIX` is the local Unix account name returned by `id -un`, and `AWS_REDSHIFT_DATABASE` is `dev`. `AWS_REGION` defaults to `eu-central-1`. Set `PREFIX` explicitly to override it, for example: `PREFIX=my-test-cluster ./scripts/create_redshift_test_cluster.sh`.
+By default, `PREFIX` is the local Unix account name returned by `id -un`, and `AWS_REDSHIFT_DATABASE` is `dev`. `AWS_REGION` defaults to `eu-central-1`. Set the prefix or region explicitly, for example: `PREFIX="resource_prefix" AWS_REGION="desired_region" ./scripts/create_redshift_test_cluster.sh --force`.
 
 #### TICKIT sample data
 
@@ -33,7 +34,10 @@ After testing, remove the cluster and its supporting resources:
 
 ```bash
 ./scripts/destroy_redshift_test_cluster.sh
+./scripts/destroy_redshift_test_cluster.sh --force
 ```
+
+Without `--force`, the script only lists the resources it will destroy. With `--force`, it deletes the cluster without creating a final snapshot and removes its IAM role and security group.
 
 ## Run tests
 
