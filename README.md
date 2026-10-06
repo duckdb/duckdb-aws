@@ -28,19 +28,9 @@ Point `VCPKG_TOOLCHAIN_PATH` at that checkout when building:
 VCPKG_TOOLCHAIN_PATH=~/vcpkg/scripts/buildsystems/vcpkg.cmake GEN=ninja make
 ```
 
-## Redshift Tests
+## Tests
 
-The Redshift tests use `postgres_scanner`, which is built as a loadable extension but is not statically linked into the local DuckDB binary. From the repository root, start DuckDB with unsigned extension loading enabled:
-
-```bash
-./build/release/duckdb -unsigned
-```
-
-Then load the locally built extension:
-
-```sql
-LOAD './build/release/extension/postgres_scanner/postgres_scanner.duckdb_extension';
-```
+- [Redshift test setup](test/sql/redshift/README.md)
 
 ## Documentation
 

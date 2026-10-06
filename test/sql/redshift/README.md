@@ -2,7 +2,13 @@
 
 These tests connect to a provisioned Redshift cluster through the `aws` extension.
 
-## Create a test cluster
+## Cluster lifecycle
+
+The cluster does not expire or stop automatically. It keeps running, and may continue to incur AWS charges, until the cleanup script removes it with its IAM role and security group.
+
+The cluster name is `$PREFIX-redshift-$AWS_DEFAULT_REGION`. Cluster creation is idempotent: rerunning the script reuses a cluster with the same name. Different usernames create separate clusters. Users share a cluster only when they use the existing `PREFIX` and region. Set `PREFIX` explicitly to choose shared or isolated clusters.
+
+### Create a test cluster
 
 From the repository root:
 
@@ -11,17 +17,31 @@ From the repository root:
 source test/sql/redshift/redshift.env
 ```
 
-The script creates a cluster, IAM role, security group, and TICKIT sample data.
-It overwrites `test/sql/redshift/redshift.env` with
-`AWS_REDSHIFT_CLUSTER_NAME`, `AWS_REDSHIFT_ARN`, `AWS_REDSHIFT_HOST`, and
-`AWS_REDSHIFT_DATABASE`. Set `REDSHIFT_ENV_FILE` to use another path.
+The script creates the cluster, its IAM role and security group, and the TICKIT sample data. It writes `AWS_REDSHIFT_CLUSTER_NAME`, `AWS_REDSHIFT_ARN`, `AWS_REDSHIFT_HOST`, and `AWS_REDSHIFT_DATABASE` to `test/sql/redshift/redshift.env`. Set `REDSHIFT_ENV_FILE` to write these variables elsewhere.
 
-Resources use your username as `PREFIX`, `eu-central-1` as
-`AWS_DEFAULT_REGION`, and `dev` as `AWS_REDSHIFT_DATABASE` unless overridden.
+By default, `PREFIX` is the local Unix account name returned by `id -un`. `AWS_DEFAULT_REGION` defaults to `eu-central-1`, and `AWS_REDSHIFT_DATABASE` defaults to `dev`. Set `PREFIX` explicitly to override it, for example: `PREFIX=my-test-cluster ./scripts/create_redshift_test_cluster.sh`.
+
+#### TICKIT sample data
+
+The script loads AWS's [TICKIT sample database](https://docs.aws.amazon.com/redshift/latest/dg/c_sampledb.html), a fictional online ticket-sales dataset. It uses Redshift `COPY` commands to read the public files at `s3://redshift-downloads/tickit` in `us-east-1` and creates the seven standard tables: `users`, `venue`, `category`, `date`, `event`, `listing`, and `sales`.
+
+The dedicated Redshift IAM role has only `s3:GetObject` and `s3:ListBucket` permissions on `redshift-downloads`. The script only reads from this public bucket. Later runs skip the data load when all seven tables exist.
+
+### Destroy a test cluster
+
+After testing, remove the cluster and its supporting resources:
+
+```bash
+./scripts/destroy_redshift_test_cluster.sh
+```
 
 ## Run tests
 
-Build the extension, then configure the AWS profile and credentials used by the tests:
+### Build `postgres_scanner` locally
+
+Redshift tests require `postgres_scanner`. The `duckdb_extension_load(postgres_scanner ...)` block in `extension_config.cmake` is commented out because CI cannot build it. For local Redshift development or testing, uncomment the entire block, rebuild the extension, and do not commit that local change.
+
+Build the extension, then set the AWS profile and credentials for the tests:
 
 ```bash
 export AWS_CONFIG_FILE="$HOME/.aws/config"
@@ -37,22 +57,18 @@ Run all Redshift tests:
 source test/sql/redshift/redshift.env && ./build/release/test/unittest "test/sql/redshift/*"
 ```
 
-The cluster-ID and pinned-host tests use the selected credential-chain profile
-and `AWS_REDSHIFT_DATABASE` from `redshift.env`.
-`redshift_arn_attach.test` discovers the cluster database and also requires
-`AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`.
+The cluster-ID and pinned-host tests use the selected credential-chain profile and `AWS_REDSHIFT_DATABASE` from `redshift.env`. `redshift_arn_attach.test` discovers the cluster database and also requires `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`.
 
-`postgres_scanner` is a loadable extension. For an interactive DuckDB session,
-start `./build/release/duckdb -unsigned` and run:
+### Interactive DuckDB sessions
+
+Start DuckDB with unsigned extension loading enabled:
+
+```bash
+./build/release/duckdb -unsigned
+```
+
+Then load the locally built `postgres_scanner` extension:
 
 ```sql
 LOAD './build/release/extension/postgres_scanner/postgres_scanner.duckdb_extension';
-```
-
-## Destroy cluster
-
-Destroy the temporary cluster and its supporting resources after testing:
-
-```bash
-./scripts/destroy_redshift_test_cluster.sh
 ```
