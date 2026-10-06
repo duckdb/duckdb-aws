@@ -373,7 +373,7 @@ static void CloudFormationCreateStackFun(ClientContext &context, TableFunctionIn
 	// for describe_stack, delete_stack and list_stacks. Accepting per-call
 	// credential overrides here and nowhere else meant a stack created under an
 	// assumed role could not be deleted through this extension.
-	auto provider = BuildAwsCredentialsProvider("", /*require_credentials=*/true);
+	auto provider = CreateAwsCredentialsProvider();
 	auto client_config = BuildClientConfigWithCa();
 	client_config.region = region.c_str();
 	Aws::CloudFormation::CloudFormationClient cloudformation_client(provider, client_config);
@@ -530,7 +530,7 @@ static void CloudFormationDescribeStackFun(ClientContext &context, TableFunction
 		return;
 	}
 
-	auto provider = BuildAwsCredentialsProvider("", /*require_credentials=*/true);
+	auto provider = CreateAwsCredentialsProvider();
 	auto cfg = BuildClientConfigWithCa();
 	cfg.region = data.handle.region.c_str();
 	Aws::CloudFormation::CloudFormationClient cloudformation_client(provider, cfg);
@@ -639,7 +639,7 @@ static void CloudFormationDeleteStackFun(ClientContext &context, TableFunctionIn
 		return;
 	}
 
-	auto provider = BuildAwsCredentialsProvider("", /*require_credentials=*/true);
+	auto provider = CreateAwsCredentialsProvider();
 	auto cfg = BuildClientConfigWithCa();
 	cfg.region = data.handle.region.c_str();
 	Aws::CloudFormation::CloudFormationClient cloudformation_client(provider, cfg);
@@ -791,7 +791,7 @@ static void CloudFormationListStacksFun(ClientContext &context, TableFunctionInp
 	auto &data = (CloudFormationListStacksBindData &)*data_p.bind_data;
 
 	if (!data.initialized) {
-		auto provider = BuildAwsCredentialsProvider("", /*require_credentials=*/true);
+		auto provider = CreateAwsCredentialsProvider();
 		auto cfg = BuildClientConfigWithCa();
 		cfg.region = data.region.c_str();
 		Aws::CloudFormation::CloudFormationClient cloudformation_client(provider, cfg);
@@ -883,7 +883,7 @@ struct CloudFormationDescribeStacksRow {
 
 // Fetch all stacks in one region (paginated), appending to `out`. Throws on AWS error.
 static void DescribeRegionStacks(const string &region, vector<CloudFormationDescribeStacksRow> &out) {
-	auto provider = BuildAwsCredentialsProvider("", /*require_credentials=*/true);
+	auto provider = CreateAwsCredentialsProvider();
 	auto cfg = BuildClientConfigWithCa();
 	cfg.region = region.c_str();
 	Aws::CloudFormation::CloudFormationClient cloudformation_client(provider, cfg);
