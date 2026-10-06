@@ -59,6 +59,8 @@ source test/sql/redshift/redshift.env && ./build/release/test/unittest "test/sql
 
 The cluster-ID and pinned-host tests use the selected credential-chain profile and `AWS_REDSHIFT_DATABASE` from `redshift.env`. `redshift_arn_attach.test` discovers the cluster database and also requires `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`.
 
+`redshift_arn_attach_credential_chain.test` attaches through `AWS_REDSHIFT_ARN` using an `s3` secret built with `PROVIDER credential_chain`.
+
 ### Interactive DuckDB sessions
 
 Start DuckDB with unsigned extension loading enabled:
