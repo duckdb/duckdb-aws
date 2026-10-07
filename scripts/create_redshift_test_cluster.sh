@@ -17,6 +17,56 @@ VPC_ID="${REDSHIFT_VPC_ID:-}"
 TOTAL_STEPS=6
 FORCE=false
 
+configure_aws_environment() {
+	local aws_directory="${HOME:+$HOME/.aws}"
+	local configured_profile="${AWS_PROFILE:-${AWS_DEFAULT_PROFILE:-}}"
+	local profiles
+
+	if [[ -z "$aws_directory" && (-z "${AWS_CONFIG_FILE:-}" || -z "${AWS_SHARED_CREDENTIALS_FILE:-}") ]]; then
+		echo "HOME is not set; set AWS_CONFIG_FILE and AWS_SHARED_CREDENTIALS_FILE explicitly" >&2
+		return 1
+	fi
+
+	if ! command -v aws >/dev/null 2>&1; then
+		echo "The AWS CLI is required to detect configured profiles" >&2
+		return 1
+	fi
+
+	export AWS_CONFIG_FILE="${AWS_CONFIG_FILE:-$aws_directory/config}"
+	export AWS_SHARED_CREDENTIALS_FILE="${AWS_SHARED_CREDENTIALS_FILE:-$aws_directory/credentials}"
+
+	if [[ ! -r "$AWS_CONFIG_FILE" && ! -r "$AWS_SHARED_CREDENTIALS_FILE" ]]; then
+		echo "No readable AWS config files found" >&2
+		echo "Checked AWS_CONFIG_FILE=$AWS_CONFIG_FILE" >&2
+		echo "Checked AWS_SHARED_CREDENTIALS_FILE=$AWS_SHARED_CREDENTIALS_FILE" >&2
+		return 1
+	fi
+
+	if ! profiles=$(aws configure list-profiles) || [[ -z "$profiles" ]]; then
+		echo "Could not read AWS profiles from $AWS_CONFIG_FILE and $AWS_SHARED_CREDENTIALS_FILE" >&2
+		return 1
+	fi
+
+	if [[ -z "$configured_profile" ]] && grep -Fxq default <<<"$profiles"; then
+		configured_profile=default
+	elif [[ -z "$configured_profile" && "$profiles" != *$'\n'* ]]; then
+		configured_profile="$profiles"
+	fi
+
+	if [[ -z "$configured_profile" ]]; then
+		echo "Multiple AWS profiles found and none is named default; set AWS_PROFILE explicitly" >&2
+		echo "Available profiles: ${profiles//$'\n'/ }" >&2
+		return 1
+	fi
+
+	if ! grep -Fxq -- "$configured_profile" <<<"$profiles"; then
+		echo "AWS profile '$configured_profile' was not found in $AWS_CONFIG_FILE or $AWS_SHARED_CREDENTIALS_FILE" >&2
+		return 1
+	fi
+
+	export AWS_PROFILE="$configured_profile"
+}
+
 usage() {
 	cat <<EOF
 Usage: $(basename "$0") [--force]
@@ -26,6 +76,10 @@ Without --force, this script only lists the Redshift test resources it would cre
 Environment:
   PREFIX="resource_prefix"         Prefix the names of created resources (default: local username).
   AWS_REGION="desired_region"      Create resources in a specific AWS region (default: eu-central-1).
+  AWS_CONFIG_FILE="path"           AWS config file (default: ~/.aws/config).
+  AWS_SHARED_CREDENTIALS_FILE="path"
+                                   AWS credentials file (default: ~/.aws/credentials).
+  AWS_PROFILE="profile_name"       AWS profile. Defaults to the default profile, or the only profile found.
 
 Options:
   --force                          Create the resources.
@@ -64,6 +118,9 @@ print_plan() {
 	echo "  Test environment file: $env_file"
 	echo "  Resource prefix: $PREFIX"
 	echo "  AWS region: $AWS_REGION"
+	echo "  AWS config file: $AWS_CONFIG_FILE"
+	echo "  AWS credentials file: $AWS_SHARED_CREDENTIALS_FILE"
+	echo "  AWS profile: $AWS_PROFILE"
 	echo
 	echo "Run $(basename "$0") --force to create them."
 }
@@ -303,6 +360,9 @@ print_result() {
 	printf "export AWS_REDSHIFT_HOST='%s'\n" "$AWS_REDSHIFT_HOST"
 	printf "export AWS_REDSHIFT_DATABASE='%s'\n" "$AWS_REDSHIFT_DATABASE"
 	printf "export AWS_REGION='%s'\n" "$AWS_REGION"
+	printf "export AWS_CONFIG_FILE='%s'\n" "$AWS_CONFIG_FILE"
+	printf "export AWS_SHARED_CREDENTIALS_FILE='%s'\n" "$AWS_SHARED_CREDENTIALS_FILE"
+	printf "export AWS_PROFILE='%s'\n" "$AWS_PROFILE"
 
 	local env_file="${REDSHIFT_ENV_FILE:-$PROJECT_ROOT/test/sql/redshift/redshift.env}"
 	{
@@ -311,6 +371,9 @@ print_result() {
 		printf "export AWS_REDSHIFT_HOST='%s'\n" "$AWS_REDSHIFT_HOST"
 		printf "export AWS_REDSHIFT_DATABASE='%s'\n" "$AWS_REDSHIFT_DATABASE"
 		printf "export AWS_REGION='%s'\n" "$AWS_REGION"
+		printf "export AWS_CONFIG_FILE='%s'\n" "$AWS_CONFIG_FILE"
+		printf "export AWS_SHARED_CREDENTIALS_FILE='%s'\n" "$AWS_SHARED_CREDENTIALS_FILE"
+		printf "export AWS_PROFILE='%s'\n" "$AWS_PROFILE"
 	} > "$env_file"
 	echo
 	echo "Wrote env vars to $env_file (run: source $env_file)"
@@ -318,6 +381,7 @@ print_result() {
 
 main() {
 	parse_args "$@"
+	configure_aws_environment
 	if [[ "$FORCE" != true ]]; then
 		print_plan
 		return
