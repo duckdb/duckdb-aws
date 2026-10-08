@@ -17,6 +17,7 @@
 #include <aws/core/client/ClientConfiguration.h>
 #include <aws/core/config/AWSConfigFileProfileConfigLoader.h>
 #include <aws/core/config/AWSProfileConfigLoaderBase.h>
+#include <aws/core/config/EndpointResolver.h>
 #include <aws/identity-management/auth/STSAssumeRoleCredentialsProvider.h>
 #include <aws/rds/RDSClient.h>
 #include <aws/sts/STSClient.h>
@@ -351,7 +352,7 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 	if (profile.empty()) {
 		// The SDK providers taking an explicit profile name store it verbatim, so an empty
 		// string would select the literal profile "". Resolve the name here the way the SDK's
-		// no-arg constructors do: AWS_PROFILE, then AWS_DEFAULT_PROFILE, then "default" (#177).
+		// no-arg constructors do, falling back to "default" when no profile env vars are set (#177).
 		profile = Aws::Auth::GetConfigProfileName().c_str();
 	}
 	DUCKDB_LOG_DEBUG(context, "aws.CredentialChain: using profile '%s'", profile);
@@ -510,6 +511,16 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 			if (expiration != Aws::Utils::DateTime()) {
 				result->secret_map["expiration_epoch_ms"] = Value::BIGINT(expiration.Millis());
 			}
+		}
+	}
+
+	// S3 requests are made by httpfs, not an SDK S3 client, so resolve configured
+	// endpoints explicitly. Keep the complete URL for httpfs (scheme, port and base
+	// path), and apply SQL options afterwards so explicit ENDPOINT values win.
+	if (input.type == "s3") {
+		auto endpoint = Aws::Config::EndpointResolver::EndpointSource("s3", profile.c_str());
+		if (!endpoint.empty()) {
+			result->secret_map["endpoint"] = Value(endpoint);
 		}
 	}
 
