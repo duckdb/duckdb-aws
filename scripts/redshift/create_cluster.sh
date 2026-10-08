@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Creates the Redshift cluster with TICKIT sample data used by test/sql/redshift/*.
+# Creates the Redshift test cluster with TICKIT sample data used by test/sql/redshift/*.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 export AWS_REGION="${AWS_REGION:-eu-central-1}"
 # PREFIX keeps resource names unique in a shared account.
@@ -71,18 +71,19 @@ usage() {
 	cat <<EOF
 Usage: $(basename "$0") [--force]
 
-Without --force, this script only lists the Redshift test resources it would create. With --force, it creates the cluster and supporting resources, loads the TICKIT sample data, and writes the test environment file.
+Creates a Redshift test cluster and loads the TICKIT sample data.
+Without --force, prints the resources that would be created.
 
 Environment:
-  PREFIX="resource_prefix"         Prefix the names of created resources (default: local username).
-  AWS_REGION="desired_region"      Create resources in a specific AWS region (default: eu-central-1).
-  AWS_CONFIG_FILE="path"           AWS config file (default: ~/.aws/config).
+  PREFIX="resource_prefix"         Resource name prefix (default: local username).
+  AWS_REGION="desired_region"      AWS region (default: eu-central-1).
+  AWS_CONFIG_FILE="path"           Config file (default: ~/.aws/config).
   AWS_SHARED_CREDENTIALS_FILE="path"
-                                   AWS credentials file (default: ~/.aws/credentials).
-  AWS_PROFILE="profile_name"       AWS profile. Defaults to the default profile, or the only profile found.
+                                   Credentials file (default: ~/.aws/credentials).
+  AWS_PROFILE="profile_name"       AWS profile (default: default or the only configured profile).
 
 Options:
-  --force                          Create the resources.
+  --force                          Create the cluster and supporting resources.
   -h, --help                       Show this help.
 EOF
 }

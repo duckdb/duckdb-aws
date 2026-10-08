@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Removes the Redshift cluster and supporting resources created by create_redshift_test_cluster.sh.
+# Removes the Redshift test cluster and supporting resources created by the companion create script.
 set -euo pipefail
 
 export AWS_REGION="${AWS_REGION:-eu-central-1}"
@@ -16,14 +16,15 @@ usage() {
 	cat <<EOF
 Usage: $(basename "$0") [--force]
 
-Without --force, this script only lists the Redshift test resources it would destroy. With --force, it permanently deletes the cluster without creating a final snapshot and removes its supporting IAM role and security group.
+Deletes the Redshift test cluster without a final snapshot.
+Without --force, prints the resources that would be deleted.
 
 Environment:
-  PREFIX="resource_prefix"         Select resources with this name prefix (default: local username).
-  AWS_REGION="desired_region"      Select resources in a specific AWS region (default: eu-central-1).
+  PREFIX="resource_prefix"         Resource name prefix (default: local username).
+  AWS_REGION="desired_region"      AWS region (default: eu-central-1).
 
 Options:
-  --force                          Destroy the resources.
+  --force                          Delete the cluster and supporting resources.
   -h, --help                       Show this help.
 EOF
 }
