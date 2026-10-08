@@ -4,31 +4,32 @@ These tests connect to a provisioned Redshift cluster through the `aws` extensio
 
 ## Cluster lifecycle
 
-The cluster does not expire or stop automatically. It keeps running, and may continue to incur AWS charges, until the cleanup script removes it with its IAM role and security group.
+The cluster runs until it is deleted and may incur AWS charges.
 
-The cluster name is `$PREFIX-redshift-$AWS_REGION`. Cluster creation is idempotent: rerunning the script reuses a cluster with the same name. Different usernames create separate clusters. Users share a cluster only when they use the existing `PREFIX` and region. Set `PREFIX` explicitly to choose shared or isolated clusters.
+The cluster name is `$PREFIX-redshift-$AWS_REGION`. Rerunning the script reuses a cluster with the same name. Set `PREFIX` to share a cluster or create a separate one.
 
 ### Create a test cluster
 
 From the repository root:
 
 ```bash
-./scripts/create_redshift_test_cluster.sh
-./scripts/create_redshift_test_cluster.sh --force
+./scripts/redshift/create_cluster.sh --force
 source test/sql/redshift/redshift.env
 ```
 
-Without `--force`, the script only lists the resources it will create. With `--force`, it creates the cluster, its IAM role and security group, and the TICKIT sample data. It writes `AWS_REDSHIFT_CLUSTER_NAME`, `AWS_REDSHIFT_ARN`, `AWS_REDSHIFT_HOST`, `AWS_REDSHIFT_DATABASE`, `AWS_REGION`, `AWS_CONFIG_FILE`, `AWS_SHARED_CREDENTIALS_FILE`, and `AWS_PROFILE` to `test/sql/redshift/redshift.env`. `AWS_REGION` is the region selected for the cluster. Set `REDSHIFT_ENV_FILE` to write these variables elsewhere.
+Without `--force`, the script prints the creation plan. With `--force`, it creates the cluster, IAM role, security group, and TICKIT data.
 
-By default, `PREFIX` is the local Unix account name returned by `id -un`, and `AWS_REDSHIFT_DATABASE` is `dev`. `AWS_REGION` defaults to `eu-central-1`. Set the prefix or region explicitly, for example: `PREFIX="resource_prefix" AWS_REGION="desired_region" ./scripts/create_redshift_test_cluster.sh --force`.
+The script writes the cluster settings and AWS profile settings to `test/sql/redshift/redshift.env`. Set `REDSHIFT_ENV_FILE` to use another path.
 
-The script uses `AWS_CONFIG_FILE` and `AWS_SHARED_CREDENTIALS_FILE` when they are already set. Otherwise, it checks `~/.aws/config` and `~/.aws/credentials`. It honors `AWS_PROFILE`, then `AWS_DEFAULT_PROFILE`; if neither is set, it selects the `default` profile or the only available profile. If several non-default profiles are available, set `AWS_PROFILE` explicitly:
+Defaults:
 
-```bash
-AWS_PROFILE=<profile-name> ./scripts/create_redshift_test_cluster.sh --force
-```
+- `PREFIX`: local username
+- `AWS_REGION`: `eu-central-1`
+- `AWS_REDSHIFT_DATABASE`: `dev`
+- `AWS_CONFIG_FILE`: `~/.aws/config`
+- `AWS_SHARED_CREDENTIALS_FILE`: `~/.aws/credentials`
 
-At least one of the AWS config or credentials files must be readable, and the selected profile must exist in them.
+The script uses `AWS_PROFILE`, then `AWS_DEFAULT_PROFILE`. If neither is set, it uses `default` or the only configured profile. Set `AWS_PROFILE` when several non-default profiles exist.
 
 #### TICKIT sample data
 
@@ -41,19 +42,18 @@ The dedicated Redshift IAM role has only `s3:GetObject` and `s3:ListBucket` perm
 After testing, remove the cluster and its supporting resources:
 
 ```bash
-./scripts/destroy_redshift_test_cluster.sh
-./scripts/destroy_redshift_test_cluster.sh --force
+./scripts/redshift/destroy_cluster.sh --force
 ```
 
-Without `--force`, the script only lists the resources it will destroy. With `--force`, it deletes the cluster without creating a final snapshot and removes its IAM role and security group.
+Without `--force`, the script prints the deletion plan. The cluster is deleted without a final snapshot.
 
 ## Run tests
 
 ### Build `postgres_scanner` locally
 
-Redshift tests require `postgres_scanner`. The `duckdb_extension_load(postgres_scanner ...)` block in `extension_config.cmake` is commented out because CI cannot build it. For local Redshift development or testing, uncomment the entire block, rebuild the extension, and do not commit that local change.
+Redshift tests require `postgres_scanner`. Uncomment its `duckdb_extension_load` block in `extension_config.cmake` and rebuild the extension. Do not commit that local change.
 
-Build the extension, create the test cluster, and source `redshift.env`. The creation script records the detected AWS config file, credentials file, and profile, so the profile-based tests do not require those variables to be exported manually.
+Create the cluster and source `redshift.env` before running the tests.
 
 Run all Redshift tests:
 
