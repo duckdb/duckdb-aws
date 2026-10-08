@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_ENDPOINT = "https://default.example.com/"
 SERVICE_ENDPOINT = "https://service.example.com:9443/gateway/"
 GLOBAL_ENDPOINT = "http://global.example.com:9000/"
+LOCAL_ENDPOINT = "http://localhost:9000/gateway/"
 FALLBACK_ENDPOINT = "s3.amazonaws.com"
 
 
@@ -61,7 +62,7 @@ def main():
         directory = Path(directory)
         config = directory / "config"
         credentials = directory / "credentials"
-        profiles = ["default", "service", "global", "empty", "ignored", "missing-services"]
+        profiles = ["default", "service", "global", "empty", "ignored", "missing-services", "local"]
         credentials.write_text(
             "\n".join(
                 f"[{profile}]\naws_access_key_id=endpoint-test-id\naws_secret_access_key=endpoint-test-key\n"
@@ -95,6 +96,10 @@ region = us-east-1
 services = nonexistent
 endpoint_url = {GLOBAL_ENDPOINT}
 
+[profile local]
+region = us-east-1
+services = local-endpoints
+
 [services default-services]
 s3 =
   endpoint_url = {DEFAULT_ENDPOINT}
@@ -104,6 +109,10 @@ s3 =
   endpoint_url = {SERVICE_ENDPOINT}
 sts =
   endpoint_url = https://sts.example.com/
+
+[services local-endpoints]
+s3 =
+  endpoint_url = {LOCAL_ENDPOINT}
 """
         )
         env.update(
@@ -134,7 +143,10 @@ sts =
             ),
             (
                 "service environment overrides global environment",
-                {"AWS_ENDPOINT_URL": "http://env.example.com/", "AWS_ENDPOINT_URL_S3": "https://s3-env.example.com/"},
+                {
+                    "AWS_ENDPOINT_URL": "http://env.example.com/",
+                    "AWS_ENDPOINT_URL_S3": "https://s3-env.example.com/",
+                },
                 "https://s3-env.example.com/",
                 "https://s3-env.example.com/",
             ),
@@ -145,7 +157,12 @@ sts =
                 "http://env.example.com/",
             ),
             ("no configured endpoint", {"AWS_PROFILE": "empty"}, FALLBACK_ENDPOINT, SERVICE_ENDPOINT),
-            ("missing services falls through", {"AWS_PROFILE": "missing-services"}, GLOBAL_ENDPOINT, SERVICE_ENDPOINT),
+            (
+                "missing services falls through",
+                {"AWS_PROFILE": "missing-services"},
+                GLOBAL_ENDPOINT,
+                SERVICE_ENDPOINT,
+            ),
             ("profile ignore flag", {"AWS_PROFILE": "ignored"}, FALLBACK_ENDPOINT, SERVICE_ENDPOINT),
             (
                 "profile ignore flag suppresses environment endpoints",
@@ -161,10 +178,14 @@ sts =
             ),
             (
                 "environment ignore flag",
-                {"AWS_IGNORE_CONFIGURED_ENDPOINT_URLS": "true", "AWS_ENDPOINT_URL_S3": "https://ignored.example.com/"},
+                {
+                    "AWS_IGNORE_CONFIGURED_ENDPOINT_URLS": "true",
+                    "AWS_ENDPOINT_URL_S3": "https://ignored.example.com/",
+                },
                 FALLBACK_ENDPOINT,
                 FALLBACK_ENDPOINT,
             ),
+            ("local HTTP endpoint with port and base path", {"AWS_PROFILE": "local"}, LOCAL_ENDPOINT, SERVICE_ENDPOINT),
         ]
         for name, settings, expected, profile_expected in cases:
             print(f"\n=== {name} ===", flush=True)
