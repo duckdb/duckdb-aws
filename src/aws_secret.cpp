@@ -352,7 +352,7 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 	if (profile.empty()) {
 		// The SDK providers taking an explicit profile name store it verbatim, so an empty
 		// string would select the literal profile "". Resolve the name here the way the SDK's
-		// no-arg constructors do, falling back to "default" when no profile env vars are set (#177).
+		// no-arg constructors do: AWS_PROFILE, then AWS_DEFAULT_PROFILE, then "default" (#177).
 		profile = Aws::Auth::GetConfigProfileName().c_str();
 	}
 	DUCKDB_LOG_DEBUG(context, "aws.CredentialChain: using profile '%s'", profile);
