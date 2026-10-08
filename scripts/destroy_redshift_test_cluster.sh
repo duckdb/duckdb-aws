@@ -110,7 +110,7 @@ delete_security_group() {
 		return
 	fi
 
-	aws ec2 delete-security-group --group-id "$security_group_id"
+	aws ec2 delete-security-group --group-id "$security_group_id" --no-cli-pager >/dev/null
 	echo "Deleted security group $security_group_id"
 }
 
