@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Removes resources created by create_redshift_serverless_test.sh.
+# Removes resources created by the companion create_redshift_serverless_test.sh script.
 set -euo pipefail
 
 export AWS_REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-eu-central-1}}"

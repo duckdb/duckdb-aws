@@ -33,8 +33,8 @@ does not require a workgroup.
 From the repository root:
 
 ```bash
-./scripts/create_redshift_serverless_test.sh
-./scripts/create_redshift_serverless_test.sh --force
+./scripts/redshift/serverless/create_redshift_serverless_test.sh
+./scripts/redshift/serverless/create_redshift_serverless_test.sh --force
 source test/sql/redshift/serverless/redshift-serverless.env
 ```
 
@@ -57,7 +57,7 @@ By default, `PREFIX` is the local Unix account name returned by `id -un`,
 the prefix or region explicitly, for example:
 
 ```bash
-PREFIX="resource_prefix" AWS_REGION="desired_region" ./scripts/create_redshift_serverless_test.sh --force
+PREFIX="resource_prefix" AWS_REGION="desired_region" ./scripts/redshift/serverless/create_redshift_serverless_test.sh --force
 ```
 
 The script uses `AWS_CONFIG_FILE` and `AWS_SHARED_CREDENTIALS_FILE` when they
@@ -67,7 +67,7 @@ neither is set, it selects the `default` profile or the only available profile.
 If several non-default profiles are available, set `AWS_PROFILE` explicitly:
 
 ```bash
-AWS_PROFILE=<profile-name> ./scripts/create_redshift_serverless_test.sh --force
+AWS_PROFILE=<profile-name> ./scripts/redshift/serverless/create_redshift_serverless_test.sh --force
 ```
 
 At least one of the AWS config or credentials files must be readable, and the
@@ -101,8 +101,8 @@ Data API permissions.
 After testing, remove the Serverless resources:
 
 ```bash
-./scripts/destroy_redshift_serverless_test.sh
-./scripts/destroy_redshift_serverless_test.sh --force
+./scripts/redshift/serverless/destroy_redshift_serverless_test.sh
+./scripts/redshift/serverless/destroy_redshift_serverless_test.sh --force
 ```
 
 Without `--force`, the script only lists the resources it will destroy. With
