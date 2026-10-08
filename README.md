@@ -32,39 +32,6 @@ VCPKG_TOOLCHAIN_PATH=~/vcpkg/scripts/buildsystems/vcpkg.cmake GEN=ninja make
 
 - [Redshift test setup](test/sql/redshift/README.md)
 
-## Configured S3 endpoints
-
-`TYPE s3` secrets using `PROVIDER credential_chain` pick up endpoint URLs from
-AWS environment variables and the selected AWS config profile. For example:
-
-```ini
-[profile local-s3]
-region = us-east-1
-services = local-services
-
-[services local-services]
-s3 =
-  endpoint_url = http://localhost:9000
-```
-
-With credentials for `local-s3` in your AWS credentials file:
-
-```sql
-CREATE SECRET (
-    TYPE s3, PROVIDER credential_chain, CHAIN 'config',
-    PROFILE 'local-s3', URL_STYLE 'path'
-);
-```
-
-Explicit SQL `ENDPOINT` options override configured endpoints. Otherwise, the
-AWS SDK resolves `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL`, the profile's
-service-specific endpoint, then its profile-level `endpoint_url`, honoring the
-SDK's configured-endpoint ignore flags. Without a configured endpoint, existing
-defaults apply. HTTP/HTTPS schemes, ports, and base paths are preserved.
-
-Addressing-style settings in AWS config are not imported; specify
-`URL_STYLE 'path'` when your S3-compatible service requires it.
-
 ## Documentation
 
 See the [AWS page in the DuckDB documentation](https://duckdb.org/docs/extensions/aws).
