@@ -27,14 +27,20 @@ static void LoadAWSCredentialsFunction(ClientContext &, TableFunctionInput &, Da
 
 void CreateAwsLegacyFunctionStubs::Register(ExtensionLoader &loader) {
 	TableFunctionSet function_set("load_aws_credentials");
-	auto base_fun = TableFunction("load_aws_credentials", {}, LoadAWSCredentialsFunction, LoadAWSCredentialsBind);
-	auto profile_fun = TableFunction("load_aws_credentials", {LogicalTypeId::VARCHAR}, LoadAWSCredentialsFunction,
-	                                 LoadAWSCredentialsBind);
+	FunctionSignature base_signature;
+	base_signature.WithTypedKwargs("options", [&](TypedKwargs &options) {
+		options.Add("set_region", LogicalTypeId::BOOLEAN).Add("redact_secret", LogicalTypeId::BOOLEAN);
+	});
+	auto base_fun = TableFunction("load_aws_credentials", std::move(base_signature), LoadAWSCredentialsFunction,
+	                              LoadAWSCredentialsBind);
 
-	base_fun.named_parameters["set_region"] = LogicalTypeId::BOOLEAN;
-	base_fun.named_parameters["redact_secret"] = LogicalTypeId::BOOLEAN;
-	profile_fun.named_parameters["set_region"] = LogicalTypeId::BOOLEAN;
-	profile_fun.named_parameters["redact_secret"] = LogicalTypeId::BOOLEAN;
+	FunctionSignature profile_signature;
+	profile_signature.AddParameter("profile", LogicalTypeId::VARCHAR)
+	    .WithTypedKwargs("options", [&](TypedKwargs &options) {
+		    options.Add("set_region", LogicalTypeId::BOOLEAN).Add("redact_secret", LogicalTypeId::BOOLEAN);
+	    });
+	auto profile_fun = TableFunction("load_aws_credentials", std::move(profile_signature), LoadAWSCredentialsFunction,
+	                                 LoadAWSCredentialsBind);
 
 	function_set.AddFunction(base_fun);
 	function_set.AddFunction(profile_fun);

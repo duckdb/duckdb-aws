@@ -262,18 +262,22 @@ void QuackOnEc2Resource::Register(ExtensionLoader &loader) {
 	auto map_vv = LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR);
 
 	// Native callbacks (no SQL macros): thin adapters over cloudformation_*.
-	TableFunction create_fn("__aws__cloudformation__quack_on_ec2__create", {map_vv}, QuackCreateFun, QuackCreateBind,
+	TableFunction create_fn("__aws__cloudformation__quack_on_ec2__create",
+	                        FunctionSignature().AddPositionalOnly("input", map_vv), QuackCreateFun, QuackCreateBind,
 	                        QuackAdapterInit);
 	loader.RegisterFunction(create_fn);
-	TableFunction status_fn("__aws__cloudformation__quack_on_ec2__status", {map_vv}, QuackStatusFun, QuackStatusBind,
+	TableFunction status_fn("__aws__cloudformation__quack_on_ec2__status",
+	                        FunctionSignature().AddPositionalOnly("input", map_vv), QuackStatusFun, QuackStatusBind,
 	                        QuackAdapterInit);
 	loader.RegisterFunction(status_fn);
-	TableFunction destroy_fn("__aws__cloudformation__quack_on_ec2__destroy", {map_vv}, QuackDestroyFun,
-	                         QuackDestroyBind, QuackAdapterInit);
+	TableFunction destroy_fn("__aws__cloudformation__quack_on_ec2__destroy",
+	                         FunctionSignature().AddPositionalOnly("input", map_vv), QuackDestroyFun, QuackDestroyBind,
+	                         QuackAdapterInit);
 	loader.RegisterFunction(destroy_fn);
 	// Also wired into the resource-type registry below (as this type's `list_function`), so
 	// `SHOW ALL EXTERNAL RESOURCES` can discover existing stacks that are not locally managed.
-	TableFunction list_fn("__aws__cloudformation__quack_on_ec2__list", {map_vv}, QuackListFun, QuackListBind,
+	TableFunction list_fn("__aws__cloudformation__quack_on_ec2__list",
+	                      FunctionSignature().AddPositionalOnly("input", map_vv), QuackListFun, QuackListBind,
 	                      QuackListInit);
 	loader.RegisterFunction(list_fn);
 
