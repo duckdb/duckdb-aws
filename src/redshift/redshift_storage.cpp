@@ -26,6 +26,7 @@ struct RedshiftAttachOptions {
 	string region;
 	string account_id;
 	string resource;
+	string resource_type;
 	string db_name;
 	string host;
 	string port;
@@ -51,6 +52,8 @@ RedshiftAttachOptions ParseAttachOptions(AttachOptions &options) {
 			parsed.account_id = value;
 		} else if (key == "resource") {
 			parsed.resource = value;
+		} else if (key == "resource_type") {
+			parsed.resource_type = value;
 		} else if (key == "database" || key == "dbname") {
 			parsed.db_name = value;
 		} else if (key == "host") {
@@ -72,6 +75,102 @@ RedshiftAttachOptions ParseAttachOptions(AttachOptions &options) {
 	return parsed;
 }
 
+struct RedshiftAttachTarget {
+	RedshiftTargetType type = RedshiftTargetType::PROVISIONED_CLUSTER;
+	string resource_id;
+	string account_id;
+	string region;
+};
+
+RedshiftAttachTarget GetRedshiftTarget(AttachedDatabase &db, const RedshiftAttachOptions &attach_options,
+                                       const string &target_name) {
+	const auto &original_path = db.GetOriginalPath();
+	auto delegated_from_arn = original_path.has_value() && *original_path != target_name;
+
+	RedshiftAttachTarget target;
+	target.resource_id = target_name;
+	target.region = attach_options.region;
+	if (!delegated_from_arn) {
+		if (!attach_options.account_id.empty() || !attach_options.resource.empty() ||
+		    !attach_options.resource_type.empty()) {
+			throw InvalidInputException("Redshift ARN options cannot be set directly");
+		}
+		return target;
+	}
+
+	if (!attach_options.resource.empty() && !attach_options.resource_type.empty()) {
+		throw InvalidInputException("Conflicting Redshift ARN options");
+	}
+
+	target.account_id = attach_options.account_id;
+	if (!attach_options.resource.empty()) {
+		target.type = RedshiftTargetType::PROVISIONED_NAMESPACE;
+		target.resource_id = attach_options.resource;
+		return target;
+	}
+
+	target.type = attach_options.resource_type == "namespace" ? RedshiftTargetType::SERVERLESS_NAMESPACE
+	                                                          : RedshiftTargetType::SERVERLESS_WORKGROUP;
+	return target;
+}
+
+struct RedshiftResolvedConnection {
+	string credential_target;
+	string host;
+	string port;
+	string db_name;
+	RedshiftIamCredentials credentials;
+};
+
+void FillMissingConnectionOptions(RedshiftResolvedConnection &connection, const string &endpoint_address,
+                                  int32_t endpoint_port, const string &db_name) {
+	connection.host = connection.host.empty() ? endpoint_address : connection.host;
+	connection.port = connection.port.empty() ? to_string(endpoint_port) : connection.port;
+	connection.db_name = connection.db_name.empty() ? db_name : connection.db_name;
+}
+
+RedshiftResolvedConnection ResolveConnection(const std::shared_ptr<Aws::Auth::AWSCredentialsProvider> &provider,
+                                             const RedshiftAttachOptions &attach_options,
+                                             const RedshiftAttachTarget &target) {
+	RedshiftResolvedConnection connection;
+	connection.credential_target = target.resource_id;
+	connection.host = attach_options.host;
+	connection.port = attach_options.port;
+	connection.db_name = attach_options.db_name;
+
+	switch (target.type) {
+	case RedshiftTargetType::SERVERLESS_NAMESPACE:
+	case RedshiftTargetType::SERVERLESS_WORKGROUP: {
+		auto resolved_target = RedshiftServerless::ResolveTarget(provider, target.account_id, target.type,
+		                                                         target.resource_id, target.region);
+		connection.credential_target = resolved_target.credential_target;
+		FillMissingConnectionOptions(connection, resolved_target.endpoint_address, resolved_target.endpoint_port,
+		                             resolved_target.db_name);
+		connection.credentials = RedshiftServerless::GetCredentials(
+		    provider, connection.credential_target, connection.db_name, target.region, attach_options.duration_seconds);
+		return connection;
+	}
+	case RedshiftTargetType::PROVISIONED_NAMESPACE:
+		connection.credential_target =
+		    Redshift::ClusterIdentifierFromNamespace(provider, target.account_id, target.resource_id, target.region);
+		break;
+	case RedshiftTargetType::PROVISIONED_CLUSTER:
+		break;
+	}
+
+	// Anything ATTACH pins explicitly wins over what the cluster reports, so when it pins all of
+	// them there is nothing left to discover - skip the call rather than require the caller to
+	// hold the redshift:DescribeClusters permission.
+	if (connection.host.empty() || connection.port.empty() || connection.db_name.empty()) {
+		auto cluster = Redshift::DescribeCluster(provider, connection.credential_target, target.region);
+		FillMissingConnectionOptions(connection, cluster.endpoint_address, cluster.endpoint_port, cluster.db_name);
+	}
+
+	connection.credentials = Redshift::GetClusterCredentials(provider, connection.credential_target, connection.db_name,
+	                                                         target.region, attach_options.duration_seconds);
+	return connection;
+}
+
 //! `ATTACH '<cluster-id>' AS db (TYPE redshift, SECRET <aws-or-s3-secret>)`.
 //!
 //! The cluster identifier is all the user gives us, so we ask Redshift for the rest:
@@ -87,11 +186,8 @@ unique_ptr<Catalog> RedshiftAttach(optional_ptr<StorageExtensionInfo> storage_in
 	}
 
 	auto attach_options = ParseAttachOptions(options);
-	auto cluster_id = info.path;
-	if (attach_options.account_id.empty() != attach_options.resource.empty()) {
-		throw InvalidInputException("Redshift namespace resolution requires both ACCOUNT_ID and RESOURCE");
-	}
-	if (cluster_id.empty() && attach_options.resource.empty()) {
+	auto target = GetRedshiftTarget(db, attach_options, info.path);
+	if (target.resource_id.empty()) {
 		throw BinderException("No Redshift cluster identifier given. Pass it as the ATTACH path, e.g. "
 		                      "ATTACH '<cluster-id>' AS db (TYPE redshift)");
 	}
@@ -101,41 +197,28 @@ unique_ptr<Catalog> RedshiftAttach(optional_ptr<StorageExtensionInfo> storage_in
 
 	// An s3 secret's region is the bucket region, which need not be the cluster's, so an explicit
 	// ATTACH region wins over it. Past those two, fall back to the sources CREATE SECRET uses.
-	auto explicit_region = attach_options.region.empty() ? GetSecretString(secret, "region") : attach_options.region;
-	auto region = ResolveAwsRegion(context, explicit_region, "");
-	if (region.empty()) {
-		throw InvalidConfigurationException(
-		    "No AWS region found for the Redshift cluster. Pass it to ATTACH, e.g. "
-		    "ATTACH '<cluster-id>' AS db (TYPE redshift, REGION '<region>'), set it on the secret, "
-		    "or configure the AWS_REGION environment variable");
+	if (target.type == RedshiftTargetType::PROVISIONED_CLUSTER) {
+		auto explicit_region =
+		    attach_options.region.empty() ? GetSecretString(secret, "region") : attach_options.region;
+		target.region = ResolveAwsRegion(context, explicit_region, "");
+		if (target.region.empty()) {
+			throw InvalidConfigurationException(
+			    "No AWS region found for the Redshift cluster. Pass it to ATTACH, e.g. "
+			    "ATTACH '<cluster-id>' AS db (TYPE redshift, REGION '<region>'), set it on the secret, "
+			    "or configure the AWS_REGION environment variable");
+		}
 	}
 
 	// Resolve the postgres extension before spending API calls on a connection we cannot open.
 	auto postgres_extension = RequirePostgresStorageExtension(context, "a Redshift cluster");
 
 	auto provider = CredentialsProviderFromSecret(secret, "Redshift");
-	// The ARN trampoline injects these together. Resolving them here keeps all Redshift control-plane
-	// calls behind the Redshift storage layer while preserving direct TYPE redshift attaches.
-	if (!attach_options.resource.empty()) {
-		cluster_id = Redshift::ClusterIdentifierFromNamespace(provider, attach_options.account_id,
-		                                                      attach_options.resource, region);
-	}
-
-	// Anything ATTACH pins explicitly wins over what the cluster reports, so when it pins all of
-	// them there is nothing left to discover - skip the call rather than require the caller to
-	// hold the redshift:DescribeClusters permission.
-	auto host = attach_options.host;
-	auto port = attach_options.port;
-	auto db_name = attach_options.db_name;
-	if (host.empty() || port.empty() || db_name.empty()) {
-		auto cluster = Redshift::DescribeCluster(provider, cluster_id, region);
-		host = host.empty() ? cluster.endpoint_address : host;
-		port = port.empty() ? to_string(cluster.endpoint_port) : port;
-		db_name = db_name.empty() ? cluster.db_name : db_name;
-	}
-
-	auto credentials =
-	    Redshift::GetClusterCredentials(provider, cluster_id, db_name, region, attach_options.duration_seconds);
+	auto connection = ResolveConnection(provider, attach_options, target);
+	auto cluster_id = connection.credential_target;
+	const auto &host = connection.host;
+	const auto &port = connection.port;
+	const auto &db_name = connection.db_name;
+	const auto &credentials = connection.credentials;
 
 	// Redshift requires SSL.
 	string connection_string = "host=" + EscapeConnectionValue(host) + " port=" + EscapeConnectionValue(port) +
