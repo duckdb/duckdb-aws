@@ -10,6 +10,9 @@
     "curl"
   ],
   "vcpkg-configuration": {
+    "overlay-ports": [
+      "./vcpkg_ports"
+    ],
     "registries": [
       {
         "kind": "git",
