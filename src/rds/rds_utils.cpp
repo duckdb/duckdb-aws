@@ -71,15 +71,31 @@ RdsInstanceInfo Rds::DescribeDBInstance(const std::shared_ptr<Aws::Auth::AWSCred
 string Rds::GenerateAuthToken(const std::shared_ptr<Aws::Auth::AWSCredentialsProvider> &provider, const string &host,
                               int32_t port, const string &region, const string &db_user) {
 	auto rds_client = MakeClient(provider, region);
-	auto token =
-	    rds_client.GenerateConnectAuthToken(host.c_str(), region.c_str(), static_cast<unsigned>(port), db_user.c_str());
-	if (token.empty()) {
-		throw InvalidConfigurationException(
-		    "Could not generate an RDS IAM authentication token for user '%s' on '%s'. The AWS credentials in the "
-		    "secret could not be resolved",
-		    db_user, host);
-	}
+
+	// https://github.com/aws/aws-sdk-cpp/issues/861#issuecomment-386643571
+	// Aws::String token = rdsClient.GenerateConnectAuthToken(hostname.c_str(), aws_region.c_str(),
+	// static_cast<unsigned>(port_int), username.c_str());
+
+	uint64_t expiration_seconds = 900; // 15 min, this value is fixed, also used on consumer side
+	string host_and_port = host + ":" + std::to_string(port);
+	string host_and_port_with_prefix = "http://" + host_and_port;
+	string host_and_port_with_suffix = host_and_port + "/";
+	Aws::Http::URI uri(host_and_port_with_prefix.c_str());
+	uri.AddQueryStringParameter("Action", "connect");
+	uri.AddQueryStringParameter("DBUser", db_user.c_str());
+	auto token = rds_client.GeneratePresignedUrl(uri, Aws::Http::HttpMethod::HTTP_GET, region.c_str(), "rds-db",
+	                                             static_cast<long long>(expiration_seconds));
+	Aws::Utils::StringUtils::Replace(token, host_and_port_with_prefix.c_str(), host_and_port_with_suffix.c_str());
+
 	return string(token.c_str());
+}
+
+int32_t Rds::ParsePort(const std::string &port_str) {
+	try {
+		return std::stoi(port_str);
+	} catch (const std::exception &) {
+		throw InvalidInputException("'PORT' must be an integer, got '%s'", port_str);
+	}
 }
 
 } // namespace duckdb

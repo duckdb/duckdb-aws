@@ -125,11 +125,7 @@ unique_ptr<Catalog> RdsAttach(optional_ptr<StorageExtensionInfo> storage_info, C
 
 	auto port = instance.endpoint_port;
 	if (!attach_options.port.empty()) {
-		try {
-			port = std::stoi(attach_options.port);
-		} catch (const std::exception &) {
-			throw InvalidInputException("'PORT' must be an integer, got '%s'", attach_options.port);
-		}
+		port = Rds::ParsePort(attach_options.port);
 	}
 
 	// Unlike Redshift, RDS does not mint the user along with the password: the IAM token is issued
@@ -156,6 +152,12 @@ unique_ptr<Catalog> RdsAttach(optional_ptr<StorageExtensionInfo> storage_info, C
 	// The token is signed for a specific host/port/user triple, so it has to be minted from the
 	// endpoint we are about to connect to rather than the one the instance reported.
 	auto token = Rds::GenerateAuthToken(provider, host, port, region, user);
+	if (token.find("X-Amz-Algorithm") == std::string::npos) {
+		throw InvalidConfigurationException(
+		    "Could not generate an RDS IAM authentication token for user '%s' on '%s'. The AWS credentials in the "
+		    "secret could not be resolved",
+		    user, host);
+	}
 
 	// RDS rejects an IAM login over an unencrypted connection.
 	string connection_string = "host=" + EscapeConnectionValue(host) +
