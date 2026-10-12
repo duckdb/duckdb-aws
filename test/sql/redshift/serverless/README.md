@@ -51,6 +51,12 @@ The script writes `AWS_REGION`, `AWS_CONFIG_FILE`,
 `SECOND_DATABASE` to
 `test/sql/redshift/serverless/redshift-serverless.env`. Set
 `REDSHIFT_SERVERLESS_ENV_FILE` to write these variables elsewhere.
+When sourced, the environment file runs `aws configure export-credentials` for
+`AWS_PROFILE`, exporting the temporary access key, secret key, and session token
+without storing credential values in the file. It first clears any previously
+exported credentials and `AWS_CREDENTIAL_EXPIRATION` so expired environment
+values cannot override the profile refresh. The setup script uses `AWS_PROFILE`
+directly for its AWS CLI calls.
 
 By default, `PREFIX` is the local Unix account name returned by `id -un`,
 `AWS_REGION` is `eu-central-1`, and base and maximum capacity are 8 RPUs. Set
@@ -72,6 +78,66 @@ AWS_PROFILE=<profile-name> ./scripts/redshift/serverless/create_redshift_serverl
 
 At least one of the AWS config or credentials files must be readable, and the
 selected profile must exist in them.
+
+#### Federated AWS console setup
+
+Create a dedicated AWS profile:
+
+```bash
+aws login --profile redshift-test
+```
+
+When prompted for the AWS Region, enter:
+
+```text
+AWS Region [us-east-1]: eu-central-1
+```
+
+Use this profile and Region for the remaining commands:
+
+```bash
+export AWS_PROFILE=redshift-test
+export AWS_REGION=eu-central-1
+```
+
+Select the first three default subnets, ordered by Availability Zone:
+
+```bash
+SUBNET_IDS=($(aws ec2 describe-subnets \
+  --filters Name=default-for-az,Values=true \
+  --query 'sort_by(Subnets, &AvailabilityZone)[:3].SubnetId' \
+  --output text))
+```
+
+Create a VPC Block Public Access exclusion for each subnet:
+
+```bash
+for subnet_id in "${SUBNET_IDS[@]}"; do
+  aws ec2 create-vpc-block-public-access-exclusion \
+    --subnet-id "$subnet_id" \
+    --internet-gateway-exclusion-mode allow-bidirectional \
+    --tag-specifications \
+      'ResourceType=vpc-block-public-access-exclusion,Tags=[{Key=ManagedBy,Value=duckdb-redshift-serverless-test}]'
+done
+```
+
+Check their status:
+
+```bash
+aws ec2 describe-vpc-block-public-access-exclusions \
+  --max-results 100 \
+  --filters Name=tag:ManagedBy,Values=duckdb-redshift-serverless-test \
+  --query 'VpcBlockPublicAccessExclusions[].{Subnet:ResourceArn,State:State}' \
+  --output table
+```
+
+Continue when all three exclusions show `create-complete`, then create the test
+environment using the same subnets:
+
+```bash
+REDSHIFT_SUBNET_IDS="${SUBNET_IDS[*]}" \
+  ./scripts/redshift/serverless/create_redshift_serverless_test.sh --force
+```
 
 Set `REDSHIFT_SERVERLESS_BASE_CAPACITY` and
 `REDSHIFT_SERVERLESS_MAX_CAPACITY` to override the capacity. By default, the
@@ -120,8 +186,9 @@ testing, uncomment the entire block, rebuild the extension, and do not commit
 that local change.
 
 Build the extension, create the test environment, and source
-`redshift-serverless.env`. The tests also require `AWS_ACCESS_KEY_ID` and
-`AWS_SECRET_ACCESS_KEY` in the environment.
+`redshift-serverless.env`. Sourcing the file exports `AWS_ACCESS_KEY_ID`,
+`AWS_SECRET_ACCESS_KEY`, and `AWS_SESSION_TOKEN` from its `AWS_PROFILE`. Source
+it again before later test runs because these credentials are temporary.
 
 Run all Redshift Serverless tests:
 

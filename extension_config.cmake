@@ -13,9 +13,7 @@ duckdb_extension_load(icu)
 # need to copy the vcpkg_ports/libpq in the duckdb/duckdb-postgres repo.
 # For now commented out so unblock development
 # duckdb_extension_load(postgres_scanner
-#    DONT_LINK
 #    GIT_URL https://github.com/duckdb/duckdb-postgres
-#    GIT_TAG 2dfa08d5cf06d2f423a7fc438ade38bb40bb9396
+#    GIT_TAG 8d201d476ce690dac2e33921547c43e4daca587a
 #    SUBMODULES database-connector
-#    APPLY_PATCHES
 # )

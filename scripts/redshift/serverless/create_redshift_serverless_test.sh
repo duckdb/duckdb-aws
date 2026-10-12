@@ -462,6 +462,10 @@ print_env() {
 	printf "export AWS_CONFIG_FILE='%s'\n" "$AWS_CONFIG_FILE"
 	printf "export AWS_SHARED_CREDENTIALS_FILE='%s'\n" "$AWS_SHARED_CREDENTIALS_FILE"
 	printf "export AWS_PROFILE='%s'\n" "$AWS_PROFILE"
+	printf 'unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_CREDENTIAL_EXPIRATION\n'
+	printf 'eval "$(aws configure export-credentials \\\n'
+	printf '  --profile "$AWS_PROFILE" \\\n'
+	printf '  --format env)"\n'
 	printf "export ACCOUNT_ID='%s'\n" "$ACCOUNT_ID"
 	printf "export NAMESPACE_ID='%s'\n" "$NAMESPACE_ID"
 	printf "export WORKGROUP_ID='%s'\n" "$WORKGROUP_ID"
