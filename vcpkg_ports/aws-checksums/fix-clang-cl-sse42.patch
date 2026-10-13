@@ -1,0 +1,15 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 6679171..43003f9 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -17,6 +17,10 @@ include(AwsFindPackage)
+ include(AwsFeatureTests)
+ include(GNUInstallDirs)
+ 
++if (MSVC AND CMAKE_C_COMPILER_ID MATCHES "Clang")
++    set(AWS_SSE4_2_FLAG "/clang:-msse4.2")
++endif()
++
+ file(GLOB AWS_CHECKSUMS_HEADERS
+      "include/aws/checksums/*.h"
+ )

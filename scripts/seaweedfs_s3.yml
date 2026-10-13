@@ -1,0 +1,63 @@
+services:
+  seaweedfs:
+    image: docker.io/chrislusf/seaweedfs:4.47
+    hostname: duckdb-minio.com
+    ports:
+      - "9000:9000"
+    volumes:
+      - /tmp/minio_test_data:/data
+      - ./seaweedfs_s3_config.json:/etc/seaweedfs/s3_config.json:ro
+    command: >
+      server -dir=/data -ip=duckdb-minio.com -ip.bind=0.0.0.0 -master.volumeSizeLimitMB=1024
+      -s3 -s3.port=9000 -s3.domainName=duckdb-minio.com -s3.config=/etc/seaweedfs/s3_config.json
+
+  s3_setup:
+    image: docker.io/bitnamilegacy/minio-client:2025.7.21-debian-12-r3
+    # root so the mc symlink below can be created and the fixture mounts are readable
+    user: root
+    depends_on:
+      - seaweedfs
+    volumes:
+      - ${PWD}/duckdb/data:/duckdb/data
+      - ${PWD}/test/test_data:/duckdb/test_data
+
+    # The MinIO client is only used as a generic S3 client here: users and anonymous access come from
+    # seaweedfs_s3_config.json, so there are no admin commands.
+    entrypoint: >
+      /bin/sh -c "
+        ln -sf /opt/bitnami/minio-client/bin/mc /usr/bin/mc
+        until (
+          /usr/bin/mc alias set myminio http://duckdb-minio.com:9000 duckdb_minio_admin duckdb_minio_admin_password
+        ) do
+          echo '...waiting...' && sleep 1;
+        done;
+
+        /usr/bin/mc mb myminio/test-bucket
+        /usr/bin/mc version enable myminio/test-bucket
+
+        /usr/bin/mc mb myminio/test-bucket-2
+
+        /usr/bin/mc mb myminio/test-bucket-public
+
+        # This is for the test of presigned URLs
+        # !!! When missing, be sure that you have ran 'scripts/generate_presigned_url.sh' !!!
+
+        # small file upload
+        /usr/bin/mc cp /duckdb/data/csv/phonenumbers.csv myminio/test-bucket/presigned/phonenumbers.csv
+        /usr/bin/mc cp /duckdb/data/parquet-testing/glob/t1.parquet myminio/test-bucket/presigned/t1.parquet
+
+        # large file upload
+        /usr/bin/mc cp /duckdb/test_data/presigned-url-lineitem.parquet myminio/test-bucket/presigned/lineitem_large.parquet
+
+        # Upload the db for the attach
+        /usr/bin/mc cp /duckdb/test_data/attach.db myminio/test-bucket/presigned/attach.db
+        /usr/bin/mc cp /duckdb/test_data/lineitem_sf1.db myminio/test-bucket/presigned/lineitem_sf1.db
+
+        /usr/bin/mc share download myminio/test-bucket/presigned/phonenumbers.csv
+        /usr/bin/mc share download myminio/test-bucket/presigned/t1.parquet
+        /usr/bin/mc share download myminio/test-bucket/presigned/lineitem_large.parquet
+        /usr/bin/mc share download myminio/test-bucket/presigned/attach.db
+
+        echo 'FINISHED SETTING UP MINIO'
+        exit 0;
+      "

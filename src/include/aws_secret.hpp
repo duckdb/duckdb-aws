@@ -8,6 +8,9 @@ namespace duckdb {
 
 class ExtensionLoader;
 
+//! Read a CREATE SECRET named parameter as a string, or "" when it was not passed.
+string TryGetStringParam(CreateSecretInput &input, const string &param_name);
+
 struct CreateAwsSecretFunctions {
 public:
 	//! Register all CreateSecretFunctions

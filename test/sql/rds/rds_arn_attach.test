@@ -1,0 +1,53 @@
+# name: test/sql/rds/rds_arn_attach.test
+# description: test attaching an RDS instance discovered via DescribeDBInstances + IAM auth
+# group: [rds]
+
+require aws
+
+require parquet
+
+# The 'aws' secret type is registered by httpfs.
+require httpfs
+
+require postgres_scanner
+
+require-env AWS_ACCESS_KEY_ID
+
+require-env AWS_SECRET_ACCESS_KEY
+
+set ignore_error_messages
+
+statement ok
+LOAD aws
+
+statement ok
+CREATE SECRET (
+    TYPE s3,
+    KEY_ID '{AWS_ACCESS_KEY_ID}',
+    SECRET '{AWS_SECRET_ACCESS_KEY}',
+    REGION 'eu-central-1'
+);
+
+statement ok
+ATTACH 'arn:aws:rds:eu-central-1:840140254803:db:duckdb-connect-test' AS rds_db (
+	USER 'user_2'
+)
+
+query I
+select * from (show all tables) where database = 'rds_db';
+----
+1
+
+query IIIIIIII
+select * from rds_db.public.dummy_users order by all limit 10;
+----
+1	user_1	user_1@example.com	NL	62	9813.63	1	2025-10-29 22:52:25.794058+00
+2	user_2	user_2@example.com	FR	42	3011.45	1	2026-06-14 08:23:16.147386+00
+3	user_3	user_3@example.com	JP	66	6378.12	1	2025-09-29 09:14:56.355268+00
+4	user_4	user_4@example.com	NL	32	198.89	1	2026-07-25 17:51:52.651764+00
+5	user_5	user_5@example.com	NL	47	5100.46	0	2026-05-18 20:52:11.513436+00
+6	user_6	user_6@example.com	US	41	8634.08	1	2025-11-01 06:13:04.11392+00
+7	user_7	user_7@example.com	NL	22	7475.59	1	2025-12-14 05:10:28.880589+00
+8	user_8	user_8@example.com	NL	34	3101.27	1	2025-08-13 09:40:11.572325+00
+9	user_9	user_9@example.com	BR	21	4192.30	0	2026-03-17 17:24:17.514905+00
+10	user_10	user_10@example.com	DE	46	1158.46	0	2025-12-20 23:27:54.956749+00

@@ -1,0 +1,23 @@
+{
+  "identities": [
+    {
+      "name": "admin",
+      "credentials": [{"accessKey": "duckdb_minio_admin", "secretKey": "duckdb_minio_admin_password"}],
+      "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+    },
+    {
+      "name": "minio_duckdb_user",
+      "credentials": [{"accessKey": "minio_duckdb_user", "secretKey": "minio_duckdb_user_password"}],
+      "actions": ["Read", "Write", "List", "Tagging"]
+    },
+    {
+      "name": "minio_duckdb_user_2",
+      "credentials": [{"accessKey": "minio_duckdb_user_2", "secretKey": "minio_duckdb_user_2_password"}],
+      "actions": ["Read", "Write", "List", "Tagging"]
+    },
+    {
+      "name": "anonymous",
+      "actions": ["Read:test-bucket-public", "List:test-bucket-public"]
+    }
+  ]
+}

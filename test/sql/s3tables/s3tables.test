@@ -1,0 +1,39 @@
+# name: test/sql/s3tables/s3tables.test
+# group: [s3tables]
+
+require httpfs
+
+require parquet
+
+require avro
+
+require iceberg
+
+require aws
+
+require json
+
+require-env AWS_ACCESS_KEY_ID
+
+require-env AWS_SECRET_ACCESS_KEY
+
+statement ok
+LOAD aws
+
+statement ok
+CREATE SECRET (
+    TYPE s3,
+    KEY_ID '{AWS_ACCESS_KEY_ID}',
+    SECRET '{AWS_SECRET_ACCESS_KEY}',
+    REGION 'eu-central-1'
+);
+
+statement ok
+ATTACH 'arn:aws:s3tables:eu-central-1:840140254803:bucket/duckdb-s3tables-test' as db;
+
+query III
+select * from db.test.daily_sales;
+----
+2020-07-21	SHOES	21
+2020-07-22	JACKET	3
+2020-07-24	SOCKS	87

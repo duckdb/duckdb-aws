@@ -1,0 +1,62 @@
+# name: test/sql/storage/arn.test
+# group: [storage]
+
+require httpfs
+
+require aws
+
+statement ok
+LOAD aws
+
+# Even with 'TYPE arn', the path has to be correct
+statement error
+ATTACH 'aws:s3tables:eu-central-1:840140254803:bucket/duckdb-s3tables-test' as db (
+	TYPE arn
+);
+----
+Invalid Input Error: Expected an AWS ARN of the form 'arn:<partition>:<service>:<region>:<account>:<resource>', got 'aws:s3tables:eu-central-1:840140254803:bucket/duckdb-s3tables-test'
+
+statement error
+ATTACH '' as db (
+	TYPE arn
+);
+----
+Invalid Input Error: Expected an AWS ARN of the form 'arn:<partition>:<service>:<region>:<account>:<resource>', got ''
+
+statement error
+ATTACH 'arn::s3tables:::' as db;
+----
+Invalid Input Error: Invalid PARTITION Section of ARN: ''
+
+statement error
+ATTACH 'arn:aws::::' as db;
+----
+Not implemented Error: ATTACH of AWS ARN service '' is not supported. Supported options are: rds, redshift, s3tables
+
+# RDS dispatch only accepts DB instance ARNs, and the ARN owns its region.
+statement error
+ATTACH 'arn:aws:rds:eu-central-1:840140254803:cluster:not-an-instance' AS db;
+----
+Invalid Input Error: Expected an RDS DB instance ARN with a resource of the form 'db:<instance-id>', got 'arn:aws:rds:eu-central-1:840140254803:cluster:not-an-instance'
+
+statement error
+ATTACH 'arn:aws:rds:eu-central-1:840140254803:db:instance' AS db (REGION 'us-east-1');
+----
+Invalid Input Error: ATTACH option 'region' is derived from the ARN and cannot be set explicitly
+
+# Redshift dispatch only accepts namespace ARNs with a region and account ID.
+statement error
+ATTACH 'arn:aws:redshift:eu-central-1:840140254803:cluster:not-a-namespace' AS db;
+----
+Invalid Input Error: Expected a Redshift namespace ARN with a resource of the form 'namespace:<namespace-id>', got 'arn:aws:redshift:eu-central-1:840140254803:cluster:not-a-namespace'
+
+statement error
+ATTACH 'arn:aws:redshift:eu-central-1::namespace:e542f89f-b604-4110-a337-f7ba8c7ce156' AS db;
+----
+Invalid Input Error: Redshift namespace ARN 'arn:aws:redshift:eu-central-1::namespace:e542f89f-b604-4110-a337-f7ba8c7ce156' does not specify an account ID
+
+statement error
+ATTACH 'arn:aws:redshift:eu-central-1:840140254803:namespace:e542f89f-b604-4110-a337-f7ba8c7ce156' AS db (ACCOUNT_ID '123456789012');
+----
+Invalid Input Error: ATTACH option 'account_id' is derived from the ARN and cannot be set explicitly
+
