@@ -148,8 +148,8 @@ public:
 				AddSTSProvider(aws_profile);
 			} else if (item == "sso") {
 				// The SSO portal HTTPS call needs the detected CA path and app id too
-				auto sso_config = Aws::MakeShared<Aws::Client::ClientConfiguration>("DuckDBAwsSSO",
-				                                                                    BuildClientConfigWithCa());
+				auto sso_config =
+				    Aws::MakeShared<Aws::Client::ClientConfiguration>("DuckDBAwsSSO", BuildClientConfigWithCa());
 				if (profile.empty()) {
 					AddProvider(std::make_shared<Aws::Auth::SSOCredentialsProvider>(Aws::String(), sso_config));
 				} else {
