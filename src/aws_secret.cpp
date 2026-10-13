@@ -7,6 +7,7 @@
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/logging/logger.hpp"
+#include "duckdb/main/database.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 
 #include <aws/core/Aws.h>
@@ -49,11 +50,20 @@ static struct {
 	const string default_ = "exists";
 } CreateAwsSecretValidation;
 
+//! Partial duplicate of duckdb's GetDefaultUserAgent(): its format does not fit the SDK's appId field
+static string DuckDBAwsUserAgentAppId() {
+	return "duckdb/" + string(DuckDB::LibraryVersion());
+}
+
 //! See aws_client.hpp for rationale.
 Aws::Client::ClientConfiguration BuildClientConfigWithCa() {
 	Aws::Client::ClientConfiguration cfg;
 	if (!SELECTED_CURL_CERT_PATH.empty()) {
 		cfg.caFile = SELECTED_CURL_CERT_PATH;
+	}
+	// An app id the user set (AWS_SDK_UA_APP_ID or the sdk_ua_app_id profile key) wins
+	if (cfg.appId.empty()) {
+		cfg.appId = DuckDBAwsUserAgentAppId();
 	}
 	return cfg;
 }
@@ -137,12 +147,9 @@ public:
 				aws_profile.SetExternalId(external_id);
 				AddSTSProvider(aws_profile);
 			} else if (item == "sso") {
-				// Pass an explicit ClientConfiguration so the SSO portal HTTPS call
-				// uses the detected CA path. See BuildClientConfigWithCa() comment.
-				auto sso_config = Aws::MakeShared<Aws::Client::ClientConfiguration>("DuckDBAwsSSO");
-				if (!SELECTED_CURL_CERT_PATH.empty()) {
-					sso_config->caFile = SELECTED_CURL_CERT_PATH;
-				}
+				// The SSO portal HTTPS call needs the detected CA path and app id too
+				auto sso_config = Aws::MakeShared<Aws::Client::ClientConfiguration>("DuckDBAwsSSO",
+				                                                                    BuildClientConfigWithCa());
 				if (profile.empty()) {
 					AddProvider(std::make_shared<Aws::Auth::SSOCredentialsProvider>(Aws::String(), sso_config));
 				} else {
