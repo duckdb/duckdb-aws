@@ -64,6 +64,7 @@ configure_aws_environment() {
 		return 1
 	fi
 
+	unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_CREDENTIAL_EXPIRATION
 	export AWS_PROFILE="$configured_profile"
 }
 
@@ -334,6 +335,21 @@ load_tickit_data() {
 	wait_for_data_load "$statement_id"
 }
 
+print_env() {
+	printf "export AWS_REDSHIFT_CLUSTER_NAME='%s'\n" "$CLUSTER"
+	printf "export AWS_REDSHIFT_ARN='%s'\n" "$AWS_REDSHIFT_ARN"
+	printf "export AWS_REDSHIFT_HOST='%s'\n" "$AWS_REDSHIFT_HOST"
+	printf "export AWS_REDSHIFT_DATABASE='%s'\n" "$AWS_REDSHIFT_DATABASE"
+	printf "export AWS_REGION='%s'\n" "$AWS_REGION"
+	printf "export AWS_CONFIG_FILE='%s'\n" "$AWS_CONFIG_FILE"
+	printf "export AWS_SHARED_CREDENTIALS_FILE='%s'\n" "$AWS_SHARED_CREDENTIALS_FILE"
+	printf "export AWS_PROFILE='%s'\n" "$AWS_PROFILE"
+	printf 'unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_CREDENTIAL_EXPIRATION\n'
+	printf 'eval "$(aws configure export-credentials \\\n'
+	printf '  --profile "$AWS_PROFILE" \\\n'
+	printf '  --format env)"\n'
+}
+
 print_result() {
 	step 6 "Read the cluster namespace ARN and print the test environment"
 
@@ -356,26 +372,10 @@ print_result() {
 	echo "Cluster identifier: $CLUSTER"
 	echo "Security group: $SECURITY_GROUP ($SECURITY_GROUP_ID)"
 	echo "Database: $AWS_REDSHIFT_DATABASE"
-	printf "export AWS_REDSHIFT_CLUSTER_NAME='%s'\n" "$CLUSTER"
-	printf "export AWS_REDSHIFT_ARN='%s'\n" "$AWS_REDSHIFT_ARN"
-	printf "export AWS_REDSHIFT_HOST='%s'\n" "$AWS_REDSHIFT_HOST"
-	printf "export AWS_REDSHIFT_DATABASE='%s'\n" "$AWS_REDSHIFT_DATABASE"
-	printf "export AWS_REGION='%s'\n" "$AWS_REGION"
-	printf "export AWS_CONFIG_FILE='%s'\n" "$AWS_CONFIG_FILE"
-	printf "export AWS_SHARED_CREDENTIALS_FILE='%s'\n" "$AWS_SHARED_CREDENTIALS_FILE"
-	printf "export AWS_PROFILE='%s'\n" "$AWS_PROFILE"
+	print_env
 
 	local env_file="${REDSHIFT_ENV_FILE:-$PROJECT_ROOT/test/sql/redshift/redshift.env}"
-	{
-		printf "export AWS_REDSHIFT_CLUSTER_NAME='%s'\n" "$CLUSTER"
-		printf "export AWS_REDSHIFT_ARN='%s'\n" "$AWS_REDSHIFT_ARN"
-		printf "export AWS_REDSHIFT_HOST='%s'\n" "$AWS_REDSHIFT_HOST"
-		printf "export AWS_REDSHIFT_DATABASE='%s'\n" "$AWS_REDSHIFT_DATABASE"
-		printf "export AWS_REGION='%s'\n" "$AWS_REGION"
-		printf "export AWS_CONFIG_FILE='%s'\n" "$AWS_CONFIG_FILE"
-		printf "export AWS_SHARED_CREDENTIALS_FILE='%s'\n" "$AWS_SHARED_CREDENTIALS_FILE"
-		printf "export AWS_PROFILE='%s'\n" "$AWS_PROFILE"
-	} > "$env_file"
+	print_env > "$env_file"
 	echo
 	echo "Wrote env vars to $env_file (run: source $env_file)"
 }

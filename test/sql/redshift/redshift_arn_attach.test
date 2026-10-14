@@ -27,8 +27,8 @@ LOAD aws
 statement ok
 CREATE SECRET (
     TYPE s3,
-    KEY_ID '{AWS_ACCESS_KEY_ID}',
-    SECRET '{AWS_SECRET_ACCESS_KEY}',
+    PROVIDER credential_chain,
+    CHAIN 'env',
     REGION '{AWS_REGION}'
 );
 

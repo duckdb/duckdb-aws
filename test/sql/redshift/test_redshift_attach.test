@@ -12,18 +12,15 @@ require httpfs
 require postgres_scanner
 
 # This test hits a real Redshift cluster + a real AWS identity, so it only runs
-# when the test cluster is available. The runner must already be authenticated to
-# AWS in a way that matches the CHAIN below (e.g. `aws sso login`).
+# when the test cluster is available and AWS credentials are exported.
 
 require-env AWS_REDSHIFT_CLUSTER_NAME
 
 require-env AWS_REDSHIFT_DATABASE
 
-require-env AWS_PROFILE
+require-env AWS_ACCESS_KEY_ID
 
-require-env AWS_CONFIG_FILE
-
-require-env AWS_SHARED_CREDENTIALS_FILE
+require-env AWS_SECRET_ACCESS_KEY
 
 require-env AWS_REGION
 
@@ -32,13 +29,11 @@ SET allow_persistent_secrets=false
 
 # Redshift has no secret type of its own: attaching a cluster only needs an AWS identity,
 # which is what an ordinary 'aws' secret holds.
-# NOTE: adjust CHAIN/PROFILE to match how the runner authenticates to AWS.
 statement ok
 CREATE SECRET redshift_creds (
 	TYPE aws,
 	PROVIDER credential_chain,
-    profile '{AWS_PROFILE}',
-    CHAIN 'config',
+    CHAIN 'env',
 	REGION '{AWS_REGION}',
 );
 

@@ -19,7 +19,12 @@ source test/sql/redshift/redshift.env
 
 Without `--force`, the script prints the creation plan. With `--force`, it creates the cluster, IAM role, security group, and TICKIT data.
 
-The script writes the cluster settings and AWS profile settings to `test/sql/redshift/redshift.env`. Set `REDSHIFT_ENV_FILE` to use another path.
+The script writes the cluster settings and AWS profile settings to
+`test/sql/redshift/redshift.env`. When sourced, the file clears stale exported
+credentials and runs `aws configure export-credentials` for `AWS_PROFILE`,
+exporting the access key and secret key plus a session token and credential
+expiration when the selected profile uses temporary credentials. Set
+`REDSHIFT_ENV_FILE` to use another path.
 
 Defaults:
 
@@ -61,9 +66,12 @@ Run all Redshift tests:
 source test/sql/redshift/redshift.env && ./build/release/test/unittest "test/sql/redshift/*"
 ```
 
-The cluster-ID and pinned-host tests use the selected credential-chain profile and `AWS_REDSHIFT_DATABASE` from `redshift.env`. `redshift_arn_attach.test` discovers the cluster database and also requires `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`.
+The tests use the credentials exported by `redshift.env` and automatically
+consume `AWS_SESSION_TOKEN` when the selected profile provides one.
 
-`redshift_arn_attach_credential_chain.test` attaches through `AWS_REDSHIFT_ARN` using an `s3` secret built with `PROVIDER credential_chain`.
+`redshift_arn_attach_credential_chain.test` attaches through
+`AWS_REDSHIFT_ARN` using an `s3` secret built with the environment credential
+chain.
 
 ### Interactive DuckDB sessions
 
