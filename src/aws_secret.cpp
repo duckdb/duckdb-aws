@@ -6,6 +6,7 @@
 #include "duckdb/common/case_insensitive_map.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/file_system.hpp"
+#include "duckdb/common/types/blob.hpp"
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/logging/logger.hpp"
 #include "duckdb/main/database.hpp"
@@ -89,6 +90,34 @@ static void ParseCoreS3Config(CreateSecretInput &input, KeyValueSecret &secret) 
 			secret.secret_map[Identifier(val)] = set_region_param->second;
 		}
 	}
+}
+
+//! Reads the server-side encryption options. They mirror KMS_KEY_ID and SSE_C_KEY of the httpfs `config`
+//! provider, so a credential_chain secret can write encrypted objects and keep encrypting them across refreshes.
+static void ParseServerSideEncryptionConfig(CreateSecretInput &input, KeyValueSecret &secret) {
+	auto kms_key_id = input.options.find("kms_key_id");
+	if (kms_key_id != input.options.end()) {
+		secret.secret_map["kms_key_id"] = kms_key_id->second.ToString();
+	}
+	auto sse_c_key = input.options.find("sse_c_key");
+	if (sse_c_key == input.options.end()) {
+		return;
+	}
+	auto key = sse_c_key->second.ToString();
+	// Same check as httpfs: canonical base64 of exactly 32 bytes. The error never echoes the key.
+	string decoded_key;
+	try {
+		decoded_key = Blob::FromBase64(key);
+	} catch (std::exception &) {
+		throw InvalidInputException("SSE_C_KEY must be a valid base64-encoded 256-bit key");
+	}
+	if (decoded_key.size() != 32 || Blob::ToBase64(decoded_key) != key) {
+		throw InvalidInputException("SSE_C_KEY must be a valid base64-encoded 256-bit key");
+	}
+	secret.secret_map["sse_c_key"] = key;
+	secret.redact_keys.insert("sse_c_key");
+	// With REFRESH 'auto', refresh_info holds a copy of every CREATE SECRET option, including the key.
+	secret.redact_keys.insert("refresh_info");
 }
 
 //! This constructs the base S3 Type secret
@@ -505,6 +534,7 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 	}
 
 	ParseCoreS3Config(input, *result);
+	ParseServerSideEncryptionConfig(input, *result);
 
 	// Set endpoint defaults TODO: move to consumer side of secret
 	auto endpoint_lu = result->secret_map.find("endpoint");
@@ -592,6 +622,14 @@ void CreateAwsSecretFunctions::Register(ExtensionLoader &loader) {
 		cred_chain_function.named_parameters["http_proxy_password"] = LogicalType::VARCHAR;
 
 		cred_chain_function.named_parameters["refresh"] = LogicalType::VARCHAR;
+
+		// Server-side encryption, registered for the same types as on the httpfs `config` provider
+		if (type != "rds") {
+			cred_chain_function.named_parameters["kms_key_id"] = LogicalType::VARCHAR;
+		}
+		if (type == "s3") {
+			cred_chain_function.named_parameters["sse_c_key"] = LogicalType::VARCHAR;
+		}
 
 		if (type == "r2") {
 			cred_chain_function.named_parameters["account_id"] = LogicalType::VARCHAR;
