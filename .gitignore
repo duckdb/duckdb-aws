@@ -6,4 +6,5 @@ duckdb_unittest_tempdir/
 testext
 test/python/__pycache__/
 .Rhistory
-/test/sql/redshift/redshift.env
+test/sql/redshift/redshift.env
+test/sql/redshift/serverless/redshift-serverless.env

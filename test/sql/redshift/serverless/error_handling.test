@@ -1,0 +1,76 @@
+# name: test/sql/redshift/serverless/error_handling.test
+# description: test Redshift Serverless ARN and routing option validation
+# group: [serverless]
+
+require httpfs
+
+require aws
+
+statement ok
+LOAD aws
+
+require-env AWS_REGION
+
+require-env ACCOUNT_ID
+
+require-env NAMESPACE_ID
+
+require-env WORKGROUP_ID
+
+# A user option cannot redirect a provisioned namespace ARN through the Serverless path.
+statement error
+ATTACH 'arn:aws:redshift:{AWS_REGION}:{ACCOUNT_ID}:namespace:{NAMESPACE_ID}' AS db (RESOURCE_TYPE 'namespace');
+----
+Invalid Input Error: Conflicting Redshift ARN options
+
+# Redshift Serverless dispatch accepts only workgroup and namespace ARNs with slash-separated IDs.
+statement error
+ATTACH 'arn:aws:redshift-serverless:{AWS_REGION}:{ACCOUNT_ID}:workgroup:{WORKGROUP_ID}' AS db;
+----
+<REGEX>:.*Expected a Redshift Serverless ARN.*workgroup:.*
+
+statement error
+ATTACH 'arn:aws:redshift-serverless:{AWS_REGION}:{ACCOUNT_ID}:namespace/' AS db;
+----
+<REGEX>:.*Expected a Redshift Serverless ARN.*namespace/.*
+
+statement error
+ATTACH 'arn:aws:redshift-serverless:{AWS_REGION}:{ACCOUNT_ID}:/{NAMESPACE_ID}' AS db;
+----
+<REGEX>:.*Expected a Redshift Serverless ARN.*/.*
+
+statement error
+ATTACH 'arn:aws:redshift-serverless:{AWS_REGION}:{ACCOUNT_ID}:namespace/{NAMESPACE_ID}/extra' AS db;
+----
+<REGEX>:.*Expected a Redshift Serverless ARN.*namespace/.*/extra.*
+
+statement error
+ATTACH 'arn:aws:redshift-serverless:{AWS_REGION}:{ACCOUNT_ID}:cluster/{WORKGROUP_ID}' AS db;
+----
+<REGEX>:.*Expected a Redshift Serverless ARN.*cluster/.*
+
+statement error
+ATTACH 'arn:aws:redshift-serverless::{ACCOUNT_ID}:workgroup/{WORKGROUP_ID}' AS db;
+----
+<REGEX>:.*Redshift Serverless ARN.*does not specify a region.*
+
+statement error
+ATTACH 'arn:aws:redshift-serverless:{AWS_REGION}::namespace/{NAMESPACE_ID}' AS db;
+----
+<REGEX>:.*Redshift Serverless ARN.*does not specify an account ID.*
+
+statement error
+ATTACH 'arn:aws:redshift-serverless:{AWS_REGION}:{ACCOUNT_ID}:workgroup/{WORKGROUP_ID}' AS db (REGION 'us-east-1');
+----
+Invalid Input Error: ATTACH option 'region' is derived from the ARN and cannot be set explicitly
+
+statement error
+ATTACH 'arn:aws:redshift-serverless:{AWS_REGION}:{ACCOUNT_ID}:workgroup/{WORKGROUP_ID}' AS db (RESOURCE 'workgroup/other');
+----
+Invalid Input Error: Conflicting Redshift ARN options
+
+# Direct TYPE redshift attaches cannot set the ARN dispatcher's internal options.
+statement error
+ATTACH '{WORKGROUP_ID}' AS db (TYPE redshift, RESOURCE_TYPE 'namespace');
+----
+Invalid Input Error: Redshift ARN options cannot be set directly

@@ -30,6 +30,7 @@ set(EXTENSION_SOURCES
     src/rds/rds_storage.cpp
     src/quack_on_ec2_resource.cpp
     src/redshift/redshift_utils.cpp
+    src/redshift/redshift_serverless_utils.cpp
     src/redshift/redshift_storage.cpp
     src/utils/utils.cpp)
 add_library(${EXTENSION_NAME} STATIC ${EXTENSION_SOURCES})
@@ -48,6 +49,7 @@ find_package(
              identity-management
              rds
              redshift
+             redshift-serverless
              cloudformation)
 
 # Build static lib

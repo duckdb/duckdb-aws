@@ -136,11 +136,45 @@ static ArnTarget RedshiftTarget(const ParsedArn &arn) {
 	return target;
 }
 
+static ArnTarget RedshiftServerlessTarget(const ParsedArn &arn) {
+	if (arn.region.empty()) {
+		throw InvalidInputException("Redshift Serverless ARN '%s' does not specify a region", arn.raw);
+	}
+	if (arn.account_id.empty()) {
+		throw InvalidInputException("Redshift Serverless ARN '%s' does not specify an account ID", arn.raw);
+	}
+
+	auto separator = arn.resource.find('/');
+	if (separator == string::npos || separator == 0 || separator == arn.resource.size() - 1 ||
+	    arn.resource.find('/', separator + 1) != string::npos) {
+		throw InvalidInputException("Expected a Redshift Serverless ARN with a resource of the form "
+		                            "'workgroup/<workgroup-id>' or 'namespace/<namespace-id>', got '%s'",
+		                            arn.raw);
+	}
+	auto resource_type = arn.resource.substr(0, separator);
+	auto resource_id = arn.resource.substr(separator + 1);
+	if (resource_type != "workgroup" && resource_type != "namespace") {
+		throw InvalidInputException("Expected a Redshift Serverless ARN with a resource of the form "
+		                            "'workgroup/<workgroup-id>' or 'namespace/<namespace-id>', got '%s'",
+		                            arn.raw);
+	}
+
+	ArnTarget target;
+	target.backend = "redshift";
+	target.path = resource_id;
+	target.options["region"] = Value(arn.region);
+	target.options["account_id"] = Value(arn.account_id);
+	target.options["resource_type"] = Value(resource_type);
+	target.autoload = false;
+	return target;
+}
+
 static const case_insensitive_map_t<arn_handler_t> &ArnServiceHandlers() {
 	static const case_insensitive_map_t<arn_handler_t> handlers {
 	    {"s3tables", S3TablesTarget},
 	    {"rds", RDSTarget},
 	    {"redshift", RedshiftTarget},
+	    {"redshift-serverless", RedshiftServerlessTarget},
 	};
 	return handlers;
 }
