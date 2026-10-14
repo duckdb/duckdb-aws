@@ -1,5 +1,6 @@
 #include "aws_secret.hpp"
 #include "aws_client.hpp"
+#include "rds/rds_utils.hpp"
 #include "utils/utils.hpp"
 
 #include "duckdb/common/case_insensitive_map.hpp"
@@ -284,30 +285,6 @@ static string ConstructErrorMessage(string chain, string profile, string assume_
 	return prefix;
 }
 
-static string GenerateRDSSecretToken(std::shared_ptr<DuckDBCustomAWSCredentialsProviderChain> &provider,
-                                     const string &user, const string &host, const string &port, const string &region) {
-	Aws::Client::ClientConfiguration config = BuildClientConfigWithCa();
-	config.region = region;
-	Aws::RDS::RDSClient rds_client(provider, config);
-
-	// https://github.com/aws/aws-sdk-cpp/issues/861#issuecomment-386643571
-	// Aws::String token = rdsClient.GenerateConnectAuthToken(hostname.c_str(), aws_region.c_str(),
-	// static_cast<unsigned>(port_int), username.c_str());
-
-	uint64_t expiration_seconds = 900; // 15 min, this value is fixed, also used on consumer side
-	string host_and_port = host + ":" + port;
-	string host_and_port_with_prefix = "http://" + host_and_port;
-	string host_and_port_with_suffix = host_and_port + "/";
-	Aws::Http::URI uri(host_and_port_with_prefix.c_str());
-	uri.AddQueryStringParameter("Action", "connect");
-	uri.AddQueryStringParameter("DBUser", user.c_str());
-	auto token = rds_client.GeneratePresignedUrl(uri, Aws::Http::HttpMethod::HTTP_GET, region.c_str(), "rds-db",
-	                                             static_cast<long long>(expiration_seconds));
-	Aws::Utils::StringUtils::Replace(token, host_and_port_with_prefix.c_str(), host_and_port_with_suffix.c_str());
-
-	return string(token.c_str());
-}
-
 static unique_ptr<BaseSecret>
 CreateRDSSecretWithProvider(std::shared_ptr<DuckDBCustomAWSCredentialsProviderChain> &provider,
                             CreateSecretInput &input, const string &region) {
@@ -342,7 +319,8 @@ CreateRDSSecretWithProvider(std::shared_ptr<DuckDBCustomAWSCredentialsProviderCh
 
 	// "rds_template_secret_name" was specified when creting the secret,
 	// so we are generating and returning actual token in "session_token" field
-	string token = GenerateRDSSecretToken(provider, user, host, port, region);
+	int32_t port_num = Rds::ParsePort(port);
+	string token = Rds::GenerateAuthToken(provider, host, port_num, region, user);
 
 	// We do not throwing here if the resulting token was generated incorrectly,
 	// instead the consumer must do appropriate checks and report the error without
