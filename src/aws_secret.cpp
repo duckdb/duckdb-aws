@@ -330,7 +330,7 @@ CreateRDSSecretWithProvider(std::shared_ptr<DuckDBCustomAWSCredentialsProviderCh
 }
 
 //! This is the actual callback function
-static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &context, CreateSecretInput &input) {
+unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &context, CreateSecretInput &input) {
 	// the credential providers read files and make requests through the AWS SDK, outside of the file systems of DuckDB
 	if (!Settings::Get<EnableExternalAccessSetting>(context)) {
 		throw PermissionException(
@@ -535,6 +535,29 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 	return std::move(result);
 }
 
+//! The default scope of a secret of this type
+static vector<string> DefaultScope(const Identifier &type) {
+	if (type == "s3") {
+		return {"s3://", "s3n://", "s3a://"};
+	}
+	if (type == "r2") {
+		return {"r2://"};
+	}
+	if (type == "gcs") {
+		return {"gcs://", "gs://"};
+	}
+	return {""};
+}
+
+unique_ptr<BaseSecret> CreateAWSSecretWithoutCredentials(const CreateSecretInput &input) {
+	auto scope = input.scope.empty() ? DefaultScope(input.type) : input.scope;
+	return ConstructBaseS3Secret(scope, input.type, input.provider, input.name);
+}
+
+static unique_ptr<BaseSecret> CreateAWSSecretFromNone(ClientContext &, CreateSecretInput &input) {
+	return CreateAWSSecretWithoutCredentials(input);
+}
+
 std::shared_ptr<Aws::Auth::AWSCredentialsProvider>
 BuildAwsCredentialsProvider(const std::string &chain, bool require_credentials, const std::string &profile,
                             const std::string &assume_role_arn, const std::string &external_id,
@@ -612,6 +635,12 @@ void CreateAwsSecretFunctions::Register(ExtensionLoader &loader) {
 		cred_chain_function.named_parameters["validation"] = LogicalType::VARCHAR;
 
 		loader.RegisterFunction(cred_chain_function);
+
+		if (type != "rds") {
+			// requests matched by a secret without credentials are sent unsigned, which overrides the default secret
+			CreateSecretFunction none_function = {type, "none", CreateAWSSecretFromNone};
+			loader.RegisterFunction(none_function);
+		}
 	}
 }
 
