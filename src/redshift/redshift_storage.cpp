@@ -1,3 +1,4 @@
+#include "aws_http_client.hpp"
 #include "redshift/redshift_utils.hpp"
 
 #include "aws_client.hpp"
@@ -184,6 +185,7 @@ unique_ptr<Catalog> RedshiftAttach(optional_ptr<StorageExtensionInfo> storage_in
 	if (!Settings::Get<EnableExternalAccessSetting>(context)) {
 		throw PermissionException("Attaching Redshift databases is disabled through configuration");
 	}
+	AwsInstanceBinding aws_binding(DatabaseInstance::GetDatabase(context));
 
 	auto attach_options = ParseAttachOptions(options);
 	auto target = GetRedshiftTarget(db, attach_options, info.path);

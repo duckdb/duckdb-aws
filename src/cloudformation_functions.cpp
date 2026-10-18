@@ -10,6 +10,7 @@
 #include "duckdb/common/types/uuid.hpp"
 #include "duckdb/function/function_set.hpp"
 #include "duckdb/function/scalar_function.hpp"
+#include "aws_http_client.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/parallel/task_executor.hpp"
@@ -358,6 +359,7 @@ ResolvedStackRequest ResolveStackRequest(Aws::CloudFormation::CloudFormationClie
 } // namespace
 
 static void CloudFormationCreateStackFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	AwsInstanceBinding aws_binding(DatabaseInstance::GetDatabase(context));
 	auto &data = (CloudFormationCreateStackBindData &)*data_p.bind_data;
 	if (data.finished) {
 		return;
@@ -525,6 +527,7 @@ static unique_ptr<FunctionData> CloudFormationDescribeStackBind(ClientContext &c
 }
 
 static void CloudFormationDescribeStackFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	AwsInstanceBinding aws_binding(DatabaseInstance::GetDatabase(context));
 	auto &data = (CloudFormationDescribeStackBindData &)*data_p.bind_data;
 	if (data.finished) {
 		return;
@@ -634,6 +637,7 @@ static unique_ptr<FunctionData> CloudFormationDeleteStackBind(ClientContext &con
 }
 
 static void CloudFormationDeleteStackFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	AwsInstanceBinding aws_binding(DatabaseInstance::GetDatabase(context));
 	auto &data = (CloudFormationDeleteStackBindData &)*data_p.bind_data;
 	if (data.finished) {
 		return;
@@ -788,6 +792,7 @@ static unique_ptr<FunctionData> CloudFormationListStacksBind(ClientContext &cont
 }
 
 static void CloudFormationListStacksFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	AwsInstanceBinding aws_binding(DatabaseInstance::GetDatabase(context));
 	auto &data = (CloudFormationListStacksBindData &)*data_p.bind_data;
 
 	if (!data.initialized) {
@@ -882,7 +887,11 @@ struct CloudFormationDescribeStacksRow {
 };
 
 // Fetch all stacks in one region (paginated), appending to `out`. Throws on AWS error.
-static void DescribeRegionStacks(const string &region, vector<CloudFormationDescribeStacksRow> &out) {
+static void DescribeRegionStacks(DatabaseInstance &db, const string &region,
+                                 vector<CloudFormationDescribeStacksRow> &out) {
+	// Runs as a scheduler task on another thread, where the thread-local binding set by the
+	// table function does not reach, so establish one here.
+	AwsInstanceBinding aws_binding(db);
 	auto provider = BuildAwsCredentialsProvider("", /*require_credentials=*/true);
 	auto cfg = BuildClientConfigWithCa();
 	cfg.region = region.c_str();
@@ -944,12 +953,13 @@ static void DescribeRegionStacks(const string &region, vector<CloudFormationDesc
 // abort the whole sweep via WorkOnTasks) and replaces its slot with a single 'error' sentinel row, so
 // a dead region is surfaced-but-not-fatal instead of silently vanishing.
 struct DescribeRegionTask : public BaseExecutorTask {
-	DescribeRegionTask(TaskExecutor &executor, string region_p, vector<CloudFormationDescribeStacksRow> &slot_p)
-	    : BaseExecutorTask(executor), region(std::move(region_p)), slot(slot_p) {
+	DescribeRegionTask(TaskExecutor &executor, DatabaseInstance &db_p, string region_p,
+	                   vector<CloudFormationDescribeStacksRow> &slot_p)
+	    : BaseExecutorTask(executor), db(db_p), region(std::move(region_p)), slot(slot_p) {
 	}
 	void ExecuteTask() override {
 		try {
-			DescribeRegionStacks(region, slot);
+			DescribeRegionStacks(db, region, slot);
 		} catch (const std::exception &e) {
 			EmitError(e.what());
 		} catch (...) {
@@ -965,6 +975,7 @@ struct DescribeRegionTask : public BaseExecutorTask {
 		err.outputs = Value(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR)); // NULL
 		slot.push_back(std::move(err));
 	}
+	DatabaseInstance &db;
 	string region;
 	vector<CloudFormationDescribeStacksRow> &slot;
 };
@@ -1042,19 +1053,21 @@ static unique_ptr<FunctionData> CloudFormationDescribeStacksBind(ClientContext &
 }
 
 static void CloudFormationDescribeStacksFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	AwsInstanceBinding aws_binding(DatabaseInstance::GetDatabase(context));
 	auto &data = (CloudFormationDescribeStacksBindData &)*data_p.bind_data;
 
 	if (!data.initialized) {
 		if (data.throw_on_region_error) {
 			// Single explicit region: run inline and let its error propagate.
-			DescribeRegionStacks(data.regions[0], data.rows);
+			DescribeRegionStacks(DatabaseInstance::GetDatabase(context), data.regions[0], data.rows);
 		} else {
 			// Parallel fan-out: one task per region into its own slot; a region that errors is skipped. Fixed-size
 			// `slots` so the vector never reallocates while tasks hold references into it.
 			vector<vector<CloudFormationDescribeStacksRow>> slots(data.regions.size());
 			TaskExecutor executor(context);
 			for (idx_t i = 0; i < data.regions.size(); i++) {
-				executor.ScheduleTask(make_uniq<DescribeRegionTask>(executor, data.regions[i], slots[i]));
+				executor.ScheduleTask(make_uniq<DescribeRegionTask>(executor, DatabaseInstance::GetDatabase(context),
+				                                                    data.regions[i], slots[i]));
 			}
 			executor.WorkOnTasks();
 			for (auto &slot : slots) {
