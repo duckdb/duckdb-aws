@@ -1,4 +1,5 @@
 #include "utils/utils.hpp"
+#include "aws_default_secret_storage.hpp"
 
 #include "aws_client.hpp"
 
@@ -84,6 +85,15 @@ bool IsAwsSecretType(const string &type) {
 	return false;
 }
 
+//! The default AWS secret when the default credential chain found credentials, otherwise nullptr
+static unique_ptr<SecretEntry> DefaultAwsSecretWithCredentials(ClientContext &context) {
+	auto entry = AwsDefaultSecretStorage::GetDefaultAwsSecret(context);
+	if (!entry || entry->secret->Cast<KeyValueSecret>().TryGetValue("key_id").IsNull()) {
+		return nullptr;
+	}
+	return entry;
+}
+
 unique_ptr<SecretEntry> FindAwsSecret(ClientContext &context, const string &secret_name) {
 	auto &secret_manager = SecretManager::Get(context);
 	auto transaction = CatalogTransaction::GetSystemCatalogTransaction(context);
@@ -92,6 +102,12 @@ unique_ptr<SecretEntry> FindAwsSecret(ClientContext &context, const string &secr
 		auto secret_entry = secret_manager.GetSecretByName(transaction, secret_name);
 		if (!secret_entry) {
 			throw BinderException("Secret with name \"%s\" not found", secret_name);
+		}
+		if (AwsDefaultSecretStorage::IsDefaultSecret(*secret_entry)) {
+			secret_entry = DefaultAwsSecretWithCredentials(context);
+			if (!secret_entry) {
+				throw BinderException("No AWS credentials found: the default credential chain found none");
+			}
 		}
 		const auto &type = secret_entry->secret->GetType().GetIdentifierName();
 		if (!IsAwsSecretType(type)) {
@@ -106,6 +122,10 @@ unique_ptr<SecretEntry> FindAwsSecret(ClientContext &context, const string &secr
 	for (const auto &wanted_type : AwsSecretTypes()) {
 		vector<const SecretEntry *> matches;
 		for (const auto &entry : all_secrets) {
+			// the default secrets only apply when there is no explicit one
+			if (AwsDefaultSecretStorage::IsDefaultSecret(entry)) {
+				continue;
+			}
 			if (entry.secret->GetType().GetIdentifierName() == wanted_type) {
 				matches.push_back(&entry);
 			}
@@ -117,6 +137,10 @@ unique_ptr<SecretEntry> FindAwsSecret(ClientContext &context, const string &secr
 		if (matches.size() == 1) {
 			return make_uniq<SecretEntry>(*matches[0]);
 		}
+	}
+	auto default_secret = DefaultAwsSecretWithCredentials(context);
+	if (default_secret) {
+		return default_secret;
 	}
 	throw BinderException("No AWS credentials found. Create a secret holding them, e.g. "
 	                      "CREATE SECRET (TYPE aws, PROVIDER credential_chain, REGION '<region>')");

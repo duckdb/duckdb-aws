@@ -1,4 +1,5 @@
 #include "arn_storage.hpp"
+#include "aws_default_secret_storage.hpp"
 #include "aws_secret.hpp"
 #include "aws_extension.hpp"
 #include "cloudformation_functions.hpp"
@@ -22,6 +23,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	CreateAwsSecretFunctions::InitializeCurlCertificates(loader.GetDatabaseInstance());
 	CreateAwsLegacyFunctionStubs::Register(loader);
 	CreateAwsSecretFunctions::Register(loader);
+	AwsDefaultSecretStorage::Register(loader);
 
 	// Makes `ATTACH '<cluster-id>' (TYPE redshift, ...)` resolve to the redshift storage extension.
 	Redshift::RegisterStorageExtension(loader);
