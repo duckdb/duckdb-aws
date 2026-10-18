@@ -16,7 +16,7 @@
 #include <aws/core/http/standard/StandardHttpRequest.h>
 #include <aws/core/http/standard/StandardHttpResponse.h>
 
-// The opt-out path hands back the SDK's own transport, and which one that is depends on how
+// The default path hands back the SDK's own transport, and which one that is depends on how
 // the SDK was built rather than on the host OS: a Windows SDK built with FORCE_CURL uses
 // curl, and keying this on _WIN32 would leave WinHttpSyncHttpClient unresolved at link time.
 // The SDK's own selection macros (ENABLE_CURL_CLIENT etc.) are not exported to consumers,
@@ -60,7 +60,8 @@ AwsInstanceBinding::~AwsInstanceBinding() {
 
 namespace {
 
-//! Defaults to true, so the bridge is on unless explicitly disabled. Registered as a
+//! Falls back to AWS_NETWORK_VIA_DUCKDB_DEFAULT (false on native, so the SDK's own transport
+//! stays in use unless the bridge is explicitly enabled; true under wasm). Registered as a
 //! GLOBAL-scoped option, since this is read off the DatabaseInstance rather than a
 //! ClientContext and a session-scoped value would never be seen here.
 bool NetworkCallsViaDuckDB(DatabaseInstance &db) {
@@ -68,7 +69,7 @@ bool NetworkCallsViaDuckDB(DatabaseInstance &db) {
 	if (db.TryGetCurrentSetting(NETWORK_VIA_DUCKDB_SETTING, value) && !value.IsNull()) {
 		return BooleanValue::Get(value);
 	}
-	return true;
+	return AWS_NETWORK_VIA_DUCKDB_DEFAULT;
 }
 
 #if AWS_HTTP_SDK_FALLBACK_CURL
@@ -366,8 +367,9 @@ public:
 		auto resolved = ResolveInstance();
 #if AWS_HTTP_SDK_FALLBACK
 		auto db_instance = resolved.lock();
-		if (db_instance && !NetworkCallsViaDuckDB(*db_instance)) {
-			// Opt-out (native only): behave exactly as the SDK's default factory would.
+		if (!db_instance || !NetworkCallsViaDuckDB(*db_instance)) {
+			// Not opted in, or no live instance to read the setting from (native only): behave
+			// exactly as the SDK's default factory would.
 #if AWS_HTTP_SDK_FALLBACK_CURL
 			EnsureCurlGlobalState();
 			return Aws::MakeShared<Aws::Http::CurlHttpClient>("DuckDBAwsHttp", config);

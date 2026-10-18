@@ -4,13 +4,14 @@
 
 require aws
 
+# Defaults to false on native; under wasm (not exercised here) it defaults to true.
 query I
 SELECT current_setting('aws_network_calls_via_duckdb')::BOOLEAN;
 ----
-true
+false
 
 statement ok con1
-SET aws_network_calls_via_duckdb=false;
+SET aws_network_calls_via_duckdb=true;
 
 # The client factory reads this off the DatabaseInstance, which only sees the global
 # DBConfig - a session-scoped value would be invisible there and a plain SET would
@@ -18,15 +19,15 @@ SET aws_network_calls_via_duckdb=false;
 query I con2
 SELECT current_setting('aws_network_calls_via_duckdb')::BOOLEAN;
 ----
-false
+true
 
 statement ok con2
-SET GLOBAL aws_network_calls_via_duckdb=true;
+SET GLOBAL aws_network_calls_via_duckdb=false;
 
 query I con1
 SELECT current_setting('aws_network_calls_via_duckdb')::BOOLEAN;
 ----
-true
+false
 
 statement error con1
 SET aws_network_calls_via_duckdb='not a boolean';

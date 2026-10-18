@@ -21,15 +21,19 @@ static void LoadInternal(ExtensionLoader &loader) {
 	Aws::SDKOptions options;
 	Aws::InitAPI(options);
 
-	// Ignored under wasm, where the bridge is the only path. Registered as GLOBAL: the client
-	// factory reads this off the DatabaseInstance, which never sees a session-scoped value, so
-	// the default SESSION scope would make a plain SET silently do nothing.
+	// Opt-in on native, where the default keeps the AWS SDK's own HTTP client; defaults to true
+	// under wasm, where the bridge is the only path and the setting is otherwise ignored.
+	// Registered as GLOBAL: the client factory reads this off the DatabaseInstance, which never
+	// sees a session-scoped value, so the default SESSION scope would make a plain SET silently
+	// do nothing.
 	DBConfig::GetConfig(loader.GetDatabaseInstance())
 	    .AddExtensionOption("aws_network_calls_via_duckdb",
 	                        "Route all AWS SDK network calls through DuckDB's HTTP layer (httpfs transport) "
-	                        "instead of the AWS SDK's own HTTP client. Required under WebAssembly; on native it "
-	                        "avoids statically linking libcurl and patching its CA-certificate path. Default true.",
-	                        LogicalType::BOOLEAN, Value::BOOLEAN(true), nullptr, SetScope::GLOBAL);
+	                        "instead of the AWS SDK's own HTTP client. On native it avoids statically linking "
+	                        "libcurl and patching its CA-certificate path; defaults to false. Always on under "
+	                        "WebAssembly, where it defaults to true.",
+	                        LogicalType::BOOLEAN, Value::BOOLEAN(AWS_NETWORK_VIA_DUCKDB_DEFAULT), nullptr,
+	                        SetScope::GLOBAL);
 
 	// Must run before any AWS client is constructed. The factory reads the setting per
 	// client, so the toggle stays live.

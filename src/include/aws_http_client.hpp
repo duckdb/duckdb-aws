@@ -5,6 +5,15 @@
 namespace duckdb {
 class DatabaseInstance;
 
+//! Default of the aws_network_calls_via_duckdb setting. Opt-in on native, where the AWS
+//! SDK's own HTTP client stays the default. Under wasm the bridge is the only transport,
+//! so the setting defaults to (and is effectively pinned at) true.
+#if defined(__EMSCRIPTEN__)
+static constexpr bool AWS_NETWORK_VIA_DUCKDB_DEFAULT = true;
+#else
+static constexpr bool AWS_NETWORK_VIA_DUCKDB_DEFAULT = false;
+#endif
+
 //! Install an AWS SDK HttpClientFactory routing all AWS SDK HTTP through DuckDB's
 //! HTTPUtil, whichever transport the DatabaseInstance has registered (httpfs curl on
 //! native, browser fetch under wasm). Lets the extension build for wasm without
