@@ -134,3 +134,15 @@ query I
 SELECT duckdb_aws_session_id() = duckdb_aws_session_id();
 ----
 true
+
+# quack-on-ec2 create: there is no built-in template, so both template and region are required
+# (checked before any AWS call).
+statement error
+SELECT * FROM __aws__cloudformation__quack_on_ec2__create(MAP {'region': 'us-east-1'});
+----
+the 'template' param is required
+
+statement error
+SELECT * FROM __aws__cloudformation__quack_on_ec2__create(MAP {'template': 'AWSTemplateFormatVersion: 2010-09-09'});
+----
+the 'region' param is required

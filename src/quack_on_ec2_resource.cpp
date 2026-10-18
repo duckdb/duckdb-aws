@@ -10,10 +10,9 @@
 
 namespace duckdb {
 
-// Default CloudFormation template for a quack-on-EC2 stack; overridable per-call via the 'template' create
-// param. Its Outputs expose the keys read by the status callback below (Endpoint, Token).
-static constexpr const char *QUACK_ON_EC2_TEMPLATE =
-    "https://test-wasm-carlo.s3.us-east-1.amazonaws.com/duckdb-quack-ec2-template.yaml";
+// There is no built-in CloudFormation template: the 'template' create param is required, and is passed
+// through to cloudformation_create_stack (a URL or an inline template body). Its Outputs must expose the
+// keys read by the status callback below (Endpoint, Token).
 
 // The external-resource type name, also stamped as a stack tag at create time so the list callback can
 // discover quack-on-ec2 stacks by filtering DescribeStacks output on it.
@@ -40,8 +39,8 @@ static unique_ptr<GlobalTableFunctionState> QuackAdapterInit(ClientContext &, Ta
 }
 
 // create(params MAP) -> TABLE(handle MAP). cloudformation_create_stack takes only the template positionally;
-// the recipe params supply the (required) region and the template_parameters. `template` and `region` are
-// pulled out here in C++ and everything else becomes template_parameters — built as a literal MAP so it is
+// the recipe params supply the (required) template and region and the template_parameters. `template` and
+// `region` are pulled out here in C++ and everything else becomes template_parameters — built as a literal MAP so it is
 // NOT assembled inline in the table-function argument (where `e.key`-style identifiers get silently coerced
 // to strings by the identifier-conversion rule, which would defeat the filter and leak `region`).
 static unique_ptr<FunctionData> QuackCreateBind(ClientContext &, TableFunctionBindInput &input,
@@ -60,8 +59,8 @@ static void QuackCreateFun(ClientContext &context, TableFunctionInput &data_p, D
 	}
 	auto &bind = data_p.bind_data->Cast<QuackAdapterBindData>();
 
-	// Split the params MAP in C++: `template` (default), required `region`, rest -> template_parameters.
-	string template_url = QUACK_ON_EC2_TEMPLATE;
+	// Split the params MAP in C++: required `template` and `region`, rest -> template_parameters.
+	string template_url;
 	string region;
 	vector<Value> tp_keys, tp_values;
 	if (!bind.input.IsNull()) {
@@ -81,6 +80,10 @@ static void QuackCreateFun(ClientContext &context, TableFunctionInput &data_p, D
 				tp_values.push_back(kv[1]);
 			}
 		}
+	}
+	if (template_url.empty()) {
+		throw InvalidInputException("quack-on-ec2 create: the 'template' param is required (URL or body of a "
+		                            "CloudFormation template whose Outputs expose Endpoint and Token)");
 	}
 	if (region.empty()) {
 		throw InvalidInputException("quack-on-ec2 create: the 'region' param is required");
