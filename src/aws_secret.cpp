@@ -1,5 +1,8 @@
+#include "aws_http_client.hpp"
+#include "duckdb/main/database.hpp"
 #include "aws_secret.hpp"
 #include "aws_client.hpp"
+#include "rds/rds_utils.hpp"
 #include "utils/utils.hpp"
 
 #include "duckdb/common/case_insensitive_map.hpp"
@@ -7,7 +10,9 @@
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/logging/logger.hpp"
+#include "duckdb/main/database.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
+#include "duckdb/main/settings.hpp"
 
 #include <aws/core/Aws.h>
 #include <aws/core/auth/AWSCredentialsProviderChain.h>
@@ -49,11 +54,20 @@ static struct {
 	const string default_ = "exists";
 } CreateAwsSecretValidation;
 
+//! Partial duplicate of duckdb's GetDefaultUserAgent(): its format does not fit the SDK's appId field
+static string DuckDBAwsUserAgentAppId() {
+	return "duckdb/" + string(DuckDB::LibraryVersion());
+}
+
 //! See aws_client.hpp for rationale.
 Aws::Client::ClientConfiguration BuildClientConfigWithCa() {
 	Aws::Client::ClientConfiguration cfg;
 	if (!SELECTED_CURL_CERT_PATH.empty()) {
 		cfg.caFile = SELECTED_CURL_CERT_PATH;
+	}
+	// An app id the user set (AWS_SDK_UA_APP_ID or the sdk_ua_app_id profile key) wins
+	if (cfg.appId.empty()) {
+		cfg.appId = DuckDBAwsUserAgentAppId();
 	}
 	return cfg;
 }
@@ -137,12 +151,9 @@ public:
 				aws_profile.SetExternalId(external_id);
 				AddSTSProvider(aws_profile);
 			} else if (item == "sso") {
-				// Pass an explicit ClientConfiguration so the SSO portal HTTPS call
-				// uses the detected CA path. See BuildClientConfigWithCa() comment.
-				auto sso_config = Aws::MakeShared<Aws::Client::ClientConfiguration>("DuckDBAwsSSO");
-				if (!SELECTED_CURL_CERT_PATH.empty()) {
-					sso_config->caFile = SELECTED_CURL_CERT_PATH;
-				}
+				// The SSO portal HTTPS call needs the detected CA path and app id too
+				auto sso_config =
+				    Aws::MakeShared<Aws::Client::ClientConfiguration>("DuckDBAwsSSO", BuildClientConfigWithCa());
 				if (profile.empty()) {
 					AddProvider(std::make_shared<Aws::Auth::SSOCredentialsProvider>(Aws::String(), sso_config));
 				} else {
@@ -276,30 +287,6 @@ static string ConstructErrorMessage(string chain, string profile, string assume_
 	return prefix;
 }
 
-static string GenerateRDSSecretToken(std::shared_ptr<DuckDBCustomAWSCredentialsProviderChain> &provider,
-                                     const string &user, const string &host, const string &port, const string &region) {
-	Aws::Client::ClientConfiguration config = BuildClientConfigWithCa();
-	config.region = region;
-	Aws::RDS::RDSClient rds_client(provider, config);
-
-	// https://github.com/aws/aws-sdk-cpp/issues/861#issuecomment-386643571
-	// Aws::String token = rdsClient.GenerateConnectAuthToken(hostname.c_str(), aws_region.c_str(),
-	// static_cast<unsigned>(port_int), username.c_str());
-
-	uint64_t expiration_seconds = 900; // 15 min, this value is fixed, also used on consumer side
-	string host_and_port = host + ":" + port;
-	string host_and_port_with_prefix = "http://" + host_and_port;
-	string host_and_port_with_suffix = host_and_port + "/";
-	Aws::Http::URI uri(host_and_port_with_prefix.c_str());
-	uri.AddQueryStringParameter("Action", "connect");
-	uri.AddQueryStringParameter("DBUser", user.c_str());
-	auto token = rds_client.GeneratePresignedUrl(uri, Aws::Http::HttpMethod::HTTP_GET, region.c_str(), "rds-db",
-	                                             static_cast<long long>(expiration_seconds));
-	Aws::Utils::StringUtils::Replace(token, host_and_port_with_prefix.c_str(), host_and_port_with_suffix.c_str());
-
-	return string(token.c_str());
-}
-
 static unique_ptr<BaseSecret>
 CreateRDSSecretWithProvider(std::shared_ptr<DuckDBCustomAWSCredentialsProviderChain> &provider,
                             CreateSecretInput &input, const string &region) {
@@ -334,7 +321,8 @@ CreateRDSSecretWithProvider(std::shared_ptr<DuckDBCustomAWSCredentialsProviderCh
 
 	// "rds_template_secret_name" was specified when creting the secret,
 	// so we are generating and returning actual token in "session_token" field
-	string token = GenerateRDSSecretToken(provider, user, host, port, region);
+	int32_t port_num = Rds::ParsePort(port);
+	string token = Rds::GenerateAuthToken(provider, host, port_num, region, user);
 
 	// We do not throwing here if the resulting token was generated incorrectly,
 	// instead the consumer must do appropriate checks and report the error without
@@ -344,7 +332,13 @@ CreateRDSSecretWithProvider(std::shared_ptr<DuckDBCustomAWSCredentialsProviderCh
 }
 
 //! This is the actual callback function
-static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &context, CreateSecretInput &input) {
+unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &context, CreateSecretInput &input) {
+	// the credential providers read files and make requests through the AWS SDK, outside of the file systems of DuckDB
+	if (!Settings::Get<EnableExternalAccessSetting>(context)) {
+		throw PermissionException(
+		    "The credential_chain provider cannot be used when external access is disabled (enable_external_access)");
+	}
+	AwsInstanceBinding aws_binding(DatabaseInstance::GetDatabase(context));
 	Aws::Auth::AWSCredentials credentials;
 
 	string profile = TryGetStringParam(input, "profile");
@@ -544,6 +538,29 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
 	return std::move(result);
 }
 
+//! The default scope of a secret of this type
+static vector<string> DefaultScope(const Identifier &type) {
+	if (type == "s3") {
+		return {"s3://", "s3n://", "s3a://"};
+	}
+	if (type == "r2") {
+		return {"r2://"};
+	}
+	if (type == "gcs") {
+		return {"gcs://", "gs://"};
+	}
+	return {""};
+}
+
+unique_ptr<BaseSecret> CreateAWSSecretWithoutCredentials(const CreateSecretInput &input) {
+	auto scope = input.scope.empty() ? DefaultScope(input.type) : input.scope;
+	return ConstructBaseS3Secret(scope, input.type, input.provider, input.name);
+}
+
+static unique_ptr<BaseSecret> CreateAWSSecretFromNone(ClientContext &, CreateSecretInput &input) {
+	return CreateAWSSecretWithoutCredentials(input);
+}
+
 std::shared_ptr<Aws::Auth::AWSCredentialsProvider>
 BuildAwsCredentialsProvider(const std::string &chain, bool require_credentials, const std::string &profile,
                             const std::string &assume_role_arn, const std::string &external_id,
@@ -621,6 +638,12 @@ void CreateAwsSecretFunctions::Register(ExtensionLoader &loader) {
 		cred_chain_function.named_parameters["validation"] = LogicalType::VARCHAR;
 
 		loader.RegisterFunction(cred_chain_function);
+
+		if (type != "rds") {
+			// requests matched by a secret without credentials are sent unsigned, which overrides the default secret
+			CreateSecretFunction none_function = {type, "none", CreateAWSSecretFromNone};
+			loader.RegisterFunction(none_function);
+		}
 	}
 }
 

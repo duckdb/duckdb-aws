@@ -53,11 +53,10 @@ duckdb_extension_load(icu)
 
 # Build the postgres scanner for the redshift action (e.g. redshift attach).
 # Currently Disabled since this will not build on CI. To get CI working you (most likely)
-# need to copy the vcpkg_ports/libpq in the duckdb/duckdb-postgres repo. 
+# need to copy the vcpkg_ports/libpq in the duckdb/duckdb-postgres repo.
 # For now commented out so unblock development
-#duckdb_extension_load(postgres_scanner
-#    DONT_LINK
+# duckdb_extension_load(postgres_scanner
 #    GIT_URL https://github.com/duckdb/duckdb-postgres
-#    GIT_TAG a4e03aad76a002e913e676cce1fc2600f64a614f
+#    GIT_TAG 8d201d476ce690dac2e33921547c43e4daca587a
 #    SUBMODULES database-connector
-#)
+# )

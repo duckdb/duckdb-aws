@@ -23,8 +23,8 @@ Aws::Redshift::RedshiftClient MakeClient(const std::shared_ptr<Aws::Auth::AWSCre
 
 } // namespace
 
-RedshiftClusterInfo Redshift::DescribeCluster(const std::shared_ptr<Aws::Auth::AWSCredentialsProvider> &provider,
-                                              const string &cluster_id, const string &region) {
+RedshiftTargetInfo Redshift::DescribeCluster(const std::shared_ptr<Aws::Auth::AWSCredentialsProvider> &provider,
+                                             const string &cluster_id, const string &region) {
 	auto redshift_client = MakeClient(provider, region);
 
 	Aws::Redshift::Model::DescribeClustersRequest request;
@@ -44,20 +44,19 @@ RedshiftClusterInfo Redshift::DescribeCluster(const std::shared_ptr<Aws::Auth::A
 	}
 	auto &cluster = clusters.front();
 
-	RedshiftClusterInfo info;
+	RedshiftTargetInfo info;
+	info.credential_target = cluster_id;
 	info.endpoint_address = string(cluster.GetEndpoint().GetAddress().c_str());
 	info.endpoint_port = cluster.GetEndpoint().GetPort();
 	info.db_name = string(cluster.GetDBName().c_str());
-	info.master_username = string(cluster.GetMasterUsername().c_str());
-	info.cluster_status = string(cluster.GetClusterStatus().c_str());
 
 	// A cluster only has an endpoint once it is available; a paused/resuming/creating cluster
 	// describes fine but cannot be connected to. Report the status rather than letting the
 	// Postgres connect fail against an empty host.
 	if (info.endpoint_address.empty()) {
+		auto cluster_status = string(cluster.GetClusterStatus().c_str());
 		throw InvalidConfigurationException(
-		    "Redshift cluster '%s' has no endpoint to connect to (cluster status: '%s')", cluster_id,
-		    info.cluster_status);
+		    "Redshift cluster '%s' has no endpoint to connect to (cluster status: '%s')", cluster_id, cluster_status);
 	}
 	return info;
 }

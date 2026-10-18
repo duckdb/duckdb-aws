@@ -1,3 +1,4 @@
+#include "aws_http_client.hpp"
 #include "rds/rds_utils.hpp"
 
 #include "aws_client.hpp"
@@ -77,6 +78,7 @@ unique_ptr<Catalog> RdsAttach(optional_ptr<StorageExtensionInfo> storage_info, C
 	if (!Settings::Get<EnableExternalAccessSetting>(context)) {
 		throw PermissionException("Attaching RDS databases is disabled through configuration");
 	}
+	AwsInstanceBinding aws_binding(DatabaseInstance::GetDatabase(context));
 
 	auto instance_id = info.path;
 	if (instance_id.empty()) {
@@ -125,11 +127,7 @@ unique_ptr<Catalog> RdsAttach(optional_ptr<StorageExtensionInfo> storage_info, C
 
 	auto port = instance.endpoint_port;
 	if (!attach_options.port.empty()) {
-		try {
-			port = std::stoi(attach_options.port);
-		} catch (const std::exception &) {
-			throw InvalidInputException("'PORT' must be an integer, got '%s'", attach_options.port);
-		}
+		port = Rds::ParsePort(attach_options.port);
 	}
 
 	// Unlike Redshift, RDS does not mint the user along with the password: the IAM token is issued
@@ -156,6 +154,12 @@ unique_ptr<Catalog> RdsAttach(optional_ptr<StorageExtensionInfo> storage_info, C
 	// The token is signed for a specific host/port/user triple, so it has to be minted from the
 	// endpoint we are about to connect to rather than the one the instance reported.
 	auto token = Rds::GenerateAuthToken(provider, host, port, region, user);
+	if (token.find("X-Amz-Algorithm") == std::string::npos) {
+		throw InvalidConfigurationException(
+		    "Could not generate an RDS IAM authentication token for user '%s' on '%s'. The AWS credentials in the "
+		    "secret could not be resolved",
+		    user, host);
+	}
 
 	// RDS rejects an IAM login over an unencrypted connection.
 	string connection_string = "host=" + EscapeConnectionValue(host) +
@@ -165,6 +169,10 @@ unique_ptr<Catalog> RdsAttach(optional_ptr<StorageExtensionInfo> storage_info, C
 
 	// Hand the postgres extension a plain connection string as the attach path.
 	info.path = connection_string;
+
+	// The postgres catalog would otherwise identify this connection by the connection string above,
+	// which holds the IAM token. Label it with the instance it was attached as instead.
+	options.options["connect_display"] = Value(instance_id);
 
 	// Postgres must be given a secret name it can resolve: with none it falls back to the implicit
 	// '__default_postgres' secret, which it probes in the 'local_file' storage - and that throws

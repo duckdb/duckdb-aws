@@ -48,6 +48,9 @@ struct Rds {
 	//! See https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/UsingWithRDS.IAMDBAuth.html
 	static string GenerateAuthToken(const std::shared_ptr<Aws::Auth::AWSCredentialsProvider> &provider,
 	                                const string &host, int32_t port, const string &region, const string &db_user);
+
+	//! Parses DB port from string into integer
+	static int32_t ParsePort(const std::string &port_str);
 };
 
 } // namespace duckdb

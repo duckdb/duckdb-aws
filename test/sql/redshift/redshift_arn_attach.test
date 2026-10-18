@@ -15,6 +15,10 @@ require-env AWS_ACCESS_KEY_ID
 
 require-env AWS_SECRET_ACCESS_KEY
 
+require-env AWS_REDSHIFT_ARN
+
+require-env AWS_REGION
+
 set ignore_error_messages
 
 statement ok
@@ -23,13 +27,13 @@ LOAD aws
 statement ok
 CREATE SECRET (
     TYPE s3,
-    KEY_ID '{AWS_ACCESS_KEY_ID}',
-    SECRET '{AWS_SECRET_ACCESS_KEY}',
-    REGION 'eu-central-1'
+    PROVIDER credential_chain,
+    CHAIN 'env',
+    REGION '{AWS_REGION}'
 );
 
 statement ok
-ATTACH 'arn:aws:redshift:eu-central-1:840140254803:namespace:e542f89f-b604-4110-a337-f7ba8c7ce156' AS redshift_db;
+attach '{AWS_REDSHIFT_ARN}' as redshift_db;
 
 statement ok
 select * from (show all tables) where database = 'redshift_db';

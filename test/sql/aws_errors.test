@@ -8,10 +8,21 @@ require no_extension_autoloading "EXPECTED: Test relies on explicit INSTALL and 
 statement error
 create secret s1 (type s3, provider 'credential_chain');
 ----
-Invalid Input Error: Secret provider credential_chain for type s3 does not exist, but it exists in the aws extension.
+Invalid Input Error: Secret provider "credential_chain" for type "s3" does not exist, but it exists in the aws extension.
 
 # Require statement will ensure this test is run with this extension loaded
 require aws
+
+# Shim functions which represent legacy functionality
+statement error
+CALL load_aws_credentials();
+----
+<REGEX>:.*Invalid Input Error: load_aws_credentials is no longer supported.*CREATE SECRET.*credential_chain.*
+
+statement error
+CALL load_aws_credentials('profile', set_region = false, redact_secret = true);
+----
+<REGEX>:.*Invalid Input Error: load_aws_credentials is no longer supported.*CREATE SECRET.*credential_chain.*
 
 # aws supplies the credential_chain provider, but the s3 secret TYPE itself is
 # registered by httpfs - so without httpfs the secret still cannot be stored.
