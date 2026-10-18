@@ -224,7 +224,12 @@ namespace {
 struct ResolvedStackRequest {
 	string stack_name;
 	bool template_is_url = false;
+	//! The parameters sent with the request: exactly what the caller supplied.
 	Aws::Vector<Aws::CloudFormation::Model::Parameter> parameters;
+	//! Template defaults for the declared parameters the caller did not supply (NoEcho ones excluded), so
+	//! the result row can report the effective parameter set the stack runs with. Not sent: CloudFormation
+	//! applies them itself.
+	vector<pair<string, string>> defaulted_parameters;
 	Aws::Vector<Aws::CloudFormation::Model::Tag> tags;
 	Aws::Vector<Aws::CloudFormation::Model::Capability> capabilities;
 	string description;
@@ -265,6 +270,8 @@ ResolvedStackRequest ResolveStackRequest(Aws::CloudFormation::CloudFormationClie
 		declared_params.insert(key);
 		if (!pd.DefaultValueHasBeenSet()) {
 			unsatisfied_params.insert(key);
+		} else if (!data.template_parameters.contains(key) && !pd.GetNoEcho()) {
+			resolved.defaulted_parameters.emplace_back(key, FromAws(pd.GetDefaultValue()));
 		}
 	}
 
@@ -422,11 +429,16 @@ static void CloudFormationCreateStackFun(ClientContext &context, TableFunctionIn
 		handle = Value::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR, std::move(keys), std::move(values));
 	}
 
+	// Effective parameters: the caller's values, then the template defaults filling in the rest.
 	vector<Value> param_keys;
 	vector<Value> param_values;
 	for (const auto &p : resolved.parameters) {
 		param_keys.emplace_back(FromAws(p.GetParameterKey()));
 		param_values.emplace_back(FromAws(p.GetParameterValue()));
+	}
+	for (const auto &p : resolved.defaulted_parameters) {
+		param_keys.emplace_back(p.first);
+		param_values.emplace_back(p.second);
 	}
 	vector<Value> tag_keys;
 	vector<Value> tag_values;

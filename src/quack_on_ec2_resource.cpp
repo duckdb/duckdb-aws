@@ -1,6 +1,9 @@
 #include "quack_on_ec2_resource.hpp"
 
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/operator/cast_operators.hpp"
+#include "duckdb/common/types/interval.hpp"
+#include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/database.hpp"
@@ -18,6 +21,17 @@ namespace duckdb {
 // discover quack-on-ec2 stacks by filtering DescribeStacks output on it.
 static constexpr const char *QUACK_ON_EC2_TYPE = "aws:cloudformation:quack-on-ec2";
 static constexpr const char *RESOURCE_TYPE_TAG = "duckdb-external-resource-type";
+
+// Lifetime. The template's MaxDurationHours parameter (whole hours, 0 = unbounded) arms the box's self-shutdown;
+// the optional 'max_duration' create param sets it. Its effective value is stamped on the stack as an absolute
+// UTC deadline; when left to the template, the default is read through a dry run of cloudformation_create_stack.
+// The box terminates itself at that point but its stack lingers, so listing reaps stacks past the deadline (see
+// QuackListFun). Start is not tagged: CloudFormation records it as the stack's CreationTime.
+static constexpr const char *EXPIRES_AT_TAG = "duckdb-expires-at";
+static constexpr const char *MAX_DURATION_TEMPLATE_PARAM = "MaxDurationHours";
+// Covers the gap between stack creation and the boot that arms the shutdown timer, so a stack is only reaped
+// once its box has certainly gone.
+static constexpr const char *EXPIRY_MARGIN = "INTERVAL 10 MINUTE";
 
 namespace {
 
@@ -39,10 +53,10 @@ static unique_ptr<GlobalTableFunctionState> QuackAdapterInit(ClientContext &, Ta
 }
 
 // create(params MAP) -> TABLE(handle MAP). cloudformation_create_stack takes only the template positionally;
-// the recipe params supply the (required) template and region and the template_parameters. `template` and
-// `region` are pulled out here in C++ and everything else becomes template_parameters — built as a literal MAP so it is
-// NOT assembled inline in the table-function argument (where `e.key`-style identifiers get silently coerced
-// to strings by the identifier-conversion rule, which would defeat the filter and leak `region`).
+// the recipe params supply the (required) template and region and the template_parameters. `template`, `region`
+// and `max_duration` are pulled out here in C++ and everything else becomes template_parameters — built as a literal
+// MAP so it is NOT assembled inline in the table-function argument (where `e.key`-style identifiers get silently
+// coerced to strings by the identifier-conversion rule, which would defeat the filter and leak `region`).
 static unique_ptr<FunctionData> QuackCreateBind(ClientContext &, TableFunctionBindInput &input,
                                                 vector<LogicalType> &return_types, vector<Identifier> &names) {
 	auto result = make_uniq<QuackAdapterBindData>();
@@ -59,9 +73,11 @@ static void QuackCreateFun(ClientContext &context, TableFunctionInput &data_p, D
 	}
 	auto &bind = data_p.bind_data->Cast<QuackAdapterBindData>();
 
-	// Split the params MAP in C++: required `template` and `region`, rest -> template_parameters.
+	// Split the params MAP in C++: required `template` and `region`, optional `max_duration`, rest ->
+	// template_parameters.
 	string template_url;
 	string region;
+	string max_duration;
 	vector<Value> tp_keys, tp_values;
 	if (!bind.input.IsNull()) {
 		for (auto &entry : MapValue::GetChildren(bind.input)) {
@@ -74,6 +90,10 @@ static void QuackCreateFun(ClientContext &context, TableFunctionInput &data_p, D
 			} else if (key == "region") {
 				if (!kv[1].IsNull()) {
 					region = StringValue::Get(kv[1]);
+				}
+			} else if (key == "max_duration") {
+				if (!kv[1].IsNull()) {
+					max_duration = StringValue::Get(kv[1]);
 				}
 			} else {
 				tp_keys.push_back(kv[0]);
@@ -88,23 +108,60 @@ static void QuackCreateFun(ClientContext &context, TableFunctionInput &data_p, D
 	if (region.empty()) {
 		throw InvalidInputException("quack-on-ec2 create: the 'region' param is required");
 	}
+	// Whole hours, as the template parameter takes them. -1 = not given, left to the template's default.
+	int64_t hours = -1;
+	if (!max_duration.empty()) {
+		if (!TryCast::Operation<string_t, int64_t>(string_t(max_duration), hours, false) || hours < 0) {
+			throw InvalidInputException("quack-on-ec2 create: 'max_duration' must be a whole, non-negative number of "
+			                            "hours (0 = unbounded), got '%s'",
+			                            max_duration);
+		}
+		tp_keys.emplace_back(string(MAX_DURATION_TEMPLATE_PARAM));
+		tp_values.emplace_back(max_duration);
+	}
 
 	// Pass literals only — no inline map-building in the table-function argument (see comment above).
-	auto sql = "SELECT handle FROM cloudformation_create_stack(" + Value(template_url).ToSQLString() +
-	           ", region := " + Value(region).ToSQLString();
+	string args = Value(template_url).ToSQLString() + ", region := " + Value(region).ToSQLString();
 	if (!tp_keys.empty()) {
 		auto template_params = Value::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR, tp_keys, tp_values);
-		sql += ", template_parameters := " + template_params.ToSQLString();
+		args += ", template_parameters := " + template_params.ToSQLString();
 	}
-	// Provenance tag so the list callback can discover these stacks by filtering on it (added to, not
-	// replacing, cloudformation_create_stack's own auto-tags like created-by).
-	vector<Value> tag_keys {Value(string(RESOURCE_TYPE_TAG))};
-	vector<Value> tag_values {Value(string(QUACK_ON_EC2_TYPE))};
-	auto resource_tag = Value::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR, tag_keys, tag_values);
-	sql += ", tags := " + resource_tag.ToSQLString();
-	sql += ")";
 
 	Connection con(DatabaseInstance::GetDatabase(context));
+
+	// Left to the template: a dry run reports the effective parameters, defaults included, at the cost of one
+	// read-only GetTemplateSummary call. It has to be known before create, as tags are set then. Skipped when
+	// the caller gave the duration, since nothing is left to find out.
+	if (hours < 0) {
+		auto dry = con.Query("SELECT parameters[" + Value(string(MAX_DURATION_TEMPLATE_PARAM)).ToSQLString() +
+		                     "] FROM cloudformation_create_stack(" + args + ", dry_run := true)");
+		if (dry->HasError()) {
+			throw IOException("quack-on-ec2 create failed: %s", dry->GetError());
+		}
+		auto effective = dry->Collection().GetValue(0, 0);
+		if (effective.IsNull() ||
+		    !TryCast::Operation<string_t, int64_t>(string_t(StringValue::Get(effective)), hours, false)) {
+			hours = 0; // the template declares no (usable) max duration: unbounded
+		}
+	}
+	string expires_at;
+	if (hours > 0) {
+		timestamp_t deadline(Timestamp::GetCurrentTimestamp().value + hours * Interval::MICROS_PER_HOUR);
+		expires_at = Timestamp::ToString(deadline) + "+00";
+	}
+
+	// Provenance tag so the list callback can discover these stacks by filtering on it (added to, not
+	// replacing, cloudformation_create_stack's own auto-tags like created-by), plus the deadline when bounded.
+	vector<Value> tag_keys {Value(string(RESOURCE_TYPE_TAG))};
+	vector<Value> tag_values {Value(string(QUACK_ON_EC2_TYPE))};
+	if (!expires_at.empty()) {
+		tag_keys.emplace_back(string(EXPIRES_AT_TAG));
+		tag_values.emplace_back(expires_at);
+	}
+	auto resource_tag = Value::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR, tag_keys, tag_values);
+	auto sql =
+	    "SELECT handle FROM cloudformation_create_stack(" + args + ", tags := " + resource_tag.ToSQLString() + ")";
+
 	auto res = con.Query(sql);
 	if (res->HasError()) {
 		throw IOException("quack-on-ec2 create failed: %s", res->GetError());
@@ -181,8 +238,10 @@ static void QuackDestroyFun(ClientContext &context, TableFunctionInput &data_p, 
 // quack-on-ec2 stacks (identified by the provenance tag stamped at create) and shapes each into a row whose
 // `handle` is byte-identical to what create returns, so it round-trips through status/destroy verbatim. The
 // connect blob (uri/token) is deliberately NOT surfaced here — list is discovery; resolve/status produce that.
+// Listing also reaps stacks past their duckdb-expires-at tag (plus EXPIRY_MARGIN) and reports them as 'deleting'.
 struct QuackListState : public GlobalTableFunctionState {
 	unique_ptr<QueryResult> result;
+	vector<Value> states; // per-row state, overriding the query's for stacks reaped during this listing
 	idx_t cursor = 0;
 	bool ran = false;
 };
@@ -233,7 +292,16 @@ static void QuackListFun(ClientContext &context, TableFunctionInput &data_p, Dat
 		           "            WHEN status LIKE '%ROLLBACK%' OR status LIKE '%FAILED%' THEN 'failed' "
 		           "            ELSE 'pending' END AS state, "
 		           "       MAP {'stack_status': status, 'creation_time': creation_time, "
-		           "            'last_updated_time': last_updated_time, 'description': description} AS metadata "
+		           "            'last_updated_time': last_updated_time, 'description': description, "
+		           "            'expires_at': tags[" +
+		           Value(string(EXPIRES_AT_TAG)).ToSQLString() +
+		           "]} AS metadata, "
+		           // Only a stack that finished creating can have a box that armed its own shutdown; anything
+		           // else is still in flight, failed, or already going away.
+		           "       status = 'CREATE_COMPLETE' AND "
+		           "       TRY_CAST(tags[" +
+		           Value(string(EXPIRES_AT_TAG)).ToSQLString() + "] AS TIMESTAMPTZ) + " + string(EXPIRY_MARGIN) +
+		           " < now() AS expired "
 		           "FROM " +
 		           source + " WHERE error IS NULL AND tags[" + Value(string(RESOURCE_TYPE_TAG)).ToSQLString() +
 		           "] = " + Value(string(QUACK_ON_EC2_TYPE)).ToSQLString();
@@ -242,6 +310,20 @@ static void QuackListFun(ClientContext &context, TableFunctionInput &data_p, Dat
 		state.result = con.Query(sql);
 		if (state.result->HasError()) {
 			throw IOException("quack-on-ec2 list failed: %s", state.result->GetError());
+		}
+		auto rows = state.result->Collection().GetRows();
+		for (idx_t row = 0; row < state.result->RowCount(); row++) {
+			auto row_state = rows.GetValue(2, row);
+			auto expired = rows.GetValue(4, row);
+			if (!expired.IsNull() && BooleanValue::Get(expired)) {
+				// Best effort: a failed delete keeps the stack listed as-is, and the next listing retries.
+				auto del =
+				    con.Query("SELECT * FROM cloudformation_delete_stack(" + rows.GetValue(0, row).ToSQLString() + ")");
+				if (!del->HasError()) {
+					row_state = Value("deleting");
+				}
+			}
+			state.states.push_back(row_state);
 		}
 		state.ran = true;
 	}
@@ -254,7 +336,7 @@ static void QuackListFun(ClientContext &context, TableFunctionInput &data_p, Dat
 		idx_t row = state.cursor + i;
 		output.data[0].Append(rows.GetValue(0, row));
 		output.data[1].Append(rows.GetValue(1, row));
-		output.data[2].Append(rows.GetValue(2, row));
+		output.data[2].Append(state.states[row]);
 		output.data[3].Append(rows.GetValue(3, row));
 	}
 	output.CheckCardinality(to_emit);
