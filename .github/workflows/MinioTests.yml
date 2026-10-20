@@ -58,6 +58,10 @@ jobs:
         shell: bash
         run: make
 
+      - name: Run isolated AWS endpoint tests
+        shell: bash
+        run: python3 ./scripts/run_aws_endpoint_tests.py
+
       - name: Start S3/HTTP test server
         shell: bash
         run: |
