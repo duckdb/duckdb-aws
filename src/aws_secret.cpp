@@ -126,6 +126,15 @@ Aws::Config::Profile GetAwsProfile(const std::string &profile_name, const bool r
 	return selected_profile; // empty profile
 }
 
+//! Whether the container runtime (ECS, EKS Pod Identity) advertises a container credentials endpoint
+static bool ContainerCredentialsEndpointSet() {
+	using Aws::Auth::GeneralHTTPCredentialsProvider;
+	auto relative_uri =
+	    FileSystem::GetEnvVariable(GeneralHTTPCredentialsProvider::AWS_CONTAINER_CREDENTIALS_RELATIVE_URI);
+	auto full_uri = FileSystem::GetEnvVariable(GeneralHTTPCredentialsProvider::AWS_CONTAINER_CREDENTIALS_FULL_URI);
+	return !relative_uri.empty() || !full_uri.empty();
+}
+
 //! Generate a custom credential provider chain for authentication
 class DuckDBCustomAWSCredentialsProviderChain : public Aws::Auth::AWSCredentialsProviderChain {
 public:
@@ -170,6 +179,13 @@ public:
 				// advertised by the AWS_CONTAINER_* environment variables the container runtime sets,
 				// constructed the same way the SDK's DefaultAWSCredentialsProviderChain does it.
 				// https://docs.aws.amazon.com/sdkref/latest/guide/feature-container-credentials.html
+				// Outside a container runtime, 'container' contributes nothing to a longer chain, the way
+				// 'env', 'sso' and 'instance' do when their source is absent and the way the SDK's default
+				// chain omits it, so one chain can serve ECS and non-container processes alike (#230).
+				// A chain of only 'container' still fails eagerly below (#175).
+				if (!ContainerCredentialsEndpointSet() && chain_list.size() > 1) {
+					continue;
+				}
 				using Aws::Auth::GeneralHTTPCredentialsProvider;
 				auto container_provider = std::make_shared<GeneralHTTPCredentialsProvider>(
 				    FileSystem::GetEnvVariable(GeneralHTTPCredentialsProvider::AWS_CONTAINER_CREDENTIALS_RELATIVE_URI),
@@ -386,6 +402,12 @@ unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &context
 			    FileSystem::GetEnvVariable(GeneralHTTPCredentialsProvider::AWS_CONTAINER_AUTHORIZATION_TOKEN).empty()
 			        ? "unset"
 			        : "set");
+			if (!ContainerCredentialsEndpointSet() && StringUtil::Split(chain, ';').size() > 1) {
+				DUCKDB_LOG_DEBUG(context,
+				                 "aws.CredentialChain: no container credentials endpoint set, skipping 'container' in "
+				                 "chain '%s'",
+				                 chain);
+			}
 			break;
 		}
 	}
