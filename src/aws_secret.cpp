@@ -175,14 +175,9 @@ public:
 				 * Service. */
 				AddProvider(std::make_shared<Aws::Auth::InstanceProfileCredentialsProvider>());
 			} else if (item == "container") {
-				// Container credentials (ECS task role, EKS Pod Identity): resolved from the endpoint
-				// advertised by the AWS_CONTAINER_* environment variables the container runtime sets,
-				// constructed the same way the SDK's DefaultAWSCredentialsProviderChain does it.
+				// Container credentials (ECS task role, EKS Pod Identity), built like the SDK's default chain.
 				// https://docs.aws.amazon.com/sdkref/latest/guide/feature-container-credentials.html
-				// Outside a container runtime, 'container' contributes nothing to a longer chain, the way
-				// 'env', 'sso' and 'instance' do when their source is absent and the way the SDK's default
-				// chain omits it, so one chain can serve ECS and non-container processes alike (#230).
-				// A chain of only 'container' still fails eagerly below (#175).
+				// Skipped in a longer chain when no endpoint is set (#230); on its own it fails below (#175).
 				if (!ContainerCredentialsEndpointSet() && chain_list.size() > 1) {
 					continue;
 				}
