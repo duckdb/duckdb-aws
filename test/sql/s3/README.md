@@ -1,7 +1,8 @@
 # Private S3 bucket tests
 
 These scripts provision a general-purpose S3 bucket for native DuckDB tests and
-manual browser examples.
+manual browser examples. They are separate from the [S3 Tables fixture](../s3tables/README.md),
+which uses a table bucket and an Iceberg REST catalog.
 
 ## Setup
 
@@ -141,3 +142,6 @@ Local script tests use fake AWS commands and do not contact AWS:
 ```bash
 python3 -m unittest discover -s test/scripts -p 'test_s3_fixtures.py' -v
 ```
+
+The suite also executes the S3 Tables row check against in-memory data when it finds
+`DUCKDB_BIN`, `duckdb` on `PATH`, or `build/release/duckdb`. Otherwise that check skips.

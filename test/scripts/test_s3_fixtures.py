@@ -11,7 +11,11 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = [
     "scripts/s3/create_bucket.sh",
     "scripts/s3/destroy_bucket.sh",
+    "scripts/s3tables/create_s3tables_test_fixture.sh",
+    "scripts/s3tables/destroy_s3tables_test_fixture.sh",
 ]
+LOCAL_DUCKDB = shutil.which(os.environ.get("DUCKDB_BIN", "duckdb")) or shutil.which(str(ROOT / "build/release/duckdb"))
+
 AWS_STUB = r'''#!/usr/bin/env python3
 import json
 import os
@@ -77,6 +81,43 @@ if "s3api" in args:
         if cmd == "put-bucket-cors":
             Path(os.environ["CORS_RESULT"]).write_text(option("--cors-configuration"))
         emit({})
+if "s3tables" in args:
+    cmd = args[args.index("s3tables") + 1]
+    bucket = "arn:aws:s3tables:eu-central-1:123456789012:bucket/test-bucket"
+    if cmd == "help":
+        sys.exit(0)
+    if cmd == "get-table-bucket" and os.environ.get("LOOKUP_ERROR"):
+        fail(os.environ["LOOKUP_ERROR"])
+    resource = {"get-table-bucket": "table-bucket", "get-namespace": "namespace", "get-table": "table"}.get(cmd)
+    if resource and os.environ.get("NEW_FIXTURE") and not (state / resource).exists():
+        fail("NotFoundException")
+    if cmd.startswith("create-"):
+        (state / cmd.removeprefix("create-")).touch()
+        emit({"tableARN": bucket + "/table/example"} if cmd == "create-table" else {})
+    if cmd == "get-table-bucket":
+        emit({"arn": bucket, "name": "test-bucket", "type": "customer"})
+    if cmd == "get-namespace":
+        emit({"namespace": ["123test"]})
+    if cmd == "get-table":
+        if os.environ.get("TABLE_ABSENT"):
+            fail("NotFoundException")
+        emit({"tableARN": bucket + "/table/example", "versionToken": "one", "name": "daily_sales",
+              "namespace": ["123test"], "type": "customer", "format": "ICEBERG"})
+    if cmd == "list-tags-for-resource":
+        table = "/table/" in option("--resource-arn")
+        owner = os.environ.get("STUB_MANAGED_BY", "duckdb-aws-s3tables-test")
+        if table and os.environ.get("FOREIGN_TABLE"):
+            owner = "someone-else"
+        emit({"tags": {"ManagedBy": owner,
+                       "FixtureId": "s3tables-sql-fixture-v1", "Prefix": "tester", "Region": "eu-central-1",
+                       "ResourceName": "daily_sales" if table else "test-bucket",
+                       "TableBucket": "test-bucket", "Namespace": "123test"}})
+    if cmd == "list-tables":
+        emit({"tables": [{"namespace": ["123test"], "name": "keep_me"}]} if os.environ.get("UNRELATED") else {"tables": []})
+    if cmd == "list-namespaces":
+        emit({"namespaces": []})
+    if cmd.startswith("delete-"):
+        emit({})
 fail("Unexpected AWS command: " + str(args))
 '''
 
@@ -92,7 +133,7 @@ class FixtureScriptsTest(unittest.TestCase):
         self.env_file = self.directory / "fixture.env"
         self.env = {
             key: value for key, value in os.environ.items()
-            if not key.startswith(("AWS_", "S3_"))
+            if not key.startswith(("AWS_", "S3_", "S3TABLES_"))
         }
         self.env.update({
             "PATH": f"{self.bin}:{os.environ['PATH']}",
@@ -105,8 +146,14 @@ class FixtureScriptsTest(unittest.TestCase):
             "PREFIX": "tester",
             "S3_BUCKET_NAME": "test-bucket",
             "S3_ENV_FILE": str(self.env_file),
+            "S3TABLES_TABLE_BUCKET_NAME": "test-bucket",
+            "S3TABLES_NAMESPACE": "123test",
+            "S3TABLES_ENV_FILE": str(self.env_file),
+            "DUCKDB_BIN": str(self.bin / "duckdb"),
+            "SQL_CAPTURE": str(self.directory / "sql.txt"),
         })
         self.stub("aws", AWS_STUB)
+        self.stub("duckdb", '#!/usr/bin/env python3\nimport os,sys\nfrom pathlib import Path\nPath(os.environ["SQL_CAPTURE"]).write_text(sys.argv[-1])\n')
         self.stub("curl", '#!/usr/bin/env bash\necho "Unexpected download" >&2\nexit 99\n')
 
     def stub(self, name, text):
@@ -230,6 +277,103 @@ class FixtureScriptsTest(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "")
+
+    def test_tables_refuse_foreign_tags(self):
+        for script in SCRIPTS[2:]:
+            for case in [{"STUB_MANAGED_BY": "someone-else"}, {"FOREIGN_TABLE": "1"}]:
+                with self.subTest(script=script, case=case):
+                    result = self.run_script(script, "--force", **case)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(self.mutations(), [])
+
+    def test_tables_bucket_lookup_errors_stop_before_mutation(self):
+        for script in SCRIPTS[2:]:
+            for error in ["AccessDeniedException", "Network timed out"]:
+                with self.subTest(script=script, error=error):
+                    result = self.run_script(script, "--force", LOOKUP_ERROR=error)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(error, result.stderr)
+                    self.assertEqual(self.mutations(), [])
+                    self.assertFalse(self.env_file.exists())
+
+    def test_tables_first_setup_creates_dependencies_and_sourceable_config(self):
+        self.env_file = self.directory / "config with 'quotes'.env"
+        result = self.run_script(SCRIPTS[2], "--force", NEW_FIXTURE="1", S3TABLES_ENV_FILE=str(self.env_file))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        creation = [arg for args in self.calls() for arg in args if arg.startswith("create-")]
+        self.assertEqual(creation, ["create-table-bucket", "create-namespace", "create-table"])
+        self.assertEqual(self.env_file.stat().st_mode & 0o777, 0o600)
+        for shell in [name for name in ["bash", "zsh"] if shutil.which(name)]:
+            with self.subTest(shell=shell):
+                source = subprocess.run(
+                    [shell, "-c", 'source "$1" && [[ "$S3TABLES_TEST_AVAILABLE" == 1 && "$AWS_S3TABLES_NAMESPACE" == 123test && "$S3TABLES_ENV_FILE" == "$1" ]]', shell, str(self.env_file)],
+                    env=self.env, capture_output=True, text=True, timeout=20,
+                )
+                self.assertEqual(source.returncode, 0, source.stderr)
+
+    @unittest.skipUnless(LOCAL_DUCKDB, "Local DuckDB executable required for SQL validation")
+    def test_tables_row_check_rejects_bad_data(self):
+        result = self.run_script(SCRIPTS[2], "--force")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        sql = (self.directory / "sql.txt").read_text()
+        row_check = next(statement for statement in sql.split(";") if "Unexpected rows in the managed S3 Tables fixture" in statement)
+        expected = [
+            "(DATE '2020-07-21', 'SHOES', 21)",
+            "(DATE '2020-07-22', 'JACKET', 3)",
+            "(DATE '2020-07-24', 'SOCKS', 87)",
+        ]
+        cases = [
+            ("exact", expected, True),
+            ("reordered", expected[::-1], True),
+            ("empty", [], False),
+            ("missing", expected[:2], False),
+            ("duplicate replacing row", [expected[0], expected[0], expected[2]], False),
+            ("extra duplicate", expected + [expected[0]], False),
+            ("wrong value", [expected[0].replace("SHOES", "BOOTS"), *expected[1:]], False),
+            ("null", [expected[0].replace("'SHOES'", "NULL"), *expected[1:]], False),
+        ]
+        for name, rows, succeeds in cases:
+            with self.subTest(rows=name):
+                setup = '''
+                    SET enable_external_access=false;
+                    ATTACH ':memory:' AS s3tables_fixture;
+                    CREATE SCHEMA s3tables_fixture."123test";
+                    CREATE TABLE s3tables_fixture."123test".daily_sales (
+                        sale_date DATE, product VARCHAR, quantity INTEGER
+                    );
+                '''
+                if rows:
+                    setup += 'INSERT INTO s3tables_fixture."123test".daily_sales VALUES ' + ", ".join(rows) + ";"
+                checked = subprocess.run(
+                    [LOCAL_DUCKDB, "-batch", "-bail", "-no-init", "-c", setup + row_check + ";"],
+                    capture_output=True, text=True, timeout=20,
+                )
+                self.assertEqual(checked.returncode == 0, succeeds, checked.stderr)
+                if not succeeds:
+                    self.assertIn("Unexpected rows in the managed S3 Tables fixture", checked.stderr)
+
+    def test_tables_partial_cleanup_disables_environment(self):
+        for absent in ["", "1"]:
+            with self.subTest(already_absent=absent):
+                result = self.run_script(SCRIPTS[2], "--force")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                sql = (self.directory / "sql.txt").read_text()
+                self.assertIn('s3tables_fixture."123test"."daily_sales"', sql)
+                self.assertIn("CHAIN 'env'", sql)
+                self.assertNotIn("fixture-secret", self.env_file.read_text())
+                result = self.run_script(SCRIPTS[3], "--force", UNRELATED="1", TABLE_ABSENT=absent)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(self.env_file.exists())
+                self.assertFalse(any("delete-namespace" in args or "delete-table-bucket" in args for args in self.calls()))
+
+    def test_tables_cleanup_orders_dependencies(self):
+        result = self.run_script(SCRIPTS[2], "--force")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.run_script(SCRIPTS[3], "--force")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        deletion = [arg for args in self.calls() for arg in args if arg.startswith("delete-")]
+        self.assertEqual(deletion, ["delete-table", "delete-namespace", "delete-table-bucket"])
+        self.assertFalse(self.env_file.exists())
 
 
 if __name__ == "__main__":
