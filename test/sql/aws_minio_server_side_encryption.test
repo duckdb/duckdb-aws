@@ -1,0 +1,104 @@
+# name: test/sql/aws_minio_server_side_encryption.test
+# description: credential_chain writes across formats and multiple files, and SSE_C_KEY reaches the S3 request, against the minio test server
+# group: [sql]
+
+require aws
+
+require httpfs
+
+require parquet
+
+require json
+
+require-env DUCKDB_S3_ENDPOINT
+
+require-env DUCKDB_S3_USE_SSL
+
+require-env S3_TEST_SERVER_AVAILABLE 1
+
+require-env AWS_CONFIG_FILE
+
+require-env AWS_SHARED_CREDENTIALS_FILE
+
+statement ok
+set secret_directory='{TEST_DIR}/aws_minio_server_side_encryption'
+
+# A refreshable credential_chain secret for the test bucket (default minio credentials)
+statement ok
+CREATE SECRET cc (
+    TYPE S3,
+    PROVIDER credential_chain,
+    SCOPE 's3://test-bucket/aws_minio_sse/',
+    ENDPOINT '{DUCKDB_S3_ENDPOINT}',
+    USE_SSL '{DUCKDB_S3_USE_SSL}'
+);
+
+# CSV round-trip
+statement ok
+COPY (SELECT i AS id, i * 2 AS v FROM range(5) t(i)) TO 's3://test-bucket/aws_minio_sse/plain.csv';
+
+query I
+SELECT sum(v) FROM 's3://test-bucket/aws_minio_sse/plain.csv';
+----
+20
+
+# Parquet round-trip
+statement ok
+COPY (SELECT i AS id, i * 2 AS v FROM range(5) t(i)) TO 's3://test-bucket/aws_minio_sse/plain.parquet' (FORMAT parquet);
+
+query I
+SELECT sum(v) FROM 's3://test-bucket/aws_minio_sse/plain.parquet';
+----
+20
+
+# JSON round-trip
+statement ok
+COPY (SELECT i AS id FROM range(5) t(i)) TO 's3://test-bucket/aws_minio_sse/plain.json' (FORMAT json);
+
+query I
+SELECT count(*) FROM read_json_auto('s3://test-bucket/aws_minio_sse/plain.json');
+----
+5
+
+# Multiple files via PARTITION_BY
+statement ok
+COPY (SELECT i AS id, i % 2 AS p FROM range(6) t(i)) TO 's3://test-bucket/aws_minio_sse/parts' (FORMAT parquet, PARTITION_BY (p), OVERWRITE_OR_IGNORE);
+
+query I
+SELECT count(*) FROM read_parquet('s3://test-bucket/aws_minio_sse/parts/*/*.parquet');
+----
+6
+
+query I
+SELECT count(DISTINCT p) FROM read_parquet('s3://test-bucket/aws_minio_sse/parts/*/*.parquet');
+----
+2
+
+# Multiple files via PER_THREAD_OUTPUT
+statement ok
+SET threads = 4;
+
+statement ok
+COPY (SELECT i AS id FROM range(1000) t(i)) TO 's3://test-bucket/aws_minio_sse/threaded' (FORMAT parquet, PER_THREAD_OUTPUT true, OVERWRITE_OR_IGNORE);
+
+query I
+SELECT count(*) FROM read_parquet('s3://test-bucket/aws_minio_sse/threaded/*.parquet');
+----
+1000
+
+# SSE_C_KEY on a credential_chain secret reaches the request path: the minio test server runs
+# over HTTP, so the write is refused by the HTTPS requirement, which proves the key was applied
+statement ok
+CREATE SECRET cc_ssec (
+    TYPE S3,
+    PROVIDER credential_chain,
+    SCOPE 's3://test-bucket/aws_minio_sse_c/',
+    ENDPOINT '{DUCKDB_S3_ENDPOINT}',
+    USE_SSL '{DUCKDB_S3_USE_SSL}',
+    SSE_C_KEY 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8='
+);
+
+statement error
+COPY (SELECT 1 AS x) TO 's3://test-bucket/aws_minio_sse_c/out.parquet' (FORMAT parquet);
+----
+SSE_C_KEY requires an HTTPS endpoint
