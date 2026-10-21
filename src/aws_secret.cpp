@@ -155,6 +155,22 @@ Aws::Config::Profile GetAwsProfile(const std::string &profile_name, const bool r
 	return selected_profile; // empty profile
 }
 
+#if defined(__EMSCRIPTEN__)
+//! Browsers cannot access the metadata endpoints used by AWS compute services. Under WebAssembly,
+//! the SDK's fallback request to the EC2 Instance Metadata Service blocks the DuckDB worker because
+//! the browser request is synchronous and does not use the SDK's timeout. Only try credential
+//! sources that do not require a metadata endpoint.
+class DuckDBDefaultAWSCredentialsProviderChain : public Aws::Auth::AWSCredentialsProviderChain {
+public:
+	DuckDBDefaultAWSCredentialsProviderChain() {
+		AddProvider(std::make_shared<Aws::Auth::EnvironmentAWSCredentialsProvider>());
+		AddProvider(std::make_shared<Aws::Auth::ProfileConfigFileAWSCredentialsProvider>());
+	}
+};
+#else
+using DuckDBDefaultAWSCredentialsProviderChain = Aws::Auth::DefaultAWSCredentialsProviderChain;
+#endif
+
 //! Generate a custom credential provider chain for authentication
 class DuckDBCustomAWSCredentialsProviderChain : public Aws::Auth::AWSCredentialsProviderChain {
 public:
@@ -191,9 +207,16 @@ public:
 			} else if (item == "env") {
 				AddProvider(std::make_shared<Aws::Auth::EnvironmentAWSCredentialsProvider>());
 			} else if (item == "instance") {
+#if defined(__EMSCRIPTEN__)
+				// EC2 metadata is unavailable in browsers and the request would block the DuckDB worker.
+				throw InvalidConfigurationException(
+				    "Chain value 'instance' is not available under WebAssembly: the EC2 "
+				    "instance metadata service cannot be reached from a browser");
+#else
 				/* Credentials provider implementation that loads credentials from the Amazon EC2 Instance Metadata
 				 * Service. */
 				AddProvider(std::make_shared<Aws::Auth::InstanceProfileCredentialsProvider>());
+#endif
 			} else if (item == "container") {
 				// Container credentials (ECS task role, EKS Pod Identity): resolved from the endpoint
 				// advertised by the AWS_CONTAINER_* environment variables the container runtime sets,
@@ -448,7 +471,7 @@ unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &context
 			Aws::Auth::ProfileConfigFileAWSCredentialsProvider provider(profile.c_str());
 			credentials = provider.GetAWSCredentials();
 		} else {
-			Aws::Auth::DefaultAWSCredentialsProviderChain provider;
+			DuckDBDefaultAWSCredentialsProviderChain provider;
 			credentials = provider.GetAWSCredentials();
 		}
 	}
@@ -600,7 +623,7 @@ BuildAwsCredentialsProvider(const std::string &chain, bool require_credentials, 
 			return Aws::MakeShared<Aws::Auth::ProfileConfigFileAWSCredentialsProvider>("DuckDBAwsProfile",
 			                                                                           profile.c_str());
 		}
-		return Aws::MakeShared<Aws::Auth::DefaultAWSCredentialsProviderChain>("DuckDBAwsDefault");
+		return Aws::MakeShared<DuckDBDefaultAWSCredentialsProviderChain>("DuckDBAwsDefault");
 	}
 	return Aws::MakeShared<DuckDBCustomAWSCredentialsProviderChain>("DuckDBCustomChain", chain, require_credentials,
 	                                                                profile, assume_role_arn, external_id,
