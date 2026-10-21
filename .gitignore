@@ -12,3 +12,5 @@ test/sql/redshift/serverless/redshift-serverless.env
 /manual_test_with_secrets.sql
 /.manual_test_with_secrets.sql.*
 scripts/__pycache__/
+test/sql/s3/s3.env
+test/scripts/__pycache__/

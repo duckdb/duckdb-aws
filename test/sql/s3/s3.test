@@ -1,0 +1,46 @@
+# name: test/sql/s3/s3.test
+# description: read a provisioned private S3 fixture through an AWS credential-chain secret
+# group: [s3]
+
+require-env S3_TEST_AVAILABLE 1
+
+require-env AWS_S3_BUCKET
+
+require-env AWS_S3_FIXTURE_KEY
+
+require-env AWS_REGION
+
+require-env AWS_ACCESS_KEY_ID
+
+require-env AWS_SECRET_ACCESS_KEY
+
+require aws
+
+require httpfs
+
+statement ok
+SET allow_persistent_secrets=false
+
+statement ok
+CREATE TEMPORARY SECRET s3_fixture_credentials (
+    TYPE s3,
+    PROVIDER credential_chain,
+    CHAIN 'env',
+    REGION '{AWS_REGION}',
+    SCOPE 's3://{AWS_S3_BUCKET}/'
+);
+
+query I
+SELECT name FROM which_secret('s3://{AWS_S3_BUCKET}/{AWS_S3_FIXTURE_KEY}', 's3');
+----
+s3_fixture_credentials
+
+query II
+SELECT id, name FROM read_csv_auto('s3://{AWS_S3_BUCKET}/{AWS_S3_FIXTURE_KEY}') ORDER BY id;
+----
+1	duck
+2	goose
+3	swan
+
+statement ok
+DROP SECRET s3_fixture_credentials
