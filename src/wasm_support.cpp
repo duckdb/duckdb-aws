@@ -70,7 +70,8 @@ int Sha1Update(aws_hash *hash, const aws_byte_cursor *buf) {
 	if (!hash->good) {
 		return aws_raise_error(AWS_ERROR_INVALID_STATE);
 	}
-	static_cast<Sha1Hash *>(hash->impl)->state.AddString(std::string(reinterpret_cast<const char *>(buf->ptr), buf->len));
+	static_cast<Sha1Hash *>(hash->impl)
+	    ->state.AddString(std::string(reinterpret_cast<const char *>(buf->ptr), buf->len));
 	return AWS_OP_SUCCESS;
 }
 
