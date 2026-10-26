@@ -31,6 +31,12 @@
 
 namespace duckdb {
 
+#if defined(__EMSCRIPTEN__)
+static constexpr bool AWS_DISABLE_IMDS = true;
+#else
+static constexpr bool AWS_DISABLE_IMDS = false;
+#endif
+
 //! We use a global here to store the path that is selected on the ICAPI::InitializeCurl call
 static string SELECTED_CURL_CERT_PATH;
 
@@ -62,7 +68,12 @@ static string DuckDBAwsUserAgentAppId() {
 
 //! See aws_client.hpp for rationale.
 Aws::Client::ClientConfiguration BuildClientConfigWithCa() {
-	Aws::Client::ClientConfiguration cfg;
+	// With no region in the environment or a profile, the default constructor asks the EC2 metadata
+	// service for one. A browser cannot reach 169.254.169.254, and the request is a synchronous XHR
+	// without a timeout, so every client construction would block for minutes. Callers set the region.
+	Aws::Client::ClientConfigurationInitValues init;
+	init.shouldDisableIMDS = AWS_DISABLE_IMDS;
+	Aws::Client::ClientConfiguration cfg(init);
 	if (!SELECTED_CURL_CERT_PATH.empty()) {
 		cfg.caFile = SELECTED_CURL_CERT_PATH;
 	}
@@ -155,22 +166,6 @@ Aws::Config::Profile GetAwsProfile(const std::string &profile_name, const bool r
 	return selected_profile; // empty profile
 }
 
-#if defined(__EMSCRIPTEN__)
-//! Browsers cannot access the metadata endpoints used by AWS compute services. Under WebAssembly,
-//! the SDK's fallback request to the EC2 Instance Metadata Service blocks the DuckDB worker because
-//! the browser request is synchronous and does not use the SDK's timeout. Only try credential
-//! sources that do not require a metadata endpoint.
-class DuckDBDefaultAWSCredentialsProviderChain : public Aws::Auth::AWSCredentialsProviderChain {
-public:
-	DuckDBDefaultAWSCredentialsProviderChain() {
-		AddProvider(std::make_shared<Aws::Auth::EnvironmentAWSCredentialsProvider>());
-		AddProvider(std::make_shared<Aws::Auth::ProfileConfigFileAWSCredentialsProvider>());
-	}
-};
-#else
-using DuckDBDefaultAWSCredentialsProviderChain = Aws::Auth::DefaultAWSCredentialsProviderChain;
-#endif
-
 //! Generate a custom credential provider chain for authentication
 class DuckDBCustomAWSCredentialsProviderChain : public Aws::Auth::AWSCredentialsProviderChain {
 public:
@@ -207,16 +202,16 @@ public:
 			} else if (item == "env") {
 				AddProvider(std::make_shared<Aws::Auth::EnvironmentAWSCredentialsProvider>());
 			} else if (item == "instance") {
-#if defined(__EMSCRIPTEN__)
-				// EC2 metadata is unavailable in browsers and the request would block the DuckDB worker.
-				throw InvalidConfigurationException(
-				    "Chain value 'instance' is not available under WebAssembly: the EC2 "
-				    "instance metadata service cannot be reached from a browser");
-#else
-				/* Credentials provider implementation that loads credentials from the Amazon EC2 Instance Metadata
-				 * Service. */
-				AddProvider(std::make_shared<Aws::Auth::InstanceProfileCredentialsProvider>());
-#endif
+				if constexpr (AWS_DISABLE_IMDS) {
+					// EC2 metadata is unavailable in browsers and the request would block the DuckDB worker.
+					throw InvalidConfigurationException(
+					    "Chain value 'instance' is not available under WebAssembly: the EC2 "
+					    "instance metadata service cannot be reached from a browser");
+				} else {
+					/* Credentials provider implementation that loads credentials from the Amazon EC2 Instance Metadata
+					 * Service. */
+					AddProvider(std::make_shared<Aws::Auth::InstanceProfileCredentialsProvider>());
+				}
 			} else if (item == "container") {
 				// Container credentials (ECS task role, EKS Pod Identity): resolved from the endpoint
 				// advertised by the AWS_CONTAINER_* environment variables the container runtime sets,
@@ -307,6 +302,14 @@ public:
 		}
 	}
 };
+
+static std::shared_ptr<Aws::Auth::AWSCredentialsProvider> BuildDefaultAwsCredentialsProvider() {
+	if constexpr (AWS_DISABLE_IMDS) {
+		return Aws::MakeShared<DuckDBCustomAWSCredentialsProviderChain>("DuckDBAwsDefault", "env;config", false);
+	} else {
+		return Aws::MakeShared<Aws::Auth::DefaultAWSCredentialsProviderChain>("DuckDBAwsDefault");
+	}
+}
 
 string TryGetStringParam(CreateSecretInput &input, const string &param_name) {
 	auto param_lookup = input.options.find(param_name);
@@ -471,8 +474,7 @@ unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &context
 			Aws::Auth::ProfileConfigFileAWSCredentialsProvider provider(profile.c_str());
 			credentials = provider.GetAWSCredentials();
 		} else {
-			DuckDBDefaultAWSCredentialsProviderChain provider;
-			credentials = provider.GetAWSCredentials();
+			credentials = BuildDefaultAwsCredentialsProvider()->GetAWSCredentials();
 		}
 	}
 
@@ -623,7 +625,7 @@ BuildAwsCredentialsProvider(const std::string &chain, bool require_credentials, 
 			return Aws::MakeShared<Aws::Auth::ProfileConfigFileAWSCredentialsProvider>("DuckDBAwsProfile",
 			                                                                           profile.c_str());
 		}
-		return Aws::MakeShared<DuckDBDefaultAWSCredentialsProviderChain>("DuckDBAwsDefault");
+		return BuildDefaultAwsCredentialsProvider();
 	}
 	return Aws::MakeShared<DuckDBCustomAWSCredentialsProviderChain>("DuckDBCustomChain", chain, require_credentials,
 	                                                                profile, assume_role_arn, external_id,
