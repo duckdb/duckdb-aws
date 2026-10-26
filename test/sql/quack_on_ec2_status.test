@@ -1,0 +1,41 @@
+# name: test/sql/quack_on_ec2_status.test
+# description: Map CloudFormation states through the native Quack status callback
+# group: [sql]
+
+require aws
+
+# The callback uses a separate connection, so the offline AWS substitute must not be temporary.
+statement ok
+CREATE MACRO cloudformation_describe_stack(h) AS TABLE
+SELECT h['stack_name'] AS status,
+       MAP {'QuackURI': 'quack:example.com:443', 'Token': '{"1":"test-token"}'} AS outputs;
+
+foreach stack_status CREATE_COMPLETE UPDATE_COMPLETE
+
+query TTTT
+SELECT state, result['uri'], result['attached_db_type'], result['token']
+FROM __aws__cloudformation__quack_on_ec2__status(MAP {'stack_name': '{stack_status}', 'region': 'eu-central-1'});
+----
+ready	quack:example.com:443	quack	test-token
+
+endloop
+
+foreach stack_status DELETE_COMPLETE DELETE_IN_PROGRESS DELETE_FAILED CREATE_FAILED ROLLBACK_IN_PROGRESS ROLLBACK_COMPLETE UPDATE_ROLLBACK_COMPLETE
+
+query T
+SELECT state
+FROM __aws__cloudformation__quack_on_ec2__status(MAP {'stack_name': '{stack_status}', 'region': 'eu-central-1'});
+----
+failed
+
+endloop
+
+foreach stack_status CREATE_IN_PROGRESS UPDATE_IN_PROGRESS UPDATE_COMPLETE_CLEANUP_IN_PROGRESS
+
+query T
+SELECT state
+FROM __aws__cloudformation__quack_on_ec2__status(MAP {'stack_name': '{stack_status}', 'region': 'eu-central-1'});
+----
+pending
+
+endloop
