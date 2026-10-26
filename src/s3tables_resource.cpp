@@ -9,7 +9,7 @@
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/main/external_resource_type_registry.hpp"
-#include "duckdb/main/materialized_query_result.hpp"
+#include "duckdb/main/query_result.hpp"
 
 namespace duckdb {
 
@@ -69,7 +69,7 @@ string HandleArn(const Value &handle, const char *callback) {
 	return arn;
 }
 
-unique_ptr<MaterializedQueryResult> RunSQL(ClientContext &context, const string &sql, const char *callback) {
+unique_ptr<QueryResult> RunSQL(ClientContext &context, const string &sql, const char *callback) {
 	Connection con(DatabaseInstance::GetDatabase(context));
 	auto res = con.Query(sql);
 	if (res->HasError()) {
@@ -127,7 +127,7 @@ void CreateFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &ou
 	sql += ", tags := " + tags.ToSQLString() + ")";
 
 	auto res = RunSQL(context, sql, "s3tables create");
-	output.data[0].Append(res->GetValue(0, 0));
+	output.data[0].Append(res->Collection().GetRows().GetValue(0, 0));
 	output.CheckCardinality(1);
 	state.done = true;
 }
@@ -168,8 +168,9 @@ void StatusFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &ou
 	           "FROM s3tables_get_table_bucket(" +
 	           Value(arn).ToSQLString() + ")";
 	auto res = RunSQL(context, sql, "s3tables status");
-	output.data[0].Append(res->GetValue(0, 0));
-	output.data[1].Append(res->GetValue(1, 0));
+	auto rows = res->Collection().GetRows();
+	output.data[0].Append(rows.GetValue(0, 0));
+	output.data[1].Append(rows.GetValue(1, 0));
 	output.CheckCardinality(1);
 	state.done = true;
 }
@@ -205,12 +206,12 @@ void DestroyFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &o
 	               ") WHERE key = " + Value(string(RESOURCE_TYPE_TAG)).ToSQLString() +
 	               " AND value = " + Value(string(S3TABLES_TYPE)).ToSQLString();
 	auto tag_res = RunSQL(context, tag_sql, "s3tables destroy");
-	auto duckdb_managed = tag_res->GetValue(0, 0).GetValue<int64_t>() > 0;
+	auto duckdb_managed = tag_res->Collection().GetRows().GetValue(0, 0).GetValue<int64_t>() > 0;
 
 	auto sql = "SELECT status FROM s3tables_delete_table_bucket(" + HandleForArn(arn).ToSQLString() +
 	           ", cascade := " + string(duckdb_managed ? "true" : "false") + ")";
 	auto res = RunSQL(context, sql, "s3tables destroy");
-	output.data[0].Append(res->GetValue(0, 0));
+	output.data[0].Append(res->Collection().GetRows().GetValue(0, 0));
 	output.CheckCardinality(1);
 	state.done = true;
 }
@@ -230,7 +231,7 @@ void DestroyFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &o
 //===--------------------------------------------------------------------===//
 
 struct ListState : public GlobalTableFunctionState {
-	unique_ptr<MaterializedQueryResult> result;
+	unique_ptr<QueryResult> result;
 	idx_t cursor = 0;
 	bool ran = false;
 };
@@ -274,12 +275,13 @@ void ListFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &outp
 	idx_t total = state.result->RowCount();
 	idx_t remaining = total - state.cursor;
 	idx_t to_emit = MinValue<idx_t>(remaining, STANDARD_VECTOR_SIZE);
+	auto rows = state.result->Collection().GetRows();
 	for (idx_t i = 0; i < to_emit; i++) {
 		idx_t row = state.cursor + i;
-		output.data[0].Append(state.result->GetValue(0, row));
-		output.data[1].Append(state.result->GetValue(1, row));
-		output.data[2].Append(state.result->GetValue(2, row));
-		output.data[3].Append(state.result->GetValue(3, row));
+		output.data[0].Append(rows.GetValue(0, row));
+		output.data[1].Append(rows.GetValue(1, row));
+		output.data[2].Append(rows.GetValue(2, row));
+		output.data[3].Append(rows.GetValue(3, row));
 	}
 	output.CheckCardinality(to_emit);
 	state.cursor += to_emit;

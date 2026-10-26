@@ -56,12 +56,10 @@ SELECT * FROM s3tables_table_buckets([]::VARCHAR[]);
 ----
 region list must not be empty
 
-# A NULL list binds to the single-region overload (the cast wins over the LIST one), so the
-# message names a region rather than a list — either way it is refused at bind time.
 statement error
 SELECT * FROM s3tables_table_buckets(NULL::VARCHAR[]);
 ----
-region must not be NULL
+region list must not be NULL
 
 # The delete function takes either the ARN or the handle MAP the external-resource framework
 # passes around, so a handle without an 'arn' key is rejected by name.

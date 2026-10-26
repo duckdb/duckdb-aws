@@ -1,11 +1,14 @@
 #include "s3tables_functions.hpp"
 #include "aws_client.hpp"
+#include "aws_http_client.hpp"
 #include "utils/utils.hpp"
 
 #include "duckdb.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/function/function.hpp"
 #include "duckdb/function/function_set.hpp"
+#include "duckdb/main/database.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/parallel/task_executor.hpp"
 
@@ -181,8 +184,11 @@ struct TableBucketRow {
 	string error;
 };
 
-void ListRegionTableBuckets(const std::shared_ptr<Aws::Auth::AWSCredentialsProvider> &provider, const string &region,
-                            vector<TableBucketRow> &out) {
+void ListRegionTableBuckets(DatabaseInstance &db, const std::shared_ptr<Aws::Auth::AWSCredentialsProvider> &provider,
+                            const string &region, vector<TableBucketRow> &out) {
+	// Scheduler threads do not inherit the caller's AwsInstanceBinding, so bind here; see the same in
+	// DescribeRegionStacks.
+	AwsInstanceBinding aws_binding(db);
 	auto client = MakeClient(provider, region);
 
 	Aws::String token;
@@ -215,13 +221,15 @@ void ListRegionTableBuckets(const std::shared_ptr<Aws::Auth::AWSCredentialsProvi
 //! One region's listing as a scheduler task. It catches its own error instead of calling PushError,
 //! which would abort the whole sweep — see the same pattern in cloudformation_functions.cpp.
 struct ListRegionTask : public BaseExecutorTask {
-	ListRegionTask(TaskExecutor &executor, std::shared_ptr<Aws::Auth::AWSCredentialsProvider> provider_p,
-	               string region_p, vector<TableBucketRow> &slot_p)
-	    : BaseExecutorTask(executor), provider(std::move(provider_p)), region(std::move(region_p)), slot(slot_p) {
+	ListRegionTask(TaskExecutor &executor, DatabaseInstance &db_p,
+	               std::shared_ptr<Aws::Auth::AWSCredentialsProvider> provider_p, string region_p,
+	               vector<TableBucketRow> &slot_p)
+	    : BaseExecutorTask(executor), db(db_p), provider(std::move(provider_p)), region(std::move(region_p)),
+	      slot(slot_p) {
 	}
 	void ExecuteTask() override {
 		try {
-			ListRegionTableBuckets(provider, region, slot);
+			ListRegionTableBuckets(db, provider, region, slot);
 		} catch (const std::exception &e) {
 			EmitError(e.what());
 		} catch (...) {
@@ -235,6 +243,7 @@ struct ListRegionTask : public BaseExecutorTask {
 		err.error = message;
 		slot.push_back(std::move(err));
 	}
+	DatabaseInstance &db;
 	std::shared_ptr<Aws::Auth::AWSCredentialsProvider> provider;
 	string region;
 	vector<TableBucketRow> &slot;
@@ -311,19 +320,21 @@ unique_ptr<FunctionData> TableBucketsBind(ClientContext &, TableFunctionBindInpu
 }
 
 void TableBucketsFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	AwsInstanceBinding aws_binding(DatabaseInstance::GetDatabase(context));
 	auto &data = data_p.bind_data->Cast<TableBucketsBindData>();
 	auto &state = data_p.global_state->Cast<TableBucketsState>();
 
 	if (!state.ran) {
+		auto &db = DatabaseInstance::GetDatabase(context);
 		auto provider = ResolveProvider(context, data.secret_name);
 		if (data.throw_on_region_error) {
-			ListRegionTableBuckets(provider, data.regions[0], state.rows);
+			ListRegionTableBuckets(db, provider, data.regions[0], state.rows);
 		} else {
 			// Fixed-size `slots` so the vector never reallocates while tasks hold references into it.
 			vector<vector<TableBucketRow>> slots(data.regions.size());
 			TaskExecutor executor(context);
 			for (idx_t i = 0; i < data.regions.size(); i++) {
-				executor.ScheduleTask(make_uniq<ListRegionTask>(executor, provider, data.regions[i], slots[i]));
+				executor.ScheduleTask(make_uniq<ListRegionTask>(executor, db, provider, data.regions[i], slots[i]));
 			}
 			executor.WorkOnTasks();
 			for (auto &slot : slots) {
@@ -433,6 +444,7 @@ unique_ptr<FunctionData> NamespacesBind(ClientContext &, TableFunctionBindInput 
 }
 
 void NamespacesFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	AwsInstanceBinding aws_binding(DatabaseInstance::GetDatabase(context));
 	auto &data = data_p.bind_data->Cast<ArnBindData>();
 	auto &state = data_p.global_state->Cast<NamespacesState>();
 
@@ -568,6 +580,7 @@ unique_ptr<FunctionData> TablesBind(ClientContext &, TableFunctionBindInput &inp
 }
 
 void TablesFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	AwsInstanceBinding aws_binding(DatabaseInstance::GetDatabase(context));
 	auto &data = data_p.bind_data->Cast<ArnBindData>();
 	auto &state = data_p.global_state->Cast<TablesState>();
 
@@ -674,6 +687,7 @@ Value HandleForArn(const string &arn) {
 }
 
 void CreateBucketFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	AwsInstanceBinding aws_binding(DatabaseInstance::GetDatabase(context));
 	auto &data = data_p.bind_data->Cast<CreateBucketBindData>();
 	auto &state = data_p.global_state->Cast<OnceState>();
 	if (state.done) {
@@ -763,6 +777,7 @@ unique_ptr<FunctionData> GetBucketBind(ClientContext &, TableFunctionBindInput &
 }
 
 void GetBucketFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	AwsInstanceBinding aws_binding(DatabaseInstance::GetDatabase(context));
 	auto &data = data_p.bind_data->Cast<ArnBindData>();
 	auto &state = data_p.global_state->Cast<GetBucketState>();
 	if (state.done) {
@@ -823,6 +838,7 @@ unique_ptr<FunctionData> TagsBind(ClientContext &, TableFunctionBindInput &input
 }
 
 void TagsFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	AwsInstanceBinding aws_binding(DatabaseInstance::GetDatabase(context));
 	auto &data = data_p.bind_data->Cast<ArnBindData>();
 	auto &state = data_p.global_state->Cast<TagsState>();
 
@@ -1004,6 +1020,7 @@ void EmptyTableBucket(Aws::S3Tables::S3TablesClient &client, const TableBucketAr
 }
 
 void DeleteBucketFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	AwsInstanceBinding aws_binding(DatabaseInstance::GetDatabase(context));
 	auto &data = data_p.bind_data->Cast<DeleteBucketBindData>();
 	auto &state = data_p.global_state->Cast<OnceState>();
 	if (state.done) {
@@ -1103,58 +1120,82 @@ void DeleteBucketFun(ClientContext &context, TableFunctionInput &data_p, DataChu
 
 void S3TablesFunctions::Register(ExtensionLoader &loader) {
 	auto map_vv = LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR);
+	// Every function takes the optional `secret` kwarg; see ResolveProvider.
+	auto with_secret = [](TypedKwargs &options) {
+		options.Add("secret", LogicalType::VARCHAR);
+	};
 
-	// s3tables_table_buckets() | (region) | (region_list)
+	// s3tables_table_buckets() | (region) | (region_list) — bind dispatches on the argument shape.
 	TableFunctionSet buckets_set("s3tables_table_buckets");
-	for (auto &args :
-	     vector<vector<LogicalType>> {{}, {LogicalType::VARCHAR}, {LogicalType::LIST(LogicalType::VARCHAR)}}) {
-		TableFunction fn(args, TableBucketsFun, TableBucketsBind, TableBucketsInit);
-		fn.named_parameters["secret"] = LogicalType::VARCHAR;
-		buckets_set.AddFunction(fn);
-	}
+	buckets_set.AddFunction(TableFunction(FunctionSignature().WithTypedKwargs("options", with_secret), TableBucketsFun,
+	                                      TableBucketsBind, TableBucketsInit));
+	buckets_set.AddFunction(TableFunction(
+	    FunctionSignature().AddPositionalOnly("region", LogicalType::VARCHAR).WithTypedKwargs("options", with_secret),
+	    TableBucketsFun, TableBucketsBind, TableBucketsInit));
+	buckets_set.AddFunction(TableFunction(FunctionSignature()
+	                                          .AddPositionalOnly("regions", LogicalType::LIST(LogicalType::VARCHAR))
+	                                          .WithTypedKwargs("options", with_secret),
+	                                      TableBucketsFun, TableBucketsBind, TableBucketsInit));
 	loader.RegisterFunction(buckets_set);
 
-	TableFunction namespaces_fn("s3tables_namespaces", {LogicalType::VARCHAR}, NamespacesFun, NamespacesBind,
+	FunctionSignature namespaces_signature;
+	namespaces_signature.AddParameter("table_bucket_arn", LogicalType::VARCHAR).WithTypedKwargs("options", with_secret);
+	TableFunction namespaces_fn("s3tables_namespaces", std::move(namespaces_signature), NamespacesFun, NamespacesBind,
 	                            NamespacesInit);
-	namespaces_fn.named_parameters["secret"] = LogicalType::VARCHAR;
 	loader.RegisterFunction(namespaces_fn);
 
+	// s3tables_tables(table_bucket_arn) | (table_bucket_arn, namespace)
 	TableFunctionSet tables_set("s3tables_tables");
-	for (auto &args :
-	     vector<vector<LogicalType>> {{LogicalType::VARCHAR}, {LogicalType::VARCHAR, LogicalType::VARCHAR}}) {
-		TableFunction fn(args, TablesFun, TablesBind, TablesInit);
-		fn.named_parameters["secret"] = LogicalType::VARCHAR;
-		tables_set.AddFunction(fn);
-	}
+	tables_set.AddFunction(TableFunction(FunctionSignature()
+	                                         .AddPositionalOnly("table_bucket_arn", LogicalType::VARCHAR)
+	                                         .WithTypedKwargs("options", with_secret),
+	                                     TablesFun, TablesBind, TablesInit));
+	tables_set.AddFunction(TableFunction(FunctionSignature()
+	                                         .AddPositionalOnly("table_bucket_arn", LogicalType::VARCHAR)
+	                                         .AddPositionalOnly("namespace", LogicalType::VARCHAR)
+	                                         .WithTypedKwargs("options", with_secret),
+	                                     TablesFun, TablesBind, TablesInit));
 	loader.RegisterFunction(tables_set);
 
-	TableFunction create_fn("s3tables_create_table_bucket", {LogicalType::VARCHAR}, CreateBucketFun, CreateBucketBind,
-	                        OnceInit);
-	create_fn.named_parameters["region"] = LogicalType::VARCHAR;
-	create_fn.named_parameters["tags"] = map_vv;
-	create_fn.named_parameters["secret"] = LogicalType::VARCHAR;
-	create_fn.named_parameters["dry_run"] = LogicalType::BOOLEAN;
+	FunctionSignature create_signature;
+	create_signature.AddParameter("name", LogicalType::VARCHAR).WithTypedKwargs("options", [&](TypedKwargs &options) {
+		options.Add("region", LogicalType::VARCHAR)
+		    .Add("tags", map_vv)
+		    .Add("secret", LogicalType::VARCHAR)
+		    // Typed BOOLEAN rather than a string: a value that failed to parse would fall through to
+		    // false and create a real bucket.
+		    .Add("dry_run", LogicalType::BOOLEAN);
+	});
+	TableFunction create_fn("s3tables_create_table_bucket", std::move(create_signature), CreateBucketFun,
+	                        CreateBucketBind, OnceInit);
 	loader.RegisterFunction(create_fn);
 
-	TableFunction get_fn("s3tables_get_table_bucket", {LogicalType::VARCHAR}, GetBucketFun, GetBucketBind,
+	FunctionSignature get_signature;
+	get_signature.AddParameter("table_bucket_arn", LogicalType::VARCHAR).WithTypedKwargs("options", with_secret);
+	TableFunction get_fn("s3tables_get_table_bucket", std::move(get_signature), GetBucketFun, GetBucketBind,
 	                     GetBucketInit);
-	get_fn.named_parameters["secret"] = LogicalType::VARCHAR;
 	loader.RegisterFunction(get_fn);
 
-	TableFunction tags_fn("s3tables_table_bucket_tags", {LogicalType::VARCHAR}, TagsFun, TagsBind, TagsInit);
-	tags_fn.named_parameters["secret"] = LogicalType::VARCHAR;
+	FunctionSignature tags_signature;
+	tags_signature.AddParameter("table_bucket_arn", LogicalType::VARCHAR).WithTypedKwargs("options", with_secret);
+	TableFunction tags_fn("s3tables_table_bucket_tags", std::move(tags_signature), TagsFun, TagsBind, TagsInit);
 	loader.RegisterFunction(tags_fn);
 
 	// Takes the ARN directly, or the handle MAP the external-resource framework passes around.
+	auto delete_options = [](TypedKwargs &options) {
+		options.Add("cascade", LogicalType::BOOLEAN)
+		    .Add("seal", LogicalType::BOOLEAN)
+		    .Add("secret", LogicalType::VARCHAR)
+		    .Add("dry_run", LogicalType::BOOLEAN);
+	};
 	TableFunctionSet delete_set("s3tables_delete_table_bucket");
-	for (auto &args : vector<vector<LogicalType>> {{LogicalType::VARCHAR}, {map_vv}}) {
-		TableFunction fn(args, DeleteBucketFun, DeleteBucketBind, OnceInit);
-		fn.named_parameters["cascade"] = LogicalType::BOOLEAN;
-		fn.named_parameters["seal"] = LogicalType::BOOLEAN;
-		fn.named_parameters["secret"] = LogicalType::VARCHAR;
-		fn.named_parameters["dry_run"] = LogicalType::BOOLEAN;
-		delete_set.AddFunction(fn);
-	}
+	delete_set.AddFunction(TableFunction(FunctionSignature()
+	                                         .AddPositionalOnly("table_bucket_arn", LogicalType::VARCHAR)
+	                                         .WithTypedKwargs("options", delete_options),
+	                                     DeleteBucketFun, DeleteBucketBind, OnceInit));
+	delete_set.AddFunction(TableFunction(
+	    FunctionSignature().AddPositionalOnly("handle", map_vv).WithTypedKwargs("options", delete_options),
+	    DeleteBucketFun, DeleteBucketBind, OnceInit));
 	loader.RegisterFunction(delete_set);
 }
 

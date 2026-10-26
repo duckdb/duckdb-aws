@@ -4,7 +4,15 @@
 
 require no_extension_autoloading "EXPECTED: Test relies on explicit INSTALL and LOAD"
 
+require httpfs
+
 require aws
+
+# Every AWS call below is meant to fail. Pin the identity to a bogus static key so this holds even
+# where the environment carries real credentials: the provisioning statement further down would
+# otherwise create a real table bucket.
+statement ok
+CREATE SECRET bogus (TYPE s3, KEY_ID 'AKIAIOSFODNN7EXAMPLE', SECRET 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY', REGION 'eu-central-1');
 
 # The type is registered from C++ (origin 'extension'), so LOAD aws is all a user needs.
 query IIIIII
@@ -39,8 +47,8 @@ SELECT * FROM __aws__s3tables__table_bucket__status(MAP {'arn': 'not-an-arn'});
 ----
 expected a table bucket ARN
 
-# Provisioning through the framework reaches the create callback and, from there, the AWS call:
-# without credentials it fails there rather than anywhere earlier in the chain.
+# Provisioning through the framework reaches the create callback and, from there, the AWS call,
+# which the bogus key fails: the error names the callback rather than anything earlier in the chain.
 statement error
 CREATE EXTERNAL RESOURCE 'aws:s3tables:table-bucket' AS bucket_x (REGION 'eu-central-1');
 ----
