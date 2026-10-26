@@ -8,6 +8,7 @@
 #include "duckdb/common/case_insensitive_map.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/file_system.hpp"
+#include "duckdb/common/types/blob.hpp"
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/logging/logger.hpp"
 #include "duckdb/main/database.hpp"
@@ -29,6 +30,12 @@
 #include <sys/stat.h>
 
 namespace duckdb {
+
+#if defined(__EMSCRIPTEN__)
+static constexpr bool AWS_DISABLE_IMDS = true;
+#else
+static constexpr bool AWS_DISABLE_IMDS = false;
+#endif
 
 //! We use a global here to store the path that is selected on the ICAPI::InitializeCurl call
 static string SELECTED_CURL_CERT_PATH;
@@ -61,7 +68,12 @@ static string DuckDBAwsUserAgentAppId() {
 
 //! See aws_client.hpp for rationale.
 Aws::Client::ClientConfiguration BuildClientConfigWithCa() {
-	Aws::Client::ClientConfiguration cfg;
+	// With no region in the environment or a profile, the default constructor asks the EC2 metadata
+	// service for one. A browser cannot reach 169.254.169.254, and the request is a synchronous XHR
+	// without a timeout, so every client construction would block for minutes. Callers set the region.
+	Aws::Client::ClientConfigurationInitValues init;
+	init.shouldDisableIMDS = AWS_DISABLE_IMDS;
+	Aws::Client::ClientConfiguration cfg(init);
 	if (!SELECTED_CURL_CERT_PATH.empty()) {
 		cfg.caFile = SELECTED_CURL_CERT_PATH;
 	}
@@ -91,6 +103,34 @@ static void ParseCoreS3Config(CreateSecretInput &input, KeyValueSecret &secret) 
 			secret.secret_map[Identifier(val)] = set_region_param->second;
 		}
 	}
+}
+
+//! Reads the server-side encryption options. They mirror KMS_KEY_ID and SSE_C_KEY of the httpfs `config`
+//! provider, so a credential_chain secret can write encrypted objects and keep encrypting them across refreshes.
+static void ParseServerSideEncryptionConfig(CreateSecretInput &input, KeyValueSecret &secret) {
+	auto kms_key_id = input.options.find("kms_key_id");
+	if (kms_key_id != input.options.end()) {
+		secret.secret_map["kms_key_id"] = kms_key_id->second.ToString();
+	}
+	auto sse_c_key = input.options.find("sse_c_key");
+	if (sse_c_key == input.options.end()) {
+		return;
+	}
+	auto key = sse_c_key->second.ToString();
+	// Same check as httpfs: canonical base64 of exactly 32 bytes. The error never echoes the key.
+	string decoded_key;
+	try {
+		decoded_key = Blob::FromBase64(key);
+	} catch (std::exception &) {
+		throw InvalidInputException("SSE_C_KEY must be a valid base64-encoded 256-bit key");
+	}
+	if (decoded_key.size() != 32 || Blob::ToBase64(decoded_key) != key) {
+		throw InvalidInputException("SSE_C_KEY must be a valid base64-encoded 256-bit key");
+	}
+	secret.secret_map["sse_c_key"] = key;
+	secret.redact_keys.insert("sse_c_key");
+	// With REFRESH 'auto', refresh_info holds a copy of every CREATE SECRET option, including the key.
+	secret.redact_keys.insert("refresh_info");
 }
 
 //! This constructs the base S3 Type secret
@@ -171,9 +211,16 @@ public:
 			} else if (item == "env") {
 				AddProvider(std::make_shared<Aws::Auth::EnvironmentAWSCredentialsProvider>());
 			} else if (item == "instance") {
-				/* Credentials provider implementation that loads credentials from the Amazon EC2 Instance Metadata
-				 * Service. */
-				AddProvider(std::make_shared<Aws::Auth::InstanceProfileCredentialsProvider>());
+				if constexpr (AWS_DISABLE_IMDS) {
+					// EC2 metadata is unavailable in browsers and the request would block the DuckDB worker.
+					throw InvalidConfigurationException(
+					    "Chain value 'instance' is not available under WebAssembly: the EC2 "
+					    "instance metadata service cannot be reached from a browser");
+				} else {
+					/* Credentials provider implementation that loads credentials from the Amazon EC2 Instance Metadata
+					 * Service. */
+					AddProvider(std::make_shared<Aws::Auth::InstanceProfileCredentialsProvider>());
+				}
 			} else if (item == "container") {
 				// Container credentials (ECS task role, EKS Pod Identity), built like the SDK's default chain.
 				// https://docs.aws.amazon.com/sdkref/latest/guide/feature-container-credentials.html
@@ -266,6 +313,14 @@ public:
 		}
 	}
 };
+
+static std::shared_ptr<Aws::Auth::AWSCredentialsProvider> BuildDefaultAwsCredentialsProvider() {
+	if constexpr (AWS_DISABLE_IMDS) {
+		return Aws::MakeShared<DuckDBCustomAWSCredentialsProviderChain>("DuckDBAwsDefault", "env;config", false);
+	} else {
+		return Aws::MakeShared<Aws::Auth::DefaultAWSCredentialsProviderChain>("DuckDBAwsDefault");
+	}
+}
 
 string TryGetStringParam(CreateSecretInput &input, const string &param_name) {
 	auto param_lookup = input.options.find(param_name);
@@ -436,8 +491,7 @@ unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &context
 			Aws::Auth::ProfileConfigFileAWSCredentialsProvider provider(profile.c_str());
 			credentials = provider.GetAWSCredentials();
 		} else {
-			Aws::Auth::DefaultAWSCredentialsProviderChain provider;
-			credentials = provider.GetAWSCredentials();
+			credentials = BuildDefaultAwsCredentialsProvider()->GetAWSCredentials();
 		}
 	}
 
@@ -525,6 +579,7 @@ unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &context
 	}
 
 	ParseCoreS3Config(input, *result);
+	ParseServerSideEncryptionConfig(input, *result);
 
 	// Set endpoint defaults TODO: move to consumer side of secret
 	auto endpoint_lu = result->secret_map.find("endpoint");
@@ -587,7 +642,7 @@ BuildAwsCredentialsProvider(const std::string &chain, bool require_credentials, 
 			return Aws::MakeShared<Aws::Auth::ProfileConfigFileAWSCredentialsProvider>("DuckDBAwsProfile",
 			                                                                           profile.c_str());
 		}
-		return Aws::MakeShared<Aws::Auth::DefaultAWSCredentialsProviderChain>("DuckDBAwsDefault");
+		return BuildDefaultAwsCredentialsProvider();
 	}
 	return Aws::MakeShared<DuckDBCustomAWSCredentialsProviderChain>("DuckDBCustomChain", chain, require_credentials,
 	                                                                profile, assume_role_arn, external_id,
@@ -635,6 +690,14 @@ void CreateAwsSecretFunctions::Register(ExtensionLoader &loader) {
 		cred_chain_function.named_parameters["http_proxy_password"] = LogicalType::VARCHAR;
 
 		cred_chain_function.named_parameters["refresh"] = LogicalType::VARCHAR;
+
+		// Server-side encryption, registered for the same types as on the httpfs `config` provider
+		if (type != "rds") {
+			cred_chain_function.named_parameters["kms_key_id"] = LogicalType::VARCHAR;
+		}
+		if (type == "s3") {
+			cred_chain_function.named_parameters["sse_c_key"] = LogicalType::VARCHAR;
+		}
 
 		if (type == "r2") {
 			cred_chain_function.named_parameters["account_id"] = LogicalType::VARCHAR;
