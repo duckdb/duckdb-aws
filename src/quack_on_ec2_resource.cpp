@@ -191,8 +191,9 @@ static void QuackStatusFun(ClientContext &context, TableFunctionInput &data_p, D
 	}
 	auto &bind = data_p.bind_data->Cast<QuackAdapterBindData>();
 	Connection con(DatabaseInstance::GetDatabase(context));
-	auto sql = "SELECT CASE WHEN status = 'CREATE_COMPLETE' THEN 'ready' "
-	           "            WHEN status LIKE '%ROLLBACK%' OR status LIKE '%FAILED%' THEN 'failed' "
+	auto sql = "SELECT CASE WHEN status IN ('CREATE_COMPLETE', 'UPDATE_COMPLETE') THEN 'ready' "
+	           "            WHEN status LIKE '%ROLLBACK%' OR status LIKE '%FAILED%' OR status LIKE 'DELETE_%' "
+	           "                 THEN 'failed' "
 	           "            ELSE 'pending' END AS state, "
 	           "       MAP {'uri': outputs['QuackURI'], 'attached_db_type': 'quack', "
 	           "            'token': split_part(split_part(outputs['Token'], '{\"1\":\"', 2), '\"}', 1)} AS result "

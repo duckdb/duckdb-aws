@@ -42,6 +42,12 @@ string FromAws(const Aws::String &s) {
 	return {s.data(), s.size()};
 }
 
+static std::shared_ptr<Aws::Auth::AWSCredentialsProvider> CloudFormationCredentialsProvider(ClientContext &context) {
+	auto entry = FindAwsSecret(context, "");
+	auto &secret = entry->secret->Cast<KeyValueSecret>();
+	return CredentialsProviderFromSecret(secret, "CloudFormation");
+}
+
 //! Case-sensitive, insertion-order-preserving string map. The index map must be
 //! spelled out because the type defaults to case-insensitive matching, which is
 //! wrong for case-sensitive keys like AWS tag keys.
@@ -382,7 +388,7 @@ static void CloudFormationCreateStackFun(ClientContext &context, TableFunctionIn
 	// for describe_stack, delete_stack and list_stacks. Accepting per-call
 	// credential overrides here and nowhere else meant a stack created under an
 	// assumed role could not be deleted through this extension.
-	auto provider = BuildAwsCredentialsProvider("", /*require_credentials=*/true);
+	auto provider = CloudFormationCredentialsProvider(context);
 	auto client_config = BuildClientConfigWithCa();
 	client_config.region = region.c_str();
 	Aws::CloudFormation::CloudFormationClient cloudformation_client(provider, client_config);
@@ -545,7 +551,7 @@ static void CloudFormationDescribeStackFun(ClientContext &context, TableFunction
 		return;
 	}
 
-	auto provider = BuildAwsCredentialsProvider("", /*require_credentials=*/true);
+	auto provider = CloudFormationCredentialsProvider(context);
 	auto cfg = BuildClientConfigWithCa();
 	cfg.region = data.handle.region.c_str();
 	Aws::CloudFormation::CloudFormationClient cloudformation_client(provider, cfg);
@@ -655,7 +661,7 @@ static void CloudFormationDeleteStackFun(ClientContext &context, TableFunctionIn
 		return;
 	}
 
-	auto provider = BuildAwsCredentialsProvider("", /*require_credentials=*/true);
+	auto provider = CloudFormationCredentialsProvider(context);
 	auto cfg = BuildClientConfigWithCa();
 	cfg.region = data.handle.region.c_str();
 	Aws::CloudFormation::CloudFormationClient cloudformation_client(provider, cfg);
@@ -808,7 +814,7 @@ static void CloudFormationListStacksFun(ClientContext &context, TableFunctionInp
 	auto &data = (CloudFormationListStacksBindData &)*data_p.bind_data;
 
 	if (!data.initialized) {
-		auto provider = BuildAwsCredentialsProvider("", /*require_credentials=*/true);
+		auto provider = CloudFormationCredentialsProvider(context);
 		auto cfg = BuildClientConfigWithCa();
 		cfg.region = data.region.c_str();
 		Aws::CloudFormation::CloudFormationClient cloudformation_client(provider, cfg);
@@ -899,12 +905,12 @@ struct CloudFormationDescribeStacksRow {
 };
 
 // Fetch all stacks in one region (paginated), appending to `out`. Throws on AWS error.
-static void DescribeRegionStacks(DatabaseInstance &db, const string &region,
-                                 vector<CloudFormationDescribeStacksRow> &out) {
+static void DescribeRegionStacks(DatabaseInstance &db,
+                                 const std::shared_ptr<Aws::Auth::AWSCredentialsProvider> &provider,
+                                 const string &region, vector<CloudFormationDescribeStacksRow> &out) {
 	// Runs as a scheduler task on another thread, where the thread-local binding set by the
 	// table function does not reach, so establish one here.
 	AwsInstanceBinding aws_binding(db);
-	auto provider = BuildAwsCredentialsProvider("", /*require_credentials=*/true);
 	auto cfg = BuildClientConfigWithCa();
 	cfg.region = region.c_str();
 	Aws::CloudFormation::CloudFormationClient cloudformation_client(provider, cfg);
@@ -965,13 +971,15 @@ static void DescribeRegionStacks(DatabaseInstance &db, const string &region,
 // abort the whole sweep via WorkOnTasks) and replaces its slot with a single 'error' sentinel row, so
 // a dead region is surfaced-but-not-fatal instead of silently vanishing.
 struct DescribeRegionTask : public BaseExecutorTask {
-	DescribeRegionTask(TaskExecutor &executor, DatabaseInstance &db_p, string region_p,
+	DescribeRegionTask(TaskExecutor &executor, DatabaseInstance &db_p,
+	                   std::shared_ptr<Aws::Auth::AWSCredentialsProvider> provider_p, string region_p,
 	                   vector<CloudFormationDescribeStacksRow> &slot_p)
-	    : BaseExecutorTask(executor), db(db_p), region(std::move(region_p)), slot(slot_p) {
+	    : BaseExecutorTask(executor), db(db_p), provider(std::move(provider_p)), region(std::move(region_p)),
+	      slot(slot_p) {
 	}
 	void ExecuteTask() override {
 		try {
-			DescribeRegionStacks(db, region, slot);
+			DescribeRegionStacks(db, provider, region, slot);
 		} catch (const std::exception &e) {
 			EmitError(e.what());
 		} catch (...) {
@@ -988,6 +996,7 @@ struct DescribeRegionTask : public BaseExecutorTask {
 		slot.push_back(std::move(err));
 	}
 	DatabaseInstance &db;
+	std::shared_ptr<Aws::Auth::AWSCredentialsProvider> provider;
 	string region;
 	vector<CloudFormationDescribeStacksRow> &slot;
 };
@@ -1069,9 +1078,10 @@ static void CloudFormationDescribeStacksFun(ClientContext &context, TableFunctio
 	auto &data = (CloudFormationDescribeStacksBindData &)*data_p.bind_data;
 
 	if (!data.initialized) {
+		auto provider = CloudFormationCredentialsProvider(context);
 		if (data.throw_on_region_error) {
 			// Single explicit region: run inline and let its error propagate.
-			DescribeRegionStacks(DatabaseInstance::GetDatabase(context), data.regions[0], data.rows);
+			DescribeRegionStacks(DatabaseInstance::GetDatabase(context), provider, data.regions[0], data.rows);
 		} else {
 			// Parallel fan-out: one task per region into its own slot; a region that errors is skipped. Fixed-size
 			// `slots` so the vector never reallocates while tasks hold references into it.
@@ -1079,7 +1089,7 @@ static void CloudFormationDescribeStacksFun(ClientContext &context, TableFunctio
 			TaskExecutor executor(context);
 			for (idx_t i = 0; i < data.regions.size(); i++) {
 				executor.ScheduleTask(make_uniq<DescribeRegionTask>(executor, DatabaseInstance::GetDatabase(context),
-				                                                    data.regions[i], slots[i]));
+				                                                    provider, data.regions[i], slots[i]));
 			}
 			executor.WorkOnTasks();
 			for (auto &slot : slots) {
