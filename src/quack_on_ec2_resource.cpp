@@ -31,7 +31,7 @@ static constexpr const char *EXPIRES_AT_TAG = "duckdb-expires-at";
 static constexpr const char *MAX_DURATION_TEMPLATE_PARAM = "MaxDurationHours";
 // Covers the gap between stack creation and the boot that arms the shutdown timer, so a stack is only reaped
 // once its box has certainly gone.
-static constexpr const char *EXPIRY_MARGIN = "INTERVAL 10 MINUTE";
+static constexpr int64_t EXPIRY_MARGIN_SECONDS = 600;
 
 namespace {
 
@@ -239,7 +239,8 @@ static void QuackDestroyFun(ClientContext &context, TableFunctionInput &data_p, 
 // quack-on-ec2 stacks (identified by the provenance tag stamped at create) and shapes each into a row whose
 // `handle` is byte-identical to what create returns, so it round-trips through status/destroy verbatim. The
 // connect blob (uri/token) is deliberately NOT surfaced here — list is discovery; resolve/status produce that.
-// Listing also reaps stacks past their duckdb-expires-at tag (plus EXPIRY_MARGIN) and reports them as 'deleting'.
+// Listing also reaps stacks past their duckdb-expires-at tag (plus EXPIRY_MARGIN_SECONDS) and reports them as
+// 'deleting'.
 struct QuackListState : public GlobalTableFunctionState {
 	unique_ptr<QueryResult> result;
 	vector<Value> states; // per-row state, overriding the query's for stacks reaped during this listing
@@ -300,9 +301,12 @@ static void QuackListFun(ClientContext &context, TableFunctionInput &data_p, Dat
 		           // Only a stack that finished creating can have a box that armed its own shutdown; anything
 		           // else is still in flight, failed, or already going away.
 		           "       status = 'CREATE_COMPLETE' AND "
-		           "       TRY_CAST(tags[" +
-		           Value(string(EXPIRES_AT_TAG)).ToSQLString() + "] AS TIMESTAMPTZ) + " + string(EXPIRY_MARGIN) +
-		           " < now() AS expired "
+		           // epoch() rather than TIMESTAMPTZ + INTERVAL: both come from icu, but only the function has an
+		           // autoload placeholder, so this also binds where icu is loadable rather than built in (wasm)
+		           "       epoch(now()) - epoch(TRY_CAST(tags[" +
+		           Value(string(EXPIRES_AT_TAG)).ToSQLString() + "] AS TIMESTAMPTZ)) > " +
+		           to_string(EXPIRY_MARGIN_SECONDS) +
+		           " AS expired "
 		           "FROM " +
 		           source + " WHERE error IS NULL AND tags[" + Value(string(RESOURCE_TYPE_TAG)).ToSQLString() +
 		           "] = " + Value(string(QUACK_ON_EC2_TYPE)).ToSQLString();
