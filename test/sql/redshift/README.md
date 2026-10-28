@@ -2,6 +2,8 @@
 
 These tests connect to a provisioned Redshift cluster through the `aws` extension.
 
+For a CloudFormation/Quack/Redshift workflow that reuses this cluster creator, configures EC2-to-Redshift access, and runs a query on Quack, see [CloudFormation, Quack, and Redshift setup](../../../README.md#cloudformation-quack-and-redshift-setup).
+
 ## Cluster lifecycle
 
 The cluster runs until it is deleted and may incur AWS charges.
@@ -10,12 +12,14 @@ The cluster name is `$PREFIX-redshift-$AWS_REGION`. Rerunning the script reuses 
 
 ### Create a test cluster
 
-From the repository root:
+From the repository root, using profile `quack-ec2` and region `eu-central-1` (Frankfurt):
 
 ```bash
-./scripts/redshift/create_cluster.sh --force
+AWS_PROFILE=quack-ec2 AWS_REGION=eu-central-1 ./scripts/redshift/create_cluster.sh --force
 source test/sql/redshift/redshift.env
 ```
+
+Replace `quack-ec2` if your configured profile has a different name. `PREFIX` defaults to your local username, so it can be omitted or set explicitly with `PREFIX="$USER"`. Use the same profile, region, and prefix when creating and destroying the cluster.
 
 Without `--force`, the script prints the creation plan. With `--force`, it creates the cluster, IAM role, security group, and TICKIT data.
 
@@ -47,7 +51,7 @@ The dedicated Redshift IAM role has only `s3:GetObject` and `s3:ListBucket` perm
 After testing, remove the cluster and its supporting resources:
 
 ```bash
-./scripts/redshift/destroy_cluster.sh --force
+AWS_PROFILE=quack-ec2 AWS_REGION=eu-central-1 ./scripts/redshift/destroy_cluster.sh --force
 ```
 
 Without `--force`, the script prints the deletion plan. The cluster is deleted without a final snapshot.
