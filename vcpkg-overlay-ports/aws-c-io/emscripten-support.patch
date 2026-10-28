@@ -1,0 +1,36 @@
+--- a/CMakeLists.txt	2026-08-28 09:08:25
++++ b/CMakeLists.txt	2026-08-28 09:09:04
+@@ -116,6 +116,19 @@
+     list(APPEND EVENT_LOOP_DEFINES "KQUEUE")
+     set(USE_S2N ON)
+ 
++elseif (CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
++    # Emscripten/WebAssembly: no native event loop available. Compile the
++    # POSIX sources (sockets/pipes/dns compile against emscripten's musl libc)
++    # but no event loop implementation; event loop creation fails gracefully
++    # at runtime with AWS_ERROR_PLATFORM_NOT_SUPPORTED.
++    file(GLOB AWS_IO_OS_HEADERS)
++    file(GLOB AWS_IO_OS_SRC
++            "source/posix/*.c"
++            )
++    set(PLATFORM_LIBS "")
++    list(APPEND EVENT_LOOP_DEFINES "EMSCRIPTEN_NOOP")
++    set(USE_S2N ON)
++
+ endif()
+ 
+ if (BYO_CRYPTO)
+--- a/source/event_loop.c	2026-08-28 09:08:25
++++ b/source/event_loop.c	2026-08-28 09:10:14
+@@ -99,6 +99,11 @@
+     return AWS_EVENT_LOOP_EPOLL;
+ #elif defined(AWS_OS_WINDOWS)
+     return AWS_EVENT_LOOP_IOCP;
++#elif defined(__EMSCRIPTEN__)
++    /* No event loop implementation on WebAssembly/Emscripten. Return EPOLL so
++     * that aws_event_loop_type_validate_platform() fails gracefully with
++     * AWS_ERROR_PLATFORM_NOT_SUPPORTED instead of failing the build. */
++    return AWS_EVENT_LOOP_EPOLL;
+ #else
+ #    error                                                                                                             \
+         "Default event loop type required. Failed to get default event loop type. The library is not built correctly on the platform. "

@@ -35,6 +35,10 @@ set(EXTENSION_SOURCES
     src/redshift/redshift_serverless_utils.cpp
     src/redshift/redshift_storage.cpp
     src/utils/utils.cpp)
+if(EMSCRIPTEN)
+    list(APPEND EXTENSION_SOURCES src/wasm_compat.c)
+endif()
+
 add_library(${EXTENSION_NAME} STATIC ${EXTENSION_SOURCES})
 
 # On wasm the loadable target is an archive and DuckDB produces the side module
