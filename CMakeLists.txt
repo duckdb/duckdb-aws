@@ -37,6 +37,15 @@ set(EXTENSION_SOURCES
     src/utils/utils.cpp)
 add_library(${EXTENSION_NAME} STATIC ${EXTENSION_SOURCES})
 
+# On wasm the loadable target is an archive and DuckDB produces the side module
+# in a separate emcc step that links only what this variable names;
+# target_link_libraries below does not reach it. Without the SDK archives the
+# module imports every out-of-line Aws:: symbol from the host and fails to load.
+if(EMSCRIPTEN)
+  set(DUCKDB_EXTENSION_AWS_LINKED_LIBS
+      "../../vcpkg_installed/wasm32-emscripten/lib/lib*.a")
+endif()
+
 set(PARAMETERS "-warnings")
 build_loadable_extension(${TARGET_NAME} ${PARAMETERS} ${EXTENSION_SOURCES})
 
