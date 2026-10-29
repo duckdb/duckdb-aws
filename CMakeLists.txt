@@ -35,6 +35,19 @@ set(EXTENSION_SOURCES
     src/redshift/redshift_serverless_utils.cpp
     src/redshift/redshift_storage.cpp
     src/utils/utils.cpp)
+if(EMSCRIPTEN)
+  # On wasm the loadable target is an archive and DuckDB produces the side
+  # module in a separate emcc step that links only what this variable names;
+  # target_link_libraries below does not reach it. Without the SDK archives the
+  # module imports every out-of-line Aws:: symbol from the host and fails to
+  # load. aws-c-cal is built there without a crypto backend (vcpkg_ports), so
+  # the hashes come from DuckDB's mbedtls, linked in like httpfs does.
+  list(APPEND EXTENSION_SOURCES src/wasm_support.cpp)
+  set(DUCKDB_EXTENSION_AWS_LINKED_LIBS
+      "../../vcpkg_installed/wasm32-emscripten/lib/lib*.a"
+      "../../third_party/mbedtls/libduckdb_mbedtls.a")
+endif()
+
 add_library(${EXTENSION_NAME} STATIC ${EXTENSION_SOURCES})
 
 # On wasm the loadable target is an archive and DuckDB produces the side module
@@ -48,6 +61,11 @@ endif()
 
 set(PARAMETERS "-warnings")
 build_loadable_extension(${TARGET_NAME} ${PARAMETERS} ${EXTENSION_SOURCES})
+
+if(EMSCRIPTEN)
+  # orders the mbedtls archive before the side-module link
+  target_link_libraries(aws_loadable_extension duckdb_mbedtls)
+endif()
 
 # Weirdly we need to manually do this; otherwise, linking against
 # ${AWSSDK_LINK_LIBRARIES} fails for some reason

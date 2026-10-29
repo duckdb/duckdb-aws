@@ -8,6 +8,9 @@
 #include "quack_on_ec2_resource.hpp"
 #include "redshift/redshift_utils.hpp"
 #include "create_aws_legacy_function_stubs.hpp"
+#ifdef __EMSCRIPTEN__
+#include "wasm_support.hpp"
+#endif
 
 #include "duckdb/main/extension/extension_loader.hpp"
 #include <duckdb/parser/parsed_data/create_scalar_function_info.hpp>
@@ -18,6 +21,10 @@
 namespace duckdb {
 
 static void LoadInternal(ExtensionLoader &loader) {
+#ifdef __EMSCRIPTEN__
+	// aws-c-cal has no crypto backend on wasm; the SDK's hashes come from DuckDB's mbedtls
+	RegisterWasmSupport();
+#endif
 	Aws::SDKOptions options;
 	Aws::InitAPI(options);
 

@@ -4,10 +4,17 @@
     "zlib",
     {
       "name": "aws-sdk-cpp",
+      "default-features": false,
       "features": [ "sso", "sts" , "identity-management", "rds", "redshift", "redshift-serverless", "cloudformation"]
     },
-    "openssl",
-    "curl"
+    {
+      "name": "openssl",
+      "platform": "!emscripten"
+    },
+    {
+      "name": "curl",
+      "platform": "!emscripten"
+    }
   ],
   "vcpkg-configuration": {
     "overlay-ports": [
