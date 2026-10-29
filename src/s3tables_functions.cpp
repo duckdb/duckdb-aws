@@ -96,26 +96,13 @@ TableBucketArn ParseTableBucketArn(const string &arn, const string &fn_name) {
 	return result;
 }
 
-//! Credentials for an S3 Tables call. A named `secret` must resolve; unnamed, an AWS secret is
-//! preferred when the instance has exactly one usable one (the same secret that ATTACH of an
-//! s3tables ARN authenticates with, so browsing and attaching never disagree), and the SDK's own
-//! chain is the fallback when there is none. FindAwsSecret throws rather than returning null, so
-//! the "is there one?" probe is a try/catch.
+//! Credentials for an S3 Tables call, resolved exactly as the cloudformation_* functions and ATTACH
+//! of an s3tables ARN do, so browsing and attaching never disagree: a named `secret` must resolve;
+//! unnamed, the single explicit AWS secret, else the default credential-chain secret. FindAwsSecret
+//! throws when that is ambiguous or finds nothing.
 std::shared_ptr<Aws::Auth::AWSCredentialsProvider> ResolveProvider(ClientContext &context, const string &secret_name) {
-	if (!secret_name.empty()) {
-		auto entry = FindAwsSecret(context, secret_name);
-		auto &secret = dynamic_cast<const KeyValueSecret &>(*entry->secret);
-		return CredentialsProviderFromSecret(secret, "S3Tables");
-	}
-	try {
-		auto entry = FindAwsSecret(context, "");
-		auto &secret = dynamic_cast<const KeyValueSecret &>(*entry->secret);
-		return CredentialsProviderFromSecret(secret, "S3Tables");
-	} catch (const std::exception &) {
-		// No usable AWS secret: fall back to the environment/profile/instance chain, exactly as the
-		// cloudformation_* functions do.
-		return BuildAwsCredentialsProvider("", /*require_credentials=*/true);
-	}
+	auto entry = FindAwsSecret(context, secret_name);
+	return CredentialsProviderFromSecret(entry->secret->Cast<KeyValueSecret>(), "S3Tables");
 }
 
 Aws::S3Tables::S3TablesClient MakeClient(const std::shared_ptr<Aws::Auth::AWSCredentialsProvider> &provider,

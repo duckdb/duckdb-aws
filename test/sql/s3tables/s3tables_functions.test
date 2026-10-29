@@ -9,6 +9,8 @@ statement error
 SELECT * FROM s3tables_table_buckets('eu-central-1');
 ----
 
+require httpfs
+
 require aws
 
 # Every ARN-taking function validates its ARN at bind time, before any client is built.
@@ -91,3 +93,21 @@ SELECT handle, arn, name, region
 FROM s3tables_create_table_bucket('duckdb-test-bucket', region := 'eu-central-1', dry_run := true);
 ----
 NULL	NULL	duckdb-test-bucket	eu-central-1
+
+# Credentials resolve exactly as for the cloudformation_* functions and ATTACH: two unnamed AWS
+# secrets are ambiguous and must be refused rather than silently falling back to the environment.
+statement ok
+CREATE SECRET s3tables_a (TYPE aws, KEY_ID 'AKIAIOSFODNN7EXAMPLE', SECRET 'bogus', REGION 'eu-central-1');
+
+statement ok
+CREATE SECRET s3tables_b (TYPE aws, KEY_ID 'AKIAIOSFODNN7EXAMPLE', SECRET 'bogus', REGION 'eu-central-1');
+
+statement error
+SELECT * FROM s3tables_table_buckets('eu-central-1');
+----
+Found 2 secrets of type "aws"
+
+statement error
+SELECT * FROM s3tables_table_buckets('eu-central-1', secret := 'no_such_secret');
+----
+Secret with name "no_such_secret" not found
