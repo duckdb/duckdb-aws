@@ -8,3 +8,7 @@ test/python/__pycache__/
 .Rhistory
 test/sql/redshift/redshift.env
 test/sql/redshift/serverless/redshift-serverless.env
+.quack-redshift/
+/manual_test_with_secrets.sql
+/.manual_test_with_secrets.sql.*
+scripts/__pycache__/
