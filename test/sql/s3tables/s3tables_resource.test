@@ -60,3 +60,15 @@ REGISTER EXTERNAL RESOURCE 'aws:s3tables:table-bucket' AS bucket_y
 FROM MAP {'arn': 'arn:aws:s3tables:eu-central-1:123456789012:bucket/nope'};
 ----
 <REGEX>:.*__aws__s3tables__table_bucket__status.*
+
+# A SQL macro can shadow the real create function and return an empty ARN without calling AWS.
+# Keep the recovery advice conditional: a lost response can also leave an existing bucket without a handle.
+# The callback uses a separate connection, so the stand-in must not be temporary.
+statement ok
+CREATE MACRO s3tables_create_table_bucket(name, region := NULL, tags := NULL) AS TABLE
+SELECT MAP {'arn': ''} AS handle, '' AS arn, name, region;
+
+statement error
+SELECT * FROM __aws__s3tables__table_bucket__create(MAP {'name': 'armless', 'region': 'eu-central-1'});
+----
+<REGEX>:.*s3tables_create_table_bucket returned an empty ARN for 'armless'\. If an AWS create request was sent, the bucket may already exist;.*
