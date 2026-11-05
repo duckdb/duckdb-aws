@@ -1,0 +1,75 @@
+# name: test/sql/quack_on_ec2_resolve.test
+# description: The quack-on-ec2 list callback names each stack, and the resolve callback finds stacks by name or stack id
+# group: [sql]
+
+require no_extension_autoloading "EXPECTED: the resolve callback is not in the autoload table, the test relies on explicit INSTALL and LOAD"
+
+require aws
+
+# Offline substitutes for the CloudFormation calls. The callbacks run on a separate connection, so the
+# macros must not be temporary. Two stacks share the name 'box' in different regions, one stack is not
+# quack-on-ec2 (no provenance tag), and one region answers with an error.
+statement ok
+CREATE MACRO cloudformation_describe_stacks() AS TABLE
+SELECT t.*, NULL::VARCHAR AS creation_time, NULL::VARCHAR AS last_updated_time, NULL::VARCHAR AS description
+FROM (VALUES
+    ('eu-central-1', 'box', 'arn:aws:cloudformation:eu-central-1:123456789012:stack/box/1111', 'CREATE_COMPLETE',
+     MAP {'duckdb-external-resource-type': 'aws:cloudformation:quack-on-ec2'}, NULL),
+    ('us-east-1', 'box', 'arn:aws:cloudformation:us-east-1:123456789012:stack/box/2222', 'DELETE_IN_PROGRESS',
+     MAP {'duckdb-external-resource-type': 'aws:cloudformation:quack-on-ec2'}, NULL),
+    ('eu-central-1', 'other', 'arn:aws:cloudformation:eu-central-1:123456789012:stack/other/3333', 'CREATE_COMPLETE',
+     MAP {'created-by': 'someone-else'}, NULL),
+    ('ap-south-1', NULL, NULL, NULL, NULL, 'opted out')
+) t(region, stack_name, stack_id, status, tags, error);
+
+statement ok
+CREATE MACRO cloudformation_describe_stack(h) AS TABLE
+SELECT h['region'] AS region, 'box' AS stack_name, h['stack_id'] AS stack_id, 'CREATE_COMPLETE' AS status,
+       MAP {'duckdb-external-resource-type': 'aws:cloudformation:quack-on-ec2'} AS tags;
+
+# The type registers the resolve callback.
+query I
+SELECT resolve_function FROM duckdb_external_resource_types() WHERE name = 'aws:cloudformation:quack-on-ec2';
+----
+__aws__cloudformation__quack_on_ec2__resolve
+
+# A bare name sweeps the regions: a name used in two regions resolves to both stacks, with the same handles
+# listing reports.
+query TTTT
+SELECT handle, name, reference, state FROM __aws__cloudformation__quack_on_ec2__resolve('box') ORDER BY reference;
+----
+{stack_name=box, stack_id='arn:aws:cloudformation:eu-central-1:123456789012:stack/box/1111', region=eu-central-1}	box	arn:aws:cloudformation:eu-central-1:123456789012:stack/box/1111	ready
+{stack_name=box, stack_id='arn:aws:cloudformation:us-east-1:123456789012:stack/box/2222', region=us-east-1}	box	arn:aws:cloudformation:us-east-1:123456789012:stack/box/2222	deleting
+
+# A stack without the provenance tag is not this type's, and an unknown name resolves to nothing.
+query I
+SELECT count(*) FROM __aws__cloudformation__quack_on_ec2__resolve('other');
+----
+0
+
+query I
+SELECT count(*) FROM __aws__cloudformation__quack_on_ec2__resolve('nope');
+----
+0
+
+# A stack id names its region, so it is described directly rather than swept.
+query TTTT
+SELECT handle, name, reference, state
+FROM __aws__cloudformation__quack_on_ec2__resolve('arn:aws:cloudformation:us-east-1:123456789012:stack/box/2222');
+----
+{stack_name=box, stack_id='arn:aws:cloudformation:us-east-1:123456789012:stack/box/2222', region=us-east-1}	box	arn:aws:cloudformation:us-east-1:123456789012:stack/box/2222	ready
+
+statement error
+SELECT * FROM __aws__cloudformation__quack_on_ec2__resolve(NULL);
+----
+the name must not be NULL
+
+# Listing names each stack after its CloudFormation stack name, with the handles resolve reports. The expiry
+# check in the listing works on TIMESTAMPTZ.
+require icu
+
+query TTTT
+SELECT handle, name, reference, state FROM __aws__cloudformation__quack_on_ec2__list(MAP {}) ORDER BY reference;
+----
+{stack_name=box, stack_id='arn:aws:cloudformation:eu-central-1:123456789012:stack/box/1111', region=eu-central-1}	box	arn:aws:cloudformation:eu-central-1:123456789012:stack/box/1111	ready
+{stack_name=box, stack_id='arn:aws:cloudformation:us-east-1:123456789012:stack/box/2222', region=us-east-1}	box	arn:aws:cloudformation:us-east-1:123456789012:stack/box/2222	deleting

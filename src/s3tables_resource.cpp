@@ -3,6 +3,7 @@
 #include "utils/utils.hpp"
 
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/uuid.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/main/connection.hpp"
@@ -217,7 +218,7 @@ void DestroyFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &o
 }
 
 //===--------------------------------------------------------------------===//
-// list(params MAP) -> TABLE(handle MAP, reference VARCHAR, state VARCHAR, metadata MAP)
+// list(params MAP) -> TABLE(handle MAP, name VARCHAR, reference VARCHAR, state VARCHAR, metadata MAP)
 //
 // Every table bucket in the account, not just the ones DuckDB made — that asymmetry with
 // quack-on-ec2 (which filters its stacks by provenance tag) is the point: for S3 Tables the
@@ -246,6 +247,8 @@ unique_ptr<FunctionData> ListBind(ClientContext &, TableFunctionBindInput &input
 	result->input = input.inputs[0];
 	names.emplace_back("handle");
 	return_types.emplace_back(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
+	names.emplace_back("name");
+	return_types.emplace_back(LogicalType::VARCHAR);
 	names.emplace_back("reference");
 	return_types.emplace_back(LogicalType::VARCHAR);
 	names.emplace_back("state");
@@ -253,6 +256,25 @@ unique_ptr<FunctionData> ListBind(ClientContext &, TableFunctionBindInput &input
 	names.emplace_back("metadata");
 	return_types.emplace_back(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
 	return std::move(result);
+}
+
+//! The columns list and resolve share. A table bucket exists or it does not, so its state is always 'ready'.
+const char *BUCKET_ROW_SQL = "MAP {'arn': arn} AS handle, name, arn AS reference, 'ready' AS state";
+
+//! Emit the next vector of the buffered rows, one output column per result column.
+void EmitRows(ListState &state, DataChunk &output) {
+	idx_t total = state.result->RowCount();
+	idx_t remaining = total - state.cursor;
+	idx_t to_emit = MinValue<idx_t>(remaining, STANDARD_VECTOR_SIZE);
+	auto rows = state.result->Collection().GetRows();
+	for (idx_t i = 0; i < to_emit; i++) {
+		idx_t row = state.cursor + i;
+		for (idx_t col = 0; col < output.ColumnCount(); col++) {
+			output.data[col].Append(rows.GetValue(col, row));
+		}
+	}
+	output.CheckCardinality(to_emit);
+	state.cursor += to_emit;
 }
 
 void ListFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
@@ -263,28 +285,58 @@ void ListFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &outp
 		auto region = MapLookup(bind.input, "region");
 		string source =
 		    region.empty() ? "s3tables_table_buckets()" : "s3tables_table_buckets(" + Value(region).ToSQLString() + ")";
-		auto sql = "SELECT MAP {'arn': arn} AS handle, arn AS reference, 'ready' AS state, "
-		           "       MAP {'region': region, 'name': name, 'type': type, 'created_at': created_at, "
+		auto sql = "SELECT " + string(BUCKET_ROW_SQL) +
+		           ",     MAP {'region': region, 'name': name, 'type': type, 'created_at': created_at, "
 		           "            'owner_account_id': owner_account_id} AS metadata "
 		           "FROM " +
 		           source + " WHERE error IS NULL";
 		state.result = RunSQL(context, sql, "s3tables list");
 		state.ran = true;
 	}
+	EmitRows(state, output);
+}
 
-	idx_t total = state.result->RowCount();
-	idx_t remaining = total - state.cursor;
-	idx_t to_emit = MinValue<idx_t>(remaining, STANDARD_VECTOR_SIZE);
-	auto rows = state.result->Collection().GetRows();
-	for (idx_t i = 0; i < to_emit; i++) {
-		idx_t row = state.cursor + i;
-		output.data[0].Append(rows.GetValue(0, row));
-		output.data[1].Append(rows.GetValue(1, row));
-		output.data[2].Append(rows.GetValue(2, row));
-		output.data[3].Append(rows.GetValue(3, row));
+//===--------------------------------------------------------------------===//
+// resolve(name VARCHAR) -> TABLE(handle MAP, name VARCHAR, reference VARCHAR, state VARCHAR)
+//
+// The table buckets called `name`, so a bucket seen in SHOW ALL EXTERNAL RESOURCES can be
+// REGISTERed by name. There is no get-by-name API and a bucket name is only unique within a
+// region, so a bare name filters the sweep and can match several; an ARN names one bucket and is
+// fetched directly.
+//===--------------------------------------------------------------------===//
+
+unique_ptr<FunctionData> ResolveBind(ClientContext &, TableFunctionBindInput &input, vector<LogicalType> &return_types,
+                                     vector<Identifier> &names) {
+	auto result = make_uniq<AdapterBindData>();
+	result->input = input.inputs[0];
+	names.emplace_back("handle");
+	return_types.emplace_back(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
+	names.emplace_back("name");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("reference");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("state");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	return std::move(result);
+}
+
+void ResolveFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	auto &state = data_p.global_state->Cast<ListState>();
+	auto &bind = data_p.bind_data->Cast<AdapterBindData>();
+
+	if (!state.ran) {
+		if (bind.input.IsNull()) {
+			throw InvalidInputException("s3tables resolve: the name must not be NULL");
+		}
+		auto name = StringValue::Get(bind.input);
+		auto name_sql = Value(name).ToSQLString();
+		string source = StringUtil::StartsWith(name, "arn:")
+		                    ? "s3tables_get_table_bucket(" + name_sql + ")"
+		                    : "s3tables_table_buckets() WHERE error IS NULL AND name = " + name_sql;
+		state.result = RunSQL(context, "SELECT " + string(BUCKET_ROW_SQL) + " FROM " + source, "s3tables resolve");
+		state.ran = true;
 	}
-	output.CheckCardinality(to_emit);
-	state.cursor += to_emit;
+	EmitRows(state, output);
 }
 
 } // namespace
@@ -300,6 +352,9 @@ void S3TablesResource::Register(ExtensionLoader &loader) {
 	loader.RegisterFunction(destroy_fn);
 	TableFunction list_fn("__aws__s3tables__table_bucket__list", {map_vv}, ListFun, ListBind, ListInit);
 	loader.RegisterFunction(list_fn);
+	TableFunction resolve_fn("__aws__s3tables__table_bucket__resolve", {LogicalType::VARCHAR}, ResolveFun, ResolveBind,
+	                         ListInit);
+	loader.RegisterFunction(resolve_fn);
 
 	ExternalResourceType type;
 	type.name = S3TABLES_TYPE;
@@ -307,6 +362,7 @@ void S3TablesResource::Register(ExtensionLoader &loader) {
 	type.create_function = "__aws__s3tables__table_bucket__create";
 	type.status_function = "__aws__s3tables__table_bucket__status";
 	type.destroy_function = "__aws__s3tables__table_bucket__destroy";
+	type.resolve_function = "__aws__s3tables__table_bucket__resolve";
 	type.list_function = "__aws__s3tables__table_bucket__list";
 	type.origin = "extension";
 	ExternalResourceTypeRegistry::Get(loader.GetDatabaseInstance()).Add(std::move(type));
