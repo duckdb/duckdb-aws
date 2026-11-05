@@ -141,6 +141,173 @@ Configuration is through environment variables:
 
 The script can also be called directly as `python3 scripts/quack_redshift.py <action> [--force]`, where the action is `setup`, `check`, `cleanup`, or `manual-test`.
 
+## S3 buckets
+
+Control-plane functions for general-purpose S3 buckets: list, create, inspect, update and
+delete. They are table functions, so they compose with the rest of SQL.
+
+```sql
+LOAD aws;
+CREATE SECRET (TYPE aws, PROVIDER credential_chain, REGION 'eu-central-1');
+
+FROM s3_buckets();
+FROM s3_create_bucket('my-duckdb-bucket', versioning := true, tags := MAP {'team': 'data'});
+FROM s3_get_bucket('my-duckdb-bucket');
+FROM s3_bucket_tags('my-duckdb-bucket');
+FROM s3_update_bucket('my-duckdb-bucket', tags := MAP {'team': 'platform', 'owner': NULL});
+FROM s3_delete_bucket('my-duckdb-bucket', cascade := true);
+```
+
+### Running against a local build
+
+Build with `make` as described above, then start the built binary with unsigned extension
+loading and load the extension from the build tree:
+
+```bash
+./build/release/duckdb -unsigned \
+  -cmd "LOAD '$PWD/build/release/extension/aws/aws.duckdb_extension';"
+```
+
+Credentials come from an `aws` or `s3` secret; `PROVIDER credential_chain` picks up the
+environment, `AWS_PROFILE`, SSO and instance roles the same way the AWS CLI does.
+`s3_create_bucket` needs a region to resolve: pass `region :=`, set it on the secret,
+`SET s3_region = '...'`, or export `AWS_REGION`. The other functions start from that region, or
+the SDK default, and follow S3 to the bucket's own region. When `aws_network_calls_via_duckdb`
+is on, also load `httpfs`, since these calls use PUT, POST, HEAD and DELETE.
+
+```sql
+CREATE SECRET (TYPE aws, PROVIDER credential_chain, REGION 'eu-central-1');
+FROM s3_create_bucket('my-duckdb-bucket', dry_run := true);  -- resolves region and identity, calls nothing
+FROM s3_create_bucket('my-duckdb-bucket');
+FROM s3_get_bucket('my-duckdb-bucket');
+FROM s3_delete_bucket('my-duckdb-bucket');
+```
+
+### Listing: `s3_buckets`
+
+```sql
+FROM s3_buckets();
+FROM s3_buckets(region := 'eu-central-1');
+FROM s3_buckets(region := 'eu-central-1', secret := 'my_aws_secret');
+```
+
+`s3_buckets` lists general-purpose buckets owned by the authenticated account. It returns
+`name VARCHAR`, `region VARCHAR`, and `created_at TIMESTAMP WITH TIME ZONE`. The timestamp
+is S3's reported creation date, which can change after bucket configuration updates.
+Directory buckets, S3 table buckets, and buckets merely shared with the caller are not included.
+
+Without `region`, the listing covers all regions in the caller's AWS partition. An explicit
+`region` filters the listing server-side and selects the matching regional endpoint. A region
+configured on a secret, in `s3_region`, in the environment, or in the AWS profile selects the
+endpoint but does not filter the results.
+
+The caller needs `s3:ListAllMyBuckets`; `s3:ListBucket` alone is not sufficient. Requests are
+paginated automatically. The function makes only listing requests and does not scan objects.
+
+### Creating: `s3_create_bucket`
+
+```sql
+FROM s3_create_bucket('my-duckdb-bucket');
+FROM s3_create_bucket('my-duckdb-bucket', region := 'us-east-1', versioning := true,
+                      block_public_access := true, tags := MAP {'team': 'data'});
+FROM s3_create_bucket('my-duckdb-bucket', dry_run := true);
+```
+
+Returns one row: `handle MAP(VARCHAR, VARCHAR)`, `name`, `region`, `arn`. The handle holds
+`name` and `region` and can be passed to the other functions in place of the name.
+
+The region is where the bucket is created and must resolve; the function refuses to fall back
+to the SDK default. Two provenance tags, `created-by = duckdb` and `duckdb-version`, are set
+on every bucket; caller tags win on conflict. `versioning := true` enables versioning;
+`block_public_access` sets all four public access block flags to the given value. Options not
+given leave the AWS defaults. If any configuration step after `CreateBucket` fails, the new
+empty bucket is deleted again and the original error is raised, so a retry does not hit
+`BucketAlreadyOwnedByYou`. `dry_run := true` resolves the identity and region, calls nothing,
+and returns the row with a NULL `handle` and `arn`.
+
+### Inspecting: `s3_get_bucket` and `s3_bucket_tags`
+
+```sql
+FROM s3_get_bucket('my-duckdb-bucket');
+FROM s3_bucket_tags('my-duckdb-bucket');
+```
+
+`s3_get_bucket` returns `name`, `region`, `arn`, `versioning VARCHAR` (`Enabled`, `Suspended`,
+or NULL when never versioned) and `block_public_access BOOLEAN` (true only when all four flags
+are on, NULL when the bucket has no configuration of its own). A missing bucket fails with
+`NoSuchBucket`. `s3_bucket_tags` returns `key`, `value` rows and zero rows for an untagged bucket.
+
+### Updating: `s3_update_bucket`
+
+```sql
+FROM s3_update_bucket('my-duckdb-bucket', tags := MAP {'team': 'platform', 'owner': NULL});
+FROM s3_update_bucket('my-duckdb-bucket', versioning := false);
+FROM s3_update_bucket('my-duckdb-bucket', block_public_access := true, dry_run := true);
+```
+
+S3 has no update call, so this applies the individual settings: `tags`, then `versioning`,
+then `block_public_access`. At least one must be given. Tags merge into the existing set; a
+NULL value removes that key, and an update that empties the set removes the tag set. Setting
+`versioning := false` suspends versioning, since S3 cannot disable it once enabled. A failure
+stops at that step and leaves the earlier changes in place.
+
+Returns one row: `status` (`updated` or `dry_run`), `name`, `region`, and the resulting
+`tags`, `versioning` and `block_public_access`, NULL for settings the call did not touch.
+`dry_run := true` reads the current tags and reports what would be written without writing.
+
+### Deleting: `s3_delete_bucket`
+
+```sql
+FROM s3_delete_bucket('my-duckdb-bucket');
+FROM s3_delete_bucket('my-duckdb-bucket', cascade := true);
+FROM s3_delete_bucket('my-duckdb-bucket', cascade := true, dry_run := true);
+```
+
+`DeleteBucket` only succeeds on an empty bucket. With `cascade := true` the function first
+lists every object version and delete marker and removes them in batches of 1000, then deletes
+the bucket. This is irreversible. Objects under Object Lock retention, or in a bucket with MFA
+delete, fail the cascade; objects already deleted stay deleted and the error says how many. A
+writer racing the cascade makes the final delete fail with `BucketNotEmpty`. There is no seal
+step as in `s3tables_delete_table_bucket`: a Deny bucket policy would lock out the owner if the
+process died halfway.
+
+Returns one row: `status` (`deleted` or `dry_run`), `name`, `region`, `deleted_objects BIGINT`,
+`warning`. `dry_run := true` counts the objects a cascade would remove and warns when the bucket
+is not empty and `cascade` is off.
+
+### Behaviour shared by all S3 bucket functions
+
+Authentication uses an existing `aws` or `s3` secret. Without `secret`, a single explicit `aws`
+secret is preferred over a single explicit `s3` secret, then the default AWS credential chain
+is used. If multiple secrets of the preferred type exist, specify one by name. Explicit NULL
+or empty arguments are rejected.
+
+Region resolution order is the `region` argument, the secret's `REGION`, `s3_region`,
+`AWS_REGION`/`AWS_DEFAULT_REGION`, then the AWS profile. For `s3_get_bucket`, `s3_bucket_tags`,
+`s3_update_bucket` and `s3_delete_bucket` that region is only where the lookup starts: the
+bucket's real region is taken from S3's `HeadBucket` answer and used for every further call, so
+these work on buckets in any region.
+
+Required permissions, per function:
+
+| Function | Actions |
+|---|---|
+| `s3_buckets` | `s3:ListAllMyBuckets` |
+| `s3_create_bucket` | `s3:CreateBucket`, `s3:PutBucketTagging`; `s3:PutBucketVersioning` and `s3:PutBucketPublicAccessBlock` when used; `s3:DeleteBucket` for the rollback |
+| `s3_get_bucket` | `s3:ListBucket` (HeadBucket), `s3:GetBucketVersioning`, `s3:GetBucketPublicAccessBlock` |
+| `s3_bucket_tags` | `s3:ListBucket`, `s3:GetBucketTagging` |
+| `s3_update_bucket` | `s3:ListBucket`; `s3:GetBucketTagging` and `s3:PutBucketTagging` for tags; `s3:PutBucketVersioning`; `s3:PutBucketPublicAccessBlock` |
+| `s3_delete_bucket` | `s3:ListBucket`, `s3:DeleteBucket`; `s3:ListBucketVersions` and `s3:DeleteObject`, `s3:DeleteObjectVersion` for `cascade` |
+
+AWS errors fail the query rather than returning an empty or silently incomplete result. All of
+these functions are blocked by `enable_external_access = false`, including statements prepared
+before the setting changed. `dry_run` is a typed BOOLEAN so that a value that fails to parse
+cannot fall through to a real mutation.
+
+These functions use AWS SDK endpoints, including its endpoint environment/profile overrides.
+S3-specific secret settings such as `ENDPOINT` and `URL_STYLE` are not applied; S3-compatible
+providers are outside their supported scope.
+
 ## Tests
 
 - [Redshift test setup](test/sql/redshift/README.md)
