@@ -6,6 +6,8 @@
 #include "duckdb/common/types/interval.hpp"
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/common/types/value.hpp"
+#include "duckdb/common/vector_operations/unary_executor.hpp"
+#include "duckdb/function/scalar_function.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/query_result.hpp"
@@ -255,6 +257,23 @@ static string IsQuackOnEc2SQL() {
 	       "] = " + Value(string(QUACK_ON_EC2_TYPE)).ToSQLString();
 }
 
+// __aws__expired(deadline VARCHAR) -> BOOLEAN: whether the duckdb-expires-at deadline create wrote (UTC, with its
+// +00 offset) is EXPIRY_MARGIN_SECONDS behind now. A deadline that does not parse is never expired. Provided as a
+// function of this extension rather than spelled with TIMESTAMPTZ in the listing SQL: that arithmetic comes from
+// icu, and where icu is loadable rather than built in, autoloading it while an expression is being bound is not safe.
+static bool IsExpired(string_t deadline_str) {
+	timestamp_t deadline;
+	if (Timestamp::TryConvertTimestamp(deadline_str.GetData(), deadline_str.GetSize(), deadline, true) !=
+	    TimestampCastResult::SUCCESS) {
+		return false;
+	}
+	return Timestamp::GetCurrentTimestamp().value - deadline.value > EXPIRY_MARGIN_SECONDS * Interval::MICROS_PER_SEC;
+}
+
+static void ExpiredFun(DataChunk &args, ExpressionState &, Vector &result) {
+	UnaryExecutor::Execute<string_t, bool>(args.data[0], result, args.size(), IsExpired);
+}
+
 // list(params MAP) -> TABLE(handle MAP, name VARCHAR, reference VARCHAR, state VARCHAR, metadata MAP). Discovers
 // existing quack-on-ec2 stacks (identified by the provenance tag stamped at create). The connect blob (uri/token)
 // is deliberately NOT surfaced here — list is discovery; status produces that.
@@ -316,13 +335,9 @@ static void QuackListFun(ClientContext &context, TableFunctionInput &data_p, Dat
 		           "]} AS metadata, "
 		           // Only a stack that finished creating can have a box that armed its own shutdown; anything
 		           // else is still in flight, failed, or already going away.
-		           "       status = 'CREATE_COMPLETE' AND "
-		           // epoch() rather than TIMESTAMPTZ + INTERVAL: both come from icu, but only the function has an
-		           // autoload placeholder, so this also binds where icu is loadable rather than built in (wasm)
-		           "       epoch(now()) - epoch(TRY_CAST(tags[" +
-		           Value(string(EXPIRES_AT_TAG)).ToSQLString() + "] AS TIMESTAMPTZ)) > " +
-		           to_string(EXPIRY_MARGIN_SECONDS) +
-		           " AS expired "
+		           "       status = 'CREATE_COMPLETE' AND __aws__expired(tags[" +
+		           Value(string(EXPIRES_AT_TAG)).ToSQLString() +
+		           "]) AS expired "
 		           "FROM " +
 		           source + " WHERE error IS NULL AND " + IsQuackOnEc2SQL();
 
@@ -439,6 +454,9 @@ static void QuackResolveFun(ClientContext &context, TableFunctionInput &data_p, 
 
 void QuackOnEc2Resource::Register(ExtensionLoader &loader) {
 	auto map_vv = LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR);
+
+	ScalarFunction expired_fn("__aws__expired", {LogicalType::VARCHAR}, LogicalType::BOOLEAN, ExpiredFun);
+	loader.RegisterFunction(expired_fn);
 
 	// Native callbacks (no SQL macros): thin adapters over cloudformation_*.
 	TableFunction create_fn("__aws__cloudformation__quack_on_ec2__create",

@@ -7,8 +7,9 @@ require no_extension_autoloading "EXPECTED: the resolve callback is not in the a
 require aws
 
 # Offline substitutes for the CloudFormation calls. The callbacks run on a separate connection, so the
-# macros must not be temporary. Two stacks share the name 'box' in different regions, one stack is not
-# quack-on-ec2 (no provenance tag), and one region answers with an error.
+# macros must not be temporary. Two stacks share the name 'box' in different regions, one stack is past its
+# duckdb-expires-at deadline and one is not, one stack is not quack-on-ec2 (no provenance tag), and one
+# region answers with an error.
 statement ok
 CREATE MACRO cloudformation_describe_stacks() AS TABLE
 SELECT t.*, NULL::VARCHAR AS creation_time, NULL::VARCHAR AS last_updated_time, NULL::VARCHAR AS description
@@ -17,7 +18,11 @@ FROM (VALUES
      MAP {'duckdb-external-resource-type': 'aws:cloudformation:quack-on-ec2'}, NULL),
     ('us-east-1', 'box', 'arn:aws:cloudformation:us-east-1:123456789012:stack/box/2222', 'DELETE_IN_PROGRESS',
      MAP {'duckdb-external-resource-type': 'aws:cloudformation:quack-on-ec2'}, NULL),
-    ('eu-central-1', 'other', 'arn:aws:cloudformation:eu-central-1:123456789012:stack/other/3333', 'CREATE_COMPLETE',
+    ('eu-central-1', 'old', 'arn:aws:cloudformation:eu-central-1:123456789012:stack/old/3333', 'CREATE_COMPLETE',
+     MAP {'duckdb-external-resource-type': 'aws:cloudformation:quack-on-ec2', 'duckdb-expires-at': '2020-01-01 00:00:00+00'}, NULL),
+    ('eu-central-1', 'fresh', 'arn:aws:cloudformation:eu-central-1:123456789012:stack/fresh/4444', 'CREATE_COMPLETE',
+     MAP {'duckdb-external-resource-type': 'aws:cloudformation:quack-on-ec2', 'duckdb-expires-at': '2999-01-01 00:00:00+00'}, NULL),
+    ('eu-central-1', 'other', 'arn:aws:cloudformation:eu-central-1:123456789012:stack/other/5555', 'CREATE_COMPLETE',
      MAP {'created-by': 'someone-else'}, NULL),
     ('ap-south-1', NULL, NULL, NULL, NULL, 'opted out')
 ) t(region, stack_name, stack_id, status, tags, error);
@@ -26,6 +31,26 @@ statement ok
 CREATE MACRO cloudformation_describe_stack(h) AS TABLE
 SELECT h['region'] AS region, 'box' AS stack_name, h['stack_id'] AS stack_id, 'CREATE_COMPLETE' AS status,
        MAP {'duckdb-external-resource-type': 'aws:cloudformation:quack-on-ec2'} AS tags;
+
+statement ok
+CREATE MACRO cloudformation_delete_stack(h) AS TABLE SELECT 'deleting' AS status;
+
+# The deadline comparison the listing uses: a UTC deadline from the past is expired, one from the future or
+# one that does not parse is not.
+query IIII
+SELECT __aws__expired('2020-01-01 00:00:00+00'), __aws__expired('2999-01-01 00:00:00+00'), __aws__expired('soon'), __aws__expired(NULL);
+----
+true	false	false	NULL
+
+# Listing names each stack after its CloudFormation stack name. The stack past its deadline is reaped and
+# reported as deleting; the untagged one is not this type's.
+query TTT
+SELECT handle, name, state FROM __aws__cloudformation__quack_on_ec2__list(MAP {}) ORDER BY reference;
+----
+{stack_name=box, stack_id='arn:aws:cloudformation:eu-central-1:123456789012:stack/box/1111', region=eu-central-1}	box	ready
+{stack_name=fresh, stack_id='arn:aws:cloudformation:eu-central-1:123456789012:stack/fresh/4444', region=eu-central-1}	fresh	ready
+{stack_name=old, stack_id='arn:aws:cloudformation:eu-central-1:123456789012:stack/old/3333', region=eu-central-1}	old	deleting
+{stack_name=box, stack_id='arn:aws:cloudformation:us-east-1:123456789012:stack/box/2222', region=us-east-1}	box	deleting
 
 # The type registers the resolve callback.
 query I
@@ -63,13 +88,3 @@ statement error
 SELECT * FROM __aws__cloudformation__quack_on_ec2__resolve(NULL);
 ----
 the name must not be NULL
-
-# Listing names each stack after its CloudFormation stack name, with the handles resolve reports. The expiry
-# check in the listing works on TIMESTAMPTZ.
-require icu
-
-query TTTT
-SELECT handle, name, reference, state FROM __aws__cloudformation__quack_on_ec2__list(MAP {}) ORDER BY reference;
-----
-{stack_name=box, stack_id='arn:aws:cloudformation:eu-central-1:123456789012:stack/box/1111', region=eu-central-1}	box	arn:aws:cloudformation:eu-central-1:123456789012:stack/box/1111	ready
-{stack_name=box, stack_id='arn:aws:cloudformation:us-east-1:123456789012:stack/box/2222', region=us-east-1}	box	arn:aws:cloudformation:us-east-1:123456789012:stack/box/2222	deleting
