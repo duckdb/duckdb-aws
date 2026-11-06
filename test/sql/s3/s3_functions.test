@@ -13,10 +13,11 @@ require httpfs
 
 require aws
 
-# Every AWS call below is meant to fail or be skipped. Pin the identity to a bogus static key so
-# this holds even where the environment carries real credentials.
+# Every AWS call below is meant to fail or be skipped. Pin the identity to the AWS documentation's
+# example key pair, which never resolves to a real identity, so this holds even where the
+# environment carries real credentials.
 statement ok
-CREATE SECRET bogus (TYPE aws, KEY_ID 'AKIAIOSFODNN7EXAMPLE', SECRET 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY', REGION 'eu-central-1');
+CREATE SECRET example_credentials (TYPE aws, KEY_ID 'AKIAIOSFODNN7EXAMPLE', SECRET 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY', REGION 'eu-central-1');
 
 # Schema inspection does not contact AWS.
 query IIIIII

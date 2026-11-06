@@ -165,32 +165,34 @@ The script can also be called directly as `python3 scripts/quack_redshift.py <ac
 
 ## S3 buckets
 
-Functions: `s3_buckets`, `s3_create_bucket`, `s3_get_bucket`, `s3_bucket_tags`,
-`s3_update_bucket`, `s3_delete_bucket`; external-resource type `aws:s3:bucket`.
+`s3_buckets`, `s3_create_bucket`, `s3_get_bucket`, `s3_bucket_tags`, `s3_update_bucket` and
+`s3_delete_bucket` manage general-purpose S3 buckets from SQL; `aws:s3:bucket` is the matching
+external-resource type, for a bucket DuckDB provisions and tears down itself.
 
-```shell
-# Build, then run the S3 tests. Without the fixture environment only s3_functions.test and
-# s3_resource.test run; they need no AWS account.
-GEN=ninja make
-./build/release/test/unittest "*/test/sql/s3/*"
-
-# With the fixture environment, s3_functions_aws.test and s3_resource_aws.test run too.
-# test/sql/s3/s3.env is written by scripts/s3/create_bucket.sh on the s3tables-test-fixtures branch;
-# it names the fixture bucket and, through scripts/test_aws_credentials.sh (aws CLI v2 and jq),
-# exports temporary credentials for AWS_PROFILE. Source one env file per shell.
-source test/sql/s3/s3.env
-./build/release/test/unittest "*/test/sql/s3/*"
-```
-
-The tests are the reference for every function and for the external-resource flows
-(`test/sql/s3/s3_functions_aws.test`, `test/sql/s3/s3_resource_aws.test`). To poke at one by hand:
+Sign in first: `aws login --profile <name>`, and export `AWS_PROFILE` and `AWS_REGION`.
 
 ```shell
 ./build/release/duckdb -unsigned \
-  -cmd "LOAD '$PWD/build/release/extension/aws/aws.duckdb_extension';" \
-  -cmd "CREATE SECRET (TYPE s3, PROVIDER credential_chain, REGION '$AWS_REGION');" \
-  -c "FROM s3_buckets();"
+  -cmd "LOAD '$PWD/build/release/extension/aws/aws.duckdb_extension';"
 ```
+
+```sql
+CREATE SECRET (TYPE s3, PROVIDER credential_chain, REGION 'eu-central-1');
+FROM s3_buckets();
+FROM s3_create_bucket('my-duckdb-bucket', versioning := true, tags := MAP {'team': 'data'});
+FROM s3_get_bucket('my-duckdb-bucket');
+FROM s3_bucket_tags('my-duckdb-bucket');
+FROM s3_update_bucket('my-duckdb-bucket', tags := MAP {'owner': NULL}, block_public_access := true);
+FROM s3_delete_bucket('my-duckdb-bucket', cascade := true);
+```
+
+The first call lists the account's buckets; the create returns one row with a `handle` MAP, the
+tags call shows `created-by = duckdb` next to `team`, and the delete returns `status = deleted`.
+
+Tests: `build/release/test/unittest "*/test/sql/s3/*"`. `s3_functions_aws.test` and
+`s3_resource_aws.test` run only after `source test/sql/s3/s3.env`, the fixture environment written
+by `scripts/s3/create_bucket.sh` on the s3tables-test-fixtures branch; the other two need no AWS
+account.
 
 ## S3 Tables
 
