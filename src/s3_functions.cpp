@@ -4,7 +4,9 @@
 #include "utils/utils.hpp"
 
 #include "duckdb.hpp"
+#include "duckdb/common/error_data.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/optional.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/function/function_set.hpp"
@@ -56,9 +58,6 @@ string FromAws(const Aws::String &value) {
 // Shared plumbing
 //===--------------------------------------------------------------------===//
 
-//! Every function's bind data derives from this, so one init can enforce the external-access
-//! guard and name the caller. The guard runs at init rather than bind so that it also stops
-//! statements prepared before `enable_external_access` was switched off.
 struct S3BindData : public TableFunctionData {
 	S3BindData(const char *fn_name_p, const char *action_p) : fn_name(fn_name_p), action(action_p) {
 	}
@@ -67,6 +66,8 @@ struct S3BindData : public TableFunctionData {
 	string secret_name;
 };
 
+//! Called from init rather than bind so it also stops statements prepared before
+//! enable_external_access was switched off.
 void CheckExternalAccess(ClientContext &context, const S3BindData &data) {
 	if (!Settings::Get<EnableExternalAccessSetting>(context)) {
 		throw PermissionException("%s: %s is disabled through configuration", data.fn_name, data.action);
@@ -89,76 +90,74 @@ void AddColumn(vector<LogicalType> &types, vector<Identifier> &names, const char
 
 //! An optional VARCHAR option: absent is "", but an explicit NULL or '' is a mistake worth naming.
 string StringOption(TableFunctionBindInput &input, const char *key, const char *fn_name) {
-	for (auto &np : input.named_parameters) {
-		if (StringUtil::Lower(np.first.GetIdentifierName()) != key) {
-			continue;
-		}
-		if (np.second.IsNull()) {
-			throw InvalidInputException("%s: %s must not be NULL", fn_name, key);
-		}
-		auto value = StringValue::Get(np.second);
-		if (value.empty()) {
-			throw InvalidInputException("%s: %s must not be empty", fn_name, key);
-		}
-		return value;
+	auto entry = input.named_parameters.find(key);
+	if (entry == input.named_parameters.end()) {
+		return string();
 	}
-	return string();
+	if (entry->second.IsNull()) {
+		throw InvalidInputException("%s: %s must not be NULL", fn_name, key);
+	}
+	auto value = StringValue::Get(entry->second);
+	if (value.empty()) {
+		throw InvalidInputException("%s: %s must not be empty", fn_name, key);
+	}
+	return value;
 }
 
-//! A BOOLEAN option that distinguishes "not given" from false. Returns whether it was given.
-bool TryBoolOption(TableFunctionBindInput &input, const char *key, const char *fn_name, bool &result) {
-	for (auto &np : input.named_parameters) {
-		if (StringUtil::Lower(np.first.GetIdentifierName()) != key) {
-			continue;
-		}
-		if (np.second.IsNull()) {
-			throw InvalidInputException("%s: %s must not be NULL", fn_name, key);
-		}
-		result = BooleanValue::Get(np.second);
-		return true;
+optional<bool> BoolOption(TableFunctionBindInput &input, const char *key, const char *fn_name) {
+	auto entry = input.named_parameters.find(key);
+	if (entry == input.named_parameters.end()) {
+		return {};
 	}
-	return false;
+	if (entry->second.IsNull()) {
+		throw InvalidInputException("%s: %s must not be NULL", fn_name, key);
+	}
+	return BooleanValue::Get(entry->second);
 }
 
-bool BoolOption(TableFunctionBindInput &input, const char *key, const char *fn_name) {
-	bool result = false;
-	TryBoolOption(input, key, fn_name, result);
-	return result;
+//! The settings s3_create_bucket and s3_update_bucket share; an absent one is left as it is.
+struct BucketSettings {
+	optional<bool> versioning;
+	optional<bool> block_public_access;
+};
+
+BucketSettings SettingsOption(TableFunctionBindInput &input, const char *fn_name) {
+	return {BoolOption(input, "versioning", fn_name), BoolOption(input, "block_public_access", fn_name)};
 }
 
 //! The `tags` MAP option. A NULL value means "remove this key", which only s3_update_bucket can
 //! honour; `allow_unset` is false where there is nothing to remove from.
 struct TagOption {
-	bool given = false;
 	std::map<string, string> set;
 	vector<string> unset;
+
+	bool empty() const {
+		return set.empty() && unset.empty();
+	}
 };
 
 TagOption TagsOption(TableFunctionBindInput &input, const char *fn_name, bool allow_unset) {
 	TagOption result;
-	for (auto &np : input.named_parameters) {
-		if (StringUtil::Lower(np.first.GetIdentifierName()) != "tags") {
-			continue;
+	auto entry = input.named_parameters.find("tags");
+	if (entry == input.named_parameters.end()) {
+		return result;
+	}
+	if (entry->second.IsNull()) {
+		throw InvalidInputException("%s: tags must not be NULL", fn_name);
+	}
+	for (auto &pair : MapValue::GetChildren(entry->second)) {
+		auto &kv = StructValue::GetChildren(pair);
+		if (kv[0].IsNull()) {
+			throw InvalidInputException("%s: tag keys must not be NULL", fn_name);
 		}
-		if (np.second.IsNull()) {
-			throw InvalidInputException("%s: tags must not be NULL", fn_name);
-		}
-		result.given = true;
-		for (auto &entry : MapValue::GetChildren(np.second)) {
-			auto &kv = StructValue::GetChildren(entry);
-			if (kv[0].IsNull()) {
-				throw InvalidInputException("%s: tag keys must not be NULL", fn_name);
+		auto key = StringValue::Get(kv[0]);
+		if (kv[1].IsNull()) {
+			if (!allow_unset) {
+				throw InvalidInputException("%s: tag '%s' has a NULL value; use '' for an empty value", fn_name, key);
 			}
-			auto key = StringValue::Get(kv[0]);
-			if (kv[1].IsNull()) {
-				if (!allow_unset) {
-					throw InvalidInputException("%s: tag '%s' has a NULL value; use '' for an empty value", fn_name,
-					                            key);
-				}
-				result.unset.push_back(key);
-			} else {
-				result.set[key] = StringValue::Get(kv[1]);
-			}
+			result.unset.push_back(key);
+		} else {
+			result.set[key] = StringValue::Get(kv[1]);
 		}
 	}
 	return result;
@@ -224,9 +223,8 @@ string BucketArn(const string &name, const string &region) {
 	return "arn:" + partition + ":s3:::" + name;
 }
 
-//! The identity and endpoint configuration one S3 call set shares. `region` is the caller's
-//! choice after the usual resolution order (argument, secret, s3_region, environment, profile);
-//! empty means nothing configured one and the SDK's own default stands.
+//! `region` is the caller's choice after the usual resolution order (argument, secret, s3_region,
+//! environment, profile); empty means nothing configured one and the SDK's own default stands.
 struct S3Access {
 	std::shared_ptr<Aws::Auth::AWSCredentialsProvider> provider;
 	Aws::S3::S3ClientConfiguration config;
@@ -269,8 +267,7 @@ template <class OUTCOME>
 
 //! Bucket names are global, but every call must go to the bucket's own region. HeadBucket from
 //! the configured region answers with the real one: in the result when the request was routed
-//! right, otherwise in the x-amz-bucket-region header of the refusal. The header map is scanned
-//! case-insensitively because the two HTTP transports do not agree on header case.
+//! right, otherwise in the x-amz-bucket-region header of the refusal.
 string LocateBucket(const S3Access &access, const string &name) {
 	auto client = MakeClient(access, FromAws(access.config.region));
 	Aws::S3::Model::HeadBucketRequest request;
@@ -281,10 +278,10 @@ string LocateBucket(const S3Access &access, const string &name) {
 		return region.empty() ? FromAws(access.config.region) : region;
 	}
 	const auto &error = outcome.GetError();
-	for (const auto &header : error.GetResponseHeaders()) {
-		if (StringUtil::Lower(FromAws(header.first)) == "x-amz-bucket-region" && !header.second.empty()) {
-			return FromAws(header.second);
-		}
+	const auto &headers = error.GetResponseHeaders();
+	auto hint = headers.find("x-amz-bucket-region");
+	if (hint != headers.end() && !hint->second.empty()) {
+		return FromAws(hint->second);
 	}
 	if (error.GetResponseCode() == Aws::Http::HttpResponseCode::NOT_FOUND) {
 		throw IOException("S3 HeadBucket failed: NoSuchBucket - bucket '%s' does not exist", name);
@@ -378,8 +375,7 @@ Value GetVersioning(Aws::S3::S3Client &client, const string &name) {
 	return Value(FromAws(Aws::S3::Model::BucketVersioningStatusMapper::GetNameForBucketVersioningStatus(status)));
 }
 
-//! All four public-access blocks are set together: a bucket is either sealed off from public
-//! access or it is not, and a partial configuration is not a state this function produces.
+//! All four public-access blocks are set together; partial configurations are deliberately not offered.
 void PutPublicAccessBlock(Aws::S3::S3Client &client, const string &name, bool blocked) {
 	Aws::S3::Model::PublicAccessBlockConfiguration configuration;
 	configuration.SetBlockPublicAcls(blocked);
@@ -594,8 +590,8 @@ void S3BucketsFun(ClientContext &context, TableFunctionInput &input, DataChunk &
 // s3_create_bucket(name [, region :=, tags :=, versioning :=, block_public_access :=, secret :=, dry_run :=])
 //
 // CreateBucket, then the configuration S3 only accepts as separate calls. The `handle` column is
-// the MAP s3_update_bucket and s3_delete_bucket take in place of the name; it carries the region
-// as well, because unlike a table bucket ARN an S3 bucket ARN does not.
+// the MAP every `name | handle` function takes in place of the name; it carries the region because
+// an S3 bucket ARN, unlike a table bucket ARN, does not.
 //===--------------------------------------------------------------------===//
 
 struct CreateBucketBindData : public S3BindData {
@@ -604,10 +600,7 @@ struct CreateBucketBindData : public S3BindData {
 	string name;
 	string region;
 	std::map<string, string> tags;
-	bool has_versioning = false;
-	bool versioning = false;
-	bool has_block_public_access = false;
-	bool block_public_access = false;
+	BucketSettings settings;
 	bool dry_run = false;
 };
 
@@ -625,9 +618,8 @@ unique_ptr<FunctionData> CreateBucketBind(ClientContext &, TableFunctionBindInpu
 	result->region = StringOption(input, "region", fn_name);
 	result->secret_name = StringOption(input, "secret", fn_name);
 	result->tags = TagsOption(input, fn_name, false).set;
-	result->has_versioning = TryBoolOption(input, "versioning", fn_name, result->versioning);
-	result->has_block_public_access = TryBoolOption(input, "block_public_access", fn_name, result->block_public_access);
-	result->dry_run = BoolOption(input, "dry_run", fn_name);
+	result->settings = SettingsOption(input, fn_name);
+	result->dry_run = BoolOption(input, "dry_run", fn_name).value_or(false);
 
 	AddColumn(return_types, names, "handle", LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
 	AddColumn(return_types, names, "name", LogicalType::VARCHAR);
@@ -648,7 +640,9 @@ void CreateBucketFun(ClientContext &context, TableFunctionInput &input, DataChun
 	auto access = ResolveAccess(context, data.secret_name, data.region);
 	// The SDK would quietly fall back to us-east-1; a bucket is too durable to place by accident.
 	if (access.region.empty()) {
-		throw InvalidInputException("%s: no region: pass region := or set s3_region / AWS_REGION", data.fn_name);
+		throw InvalidInputException(
+		    "%s: no region resolved; pass region :=, set REGION on the secret, or set s3_region / AWS_REGION",
+		    data.fn_name);
 	}
 	const auto &region = access.region;
 
@@ -664,20 +658,32 @@ void CreateBucketFun(ClientContext &context, TableFunctionInput &input, DataChun
 	}
 
 	auto client = MakeClient(access, region);
+	// In us-east-1 CreateBucket answers 200 for a bucket the account already owns, where every other
+	// region answers BucketAlreadyOwnedByYou. Taken at face value this call would reconfigure, and on
+	// a later failure delete, a bucket it did not create. So the name is probed first there, and only
+	// a clean NoSuchBucket proceeds. A creator racing between probe and create is not covered.
+	if (region == "us-east-1") {
+		Aws::S3::Model::HeadBucketRequest probe;
+		probe.SetBucket(data.name.c_str());
+		auto probe_outcome = client->HeadBucket(probe);
+		if (probe_outcome.IsSuccess()) {
+			throw IOException("S3 CreateBucket refused: bucket '%s' already exists", data.name);
+		}
+		auto code = static_cast<int>(probe_outcome.GetError().GetResponseCode());
+		if (code != static_cast<int>(Aws::Http::HttpResponseCode::NOT_FOUND)) {
+			throw IOException(
+			    "S3 CreateBucket refused: bucket '%s' may already exist (HeadBucket answered HTTP %d, not "
+			    "404) and us-east-1 would reuse it",
+			    data.name, code);
+		}
+	}
 	Aws::S3::Model::CreateBucketRequest request;
 	request.SetBucket(data.name.c_str());
 	// us-east-1 is the one region that must be asked for by omitting the LocationConstraint.
 	if (region != "us-east-1") {
-		auto constraint =
-		    Aws::S3::Model::BucketLocationConstraintMapper::GetBucketLocationConstraintForName(region.c_str());
-		// A region the SDK cannot serialize back would go out as an empty constraint, which is
-		// us-east-1 again.
-		if (FromAws(Aws::S3::Model::BucketLocationConstraintMapper::GetNameForBucketLocationConstraint(constraint)) !=
-		    region) {
-			throw InvalidInputException("%s: the AWS SDK does not know region '%s'", data.fn_name, region);
-		}
 		Aws::S3::Model::CreateBucketConfiguration configuration;
-		configuration.SetLocationConstraint(constraint);
+		configuration.SetLocationConstraint(
+		    Aws::S3::Model::BucketLocationConstraintMapper::GetBucketLocationConstraintForName(region.c_str()));
 		request.SetCreateBucketConfiguration(std::move(configuration));
 	}
 	auto outcome = client->CreateBucket(request);
@@ -692,22 +698,23 @@ void CreateBucketFun(ClientContext &context, TableFunctionInput &input, DataChun
 	tags.emplace("duckdb-version", DuckDB::LibraryVersion());
 	try {
 		PutTags(*client, data.name, tags);
-		if (data.has_versioning && data.versioning) {
+		if (data.settings.versioning.value_or(false)) {
 			PutVersioning(*client, data.name, true);
 		}
-		if (data.has_block_public_access) {
-			PutPublicAccessBlock(*client, data.name, data.block_public_access);
+		if (data.settings.block_public_access) {
+			PutPublicAccessBlock(*client, data.name, *data.settings.block_public_access);
 		}
 	} catch (std::exception &ex) {
 		// A bucket that exists but is not what was asked for is worse than none, and this one is
-		// empty and ours, so remove it: a retry after fixing the cause then does not trip over
-		// BucketAlreadyOwnedByYou.
+		// empty and ours (see the us-east-1 probe above), so remove it: a retry after fixing the
+		// cause then does not trip over BucketAlreadyOwnedByYou.
 		Aws::S3::Model::DeleteBucketRequest cleanup;
 		cleanup.SetBucket(data.name.c_str());
 		auto cleanup_outcome = client->DeleteBucket(cleanup);
 		if (!cleanup_outcome.IsSuccess()) {
-			throw IOException("%s; bucket '%s' was created but could not be removed again (%s)", ex.what(), data.name,
-			                  FromAws(cleanup_outcome.GetError().GetExceptionName()));
+			ErrorData error(ex);
+			throw IOException("%s; bucket '%s' was created but could not be removed again (%s)", error.RawMessage(),
+			                  data.name, FromAws(cleanup_outcome.GetError().GetExceptionName()));
 		}
 		throw;
 	}
@@ -722,8 +729,8 @@ void CreateBucketFun(ClientContext &context, TableFunctionInput &input, DataChun
 //===--------------------------------------------------------------------===//
 // s3_get_bucket(name | handle [, region :=, secret :=])
 //
-// HeadBucket, then the two settings s3_update_bucket changes, so an update can be verified
-// without the console.
+// HeadBucket, then versioning and the public-access block, so an s3_update_bucket change can be
+// verified without the console (tags are in s3_bucket_tags).
 //===--------------------------------------------------------------------===//
 
 struct BucketBindData : public S3BindData {
@@ -825,19 +832,17 @@ void BucketTagsFun(ClientContext &context, TableFunctionInput &input, DataChunk 
 // s3_update_bucket(name | handle [, tags :=, versioning :=, block_public_access :=, region :=, secret :=, dry_run :=])
 //
 // S3 has no UpdateBucket; this is the three Put calls behind the settings s3_create_bucket
-// accepts, applied in that order. A failure stops there and leaves the earlier changes in place,
-// which the error names. Tags merge into the existing set rather than replace it, so updating one
-// tag does not silently drop the provenance tags; a NULL value removes a key.
+// accepts, in the order tags, versioning, public-access block. A failure stops there and leaves
+// the earlier changes in place; the error names the call that failed. Tags merge into the existing
+// set rather than replace it, so updating one tag does not silently drop the provenance tags; a
+// NULL value removes a key.
 //===--------------------------------------------------------------------===//
 
 struct UpdateBucketBindData : public BucketBindData {
 	UpdateBucketBindData() : BucketBindData("s3_update_bucket", "updating S3 buckets") {
 	}
 	TagOption tags;
-	bool has_versioning = false;
-	bool versioning = false;
-	bool has_block_public_access = false;
-	bool block_public_access = false;
+	BucketSettings settings;
 	bool dry_run = false;
 };
 
@@ -848,14 +853,12 @@ unique_ptr<FunctionData> UpdateBucketBind(ClientContext &, TableFunctionBindInpu
 	result->bucket = BucketFromInput(input, fn_name);
 	result->secret_name = StringOption(input, "secret", fn_name);
 	result->tags = TagsOption(input, fn_name, true);
-	result->has_versioning = TryBoolOption(input, "versioning", fn_name, result->versioning);
-	result->has_block_public_access = TryBoolOption(input, "block_public_access", fn_name, result->block_public_access);
-	result->dry_run = BoolOption(input, "dry_run", fn_name);
+	result->settings = SettingsOption(input, fn_name);
+	result->dry_run = BoolOption(input, "dry_run", fn_name).value_or(false);
 
-	bool changes_tags = !result->tags.set.empty() || !result->tags.unset.empty();
-	if (!changes_tags && !result->has_versioning && !result->has_block_public_access) {
-		throw InvalidInputException("%s: nothing to change: pass tags :=, versioning := or block_public_access :=",
-		                            fn_name);
+	if (result->tags.empty() && !result->settings.versioning && !result->settings.block_public_access) {
+		throw InvalidInputException(
+		    "%s: no change requested; pass a non-empty tags :=, versioning := or block_public_access :=", fn_name);
 	}
 
 	AddColumn(return_types, names, "status", LogicalType::VARCHAR);
@@ -886,7 +889,7 @@ void UpdateBucketFun(ClientContext &context, TableFunctionInput &input, DataChun
 	Value versioning_out;
 	Value block_public_access_out;
 
-	if (!data.tags.set.empty() || !data.tags.unset.empty()) {
+	if (!data.tags.empty()) {
 		auto tags = GetTags(*client, name);
 		for (auto &tag : data.tags.set) {
 			tags[tag.first] = tag.second;
@@ -899,17 +902,17 @@ void UpdateBucketFun(ClientContext &context, TableFunctionInput &input, DataChun
 		}
 		tags_out = TagsValue(tags);
 	}
-	if (data.has_versioning) {
+	if (data.settings.versioning) {
 		if (!data.dry_run) {
-			PutVersioning(*client, name, data.versioning);
+			PutVersioning(*client, name, *data.settings.versioning);
 		}
-		versioning_out = Value(data.versioning ? "Enabled" : "Suspended");
+		versioning_out = Value(*data.settings.versioning ? "Enabled" : "Suspended");
 	}
-	if (data.has_block_public_access) {
+	if (data.settings.block_public_access) {
 		if (!data.dry_run) {
-			PutPublicAccessBlock(*client, name, data.block_public_access);
+			PutPublicAccessBlock(*client, name, *data.settings.block_public_access);
 		}
-		block_public_access_out = Value::BOOLEAN(data.block_public_access);
+		block_public_access_out = Value::BOOLEAN(*data.settings.block_public_access);
 	}
 
 	output.data[0].Append(Value(data.dry_run ? "dry_run" : "updated"));
@@ -945,8 +948,8 @@ unique_ptr<FunctionData> DeleteBucketBind(ClientContext &, TableFunctionBindInpu
 	auto fn_name = result->fn_name;
 	result->bucket = BucketFromInput(input, fn_name);
 	result->secret_name = StringOption(input, "secret", fn_name);
-	result->cascade = BoolOption(input, "cascade", fn_name);
-	result->dry_run = BoolOption(input, "dry_run", fn_name);
+	result->cascade = BoolOption(input, "cascade", fn_name).value_or(false);
+	result->dry_run = BoolOption(input, "dry_run", fn_name).value_or(false);
 
 	AddColumn(return_types, names, "status", LogicalType::VARCHAR);
 	AddColumn(return_types, names, "name", LogicalType::VARCHAR);
@@ -974,7 +977,6 @@ void DeleteBucketFun(ClientContext &context, TableFunctionInput &input, DataChun
 	string warning;
 
 	if (data.dry_run) {
-		// Count what a cascade would remove, touching nothing.
 		deleted_objects = CountObjects(context, *client, name);
 		if (!data.cascade && deleted_objects > 0) {
 			warning = "bucket is not empty and cascade := false, so the delete would fail";
@@ -1012,8 +1014,6 @@ void DeleteBucketFun(ClientContext &context, TableFunctionInput &input, DataChun
 	output.CheckCardinality(1);
 }
 
-//! Two overloads for every function that acts on one bucket: the name, or the handle MAP that
-//! s3_create_bucket returned.
 TableFunctionSet BucketFunctionSet(const char *name, const std::function<void(TypedKwargs &)> &options,
                                    table_function_t function, table_function_bind_t bind,
                                    table_function_init_global_t init) {
