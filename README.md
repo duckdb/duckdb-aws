@@ -169,9 +169,16 @@ Functions: `s3_buckets`, `s3_create_bucket`, `s3_get_bucket`, `s3_bucket_tags`,
 `s3_update_bucket`, `s3_delete_bucket`; external-resource type `aws:s3:bucket`.
 
 ```shell
-# Build, then run the S3 tests. They need no AWS account: every AWS call in them is made with
-# a bogus key and expected to fail.
+# Build, then run the S3 tests. Without the fixture environment only s3_functions.test and
+# s3_resource.test run; they need no AWS account.
 GEN=ninja make
+./build/release/test/unittest "*/test/sql/s3/*"
+
+# With the fixture environment, s3_functions_aws.test and s3_resource_aws.test run too.
+# test/sql/s3/s3.env is written by scripts/s3/create_bucket.sh on the s3tables-test-fixtures branch;
+# it names the fixture bucket and, through scripts/test_aws_credentials.sh (aws CLI v2 and jq),
+# exports temporary credentials for AWS_PROFILE. Source one env file per shell.
+source test/sql/s3/s3.env
 ./build/release/test/unittest "*/test/sql/s3/*"
 ```
 
@@ -237,10 +244,15 @@ Functions: `s3tables_table_buckets`, `s3tables_namespaces`, `s3tables_tables`,
 `s3tables_delete_table_bucket`; external-resource type `aws:s3tables:table-bucket`.
 
 ```shell
-# Build, then run the S3 Tables tests. s3tables_functions.test and s3tables_resource.test need no
-# AWS account. s3tables.test needs AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and the iceberg
-# extension, and is skipped without them.
+# Build, then run the S3 Tables tests. Without the fixture environment only s3tables_functions.test
+# and s3tables_resource.test run; they need no AWS account.
 GEN=ninja make
+./build/release/test/unittest "*/test/sql/s3tables/*"
+
+# With the fixture environment, s3tables.test runs too; it also needs the iceberg extension.
+# test/sql/s3tables/s3tables.env is written by scripts/s3tables/create_s3tables_test_fixture.sh on
+# the s3tables-test-fixtures branch. Source one env file per shell.
+source test/sql/s3tables/s3tables.env
 ./build/release/test/unittest "*/test/sql/s3tables/*"
 ```
 
