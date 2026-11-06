@@ -182,59 +182,14 @@ source test/sql/s3/s3.env
 ./build/release/test/unittest "*/test/sql/s3/*"
 ```
 
-```shell
-# End-to-end against AWS. Needs credentials the AWS CLI would accept and a region.
-export AWS_PROFILE=my-profile AWS_REGION=eu-central-1
-BUCKET="duckdb-s3-check-$(openssl rand -hex 6)"
-
-# duck SQL [duckdb flags]: one DuckDB session with the local aws and httpfs builds loaded and one
-# credential-chain secret for $AWS_REGION, which both the s3_* functions and s3:// reads and writes use.
-duck() {
-  local sql=$1; shift
-  ./build/release/duckdb -unsigned "$@" \
-    -cmd ".output /dev/null" \
-    -cmd "LOAD '$PWD/build/release/extension/httpfs/httpfs.duckdb_extension';" \
-    -cmd "LOAD '$PWD/build/release/extension/aws/aws.duckdb_extension';" \
-    -cmd "CREATE SECRET (TYPE s3, PROVIDER credential_chain, REGION '$AWS_REGION');" \
-    -cmd ".output stdout" \
-    -c "$sql"
-}
-```
+The tests are the reference for every function and for the external-resource flows
+(`test/sql/s3/s3_functions_aws.test`, `test/sql/s3/s3_resource_aws.test`). To poke at one by hand:
 
 ```shell
-# The functions, in lifecycle order.
-duck "FROM s3_buckets();"
-duck "FROM s3_buckets(region := '$AWS_REGION');"
-duck "FROM s3_create_bucket('$BUCKET', dry_run := true);"
-duck "FROM s3_create_bucket('$BUCKET', versioning := true, tags := MAP {'team': 'data'});"
-duck "FROM s3_get_bucket('$BUCKET');"
-duck "FROM s3_bucket_tags('$BUCKET');"
-duck "FROM s3_update_bucket('$BUCKET', tags := MAP {'team': 'platform', 'owner': NULL}, block_public_access := true, dry_run := true);"
-duck "FROM s3_update_bucket('$BUCKET', tags := MAP {'team': 'platform', 'owner': NULL}, block_public_access := true);"
-duck "FROM s3_update_bucket('$BUCKET', versioning := false);"
-duck "FROM s3_get_bucket('$BUCKET'); FROM s3_bucket_tags('$BUCKET');"
-duck "COPY (SELECT 1 AS i) TO 's3://$BUCKET/one.parquet';"
-duck "FROM s3_delete_bucket('$BUCKET');"                                   # fails: BucketNotEmpty
-duck "FROM s3_delete_bucket('$BUCKET', cascade := true, dry_run := true);" # deleted_objects = 1
-duck "FROM s3_delete_bucket('$BUCKET', cascade := true);"
-duck "FROM s3_get_bucket('$BUCKET');"                                      # fails: NoSuchBucket
-```
-
-```shell
-# The external-resource type. CREATE tags the bucket with duckdb-external-resource-type = aws:s3:bucket
-# and DESTROY cascades because of that tag; a REGISTERed bucket carries no tag and is only deleted
-# when empty. Resources live in the session, so each flow is one duck call.
-duck "CREATE EXTERNAL RESOURCE 'aws:s3:bucket' AS scratch (REGION '$AWS_REGION', NAME '$BUCKET-managed');
-      SHOW EXTERNAL RESOURCES;
-      FROM s3_bucket_tags('$BUCKET-managed');
-      COPY (SELECT 1 AS i) TO 's3://$BUCKET-managed/one.parquet';
-      DESTROY EXTERNAL RESOURCE scratch;
-      FROM s3_buckets() WHERE name = '$BUCKET-managed';"
-
-duck "FROM s3_create_bucket('$BUCKET-adopted');"
-duck "REGISTER EXTERNAL RESOURCE 'aws:s3:bucket' AS adopted FROM MAP {'name': '$BUCKET-adopted', 'region': '$AWS_REGION'};
-      SHOW ALL EXTERNAL RESOURCES;
-      DESTROY EXTERNAL RESOURCE adopted;"
+./build/release/duckdb -unsigned \
+  -cmd "LOAD '$PWD/build/release/extension/aws/aws.duckdb_extension';" \
+  -cmd "CREATE SECRET (TYPE s3, PROVIDER credential_chain, REGION '$AWS_REGION');" \
+  -c "FROM s3_buckets();"
 ```
 
 ## S3 Tables
@@ -256,33 +211,14 @@ source test/sql/s3tables/s3tables.env
 ./build/release/test/unittest "*/test/sql/s3tables/*"
 ```
 
-```shell
-# End-to-end against AWS, with the duck helper and variables from the S3 section above.
-TABLE_BUCKET="duckdb-s3tables-check-$(openssl rand -hex 6)"
-
-duck "FROM s3tables_table_buckets('$AWS_REGION');"
-duck "FROM s3tables_create_table_bucket('$TABLE_BUCKET', region := '$AWS_REGION', dry_run := true);"
-ARN=$(duck "SELECT arn FROM s3tables_create_table_bucket('$TABLE_BUCKET', region := '$AWS_REGION');" -csv -noheader)
-echo "$ARN"
-duck "FROM s3tables_get_table_bucket('$ARN');"
-duck "FROM s3tables_table_bucket_tags('$ARN');"
-duck "FROM s3tables_namespaces('$ARN');"
-duck "FROM s3tables_tables('$ARN');"
-duck "FROM s3tables_delete_table_bucket('$ARN', cascade := true, dry_run := true);"
-duck "FROM s3tables_delete_table_bucket('$ARN', cascade := true);"
-duck "FROM s3tables_get_table_bucket('$ARN');"                             # fails: NotFoundException
-```
+`s3tables.test` attaches the fixture table bucket and reads a table; the `s3tables_*` lifecycle
+functions have no AWS-backed test yet. To run one by hand:
 
 ```shell
-# The external-resource type. Kind 'catalog', so a managed table bucket also attaches; attaching
-# needs the iceberg extension (INSTALL iceberg; once).
-duck "CREATE EXTERNAL RESOURCE 'aws:s3tables:table-bucket' AS tb (REGION '$AWS_REGION', NAME '$TABLE_BUCKET-managed');
-      SHOW EXTERNAL RESOURCES;
-      ATTACH TO EXTERNAL RESOURCE tb AS tables;
-      SHOW ALL TABLES;
-      DESTROY EXTERNAL RESOURCE tb;" -cmd "LOAD iceberg;"
-
-duck "SHOW ALL EXTERNAL RESOURCES;"                                        # every table bucket, unmanaged
+./build/release/duckdb -unsigned \
+  -cmd "LOAD '$PWD/build/release/extension/aws/aws.duckdb_extension';" \
+  -cmd "CREATE SECRET (TYPE s3, PROVIDER credential_chain, REGION '$AWS_REGION');" \
+  -c "FROM s3tables_table_buckets('$AWS_REGION');"
 ```
 
 ## Tests
