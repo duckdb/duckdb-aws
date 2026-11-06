@@ -31,6 +31,10 @@ with open(os.environ["AWS_CALL_LOG"], "a") as log:
 def option(name):
     return args[args.index(name) + 1]
 
+def bucket_regions():
+    path = state / "bucket"
+    return json.loads(path.read_text()) if path.exists() else {}
+
 def emit(value):
     print(json.dumps(value))
     sys.exit(0)
@@ -50,23 +54,24 @@ if "list-profiles" in args:
     print("fixture-profile")
     sys.exit(0)
 if "get-caller-identity" in args:
+    account = os.environ.get("STUB_ACCOUNT_ID", "123456789012")
     if "--query" in args:
-        print("123456789012")
+        print(account)
         sys.exit(0)
-    emit({"Account": "123456789012", "Arn": "arn:aws:iam::123456789012:user/test"})
+    emit({"Account": account, "Arn": "arn:aws:iam::" + account + ":user/test"})
 if "s3api" in args:
     cmd = args[args.index("s3api") + 1]
     if cmd == "head-bucket":
         if os.environ.get("HEAD_ERROR"):
             fail(os.environ["HEAD_ERROR"])
-        if os.environ.get("NEW_FIXTURE") and not (state / "bucket").exists():
+        if os.environ.get("NEW_FIXTURE") and option("--bucket") not in bucket_regions():
             fail("An error occurred (404): Not Found")
         sys.exit(0)
     if cmd == "get-bucket-tagging":
         emit({"TagSet": [{"Key": "ManagedBy", "Value": os.environ.get("STUB_MANAGED_BY", "duckdb-aws-s3-test")},
                          {"Key": "Project", "Value": "duckdb-aws"}]})
     if cmd == "get-bucket-location":
-        emit({"LocationConstraint": os.environ.get("BUCKET_REGION", "eu-central-1")})
+        emit({"LocationConstraint": os.environ.get("BUCKET_REGION", bucket_regions().get(option("--bucket"), "eu-central-1"))})
     if cmd == "get-bucket-versioning":
         emit({"Status": "Suspended"} if os.environ.get("VERSIONED") else {})
     if cmd == "list-objects-v2":
@@ -77,7 +82,9 @@ if "s3api" in args:
         emit({"ContentLength": 123})
     if cmd.startswith(("put-", "delete-", "create-")):
         if cmd == "create-bucket":
-            (state / "bucket").touch()
+            regions = bucket_regions()
+            regions[option("--bucket")] = option("--create-bucket-configuration").split("=", 1)[1] if "--create-bucket-configuration" in args else "us-east-1"
+            (state / "bucket").write_text(json.dumps(regions))
         if cmd == "put-bucket-cors":
             Path(os.environ["CORS_RESULT"]).write_text(option("--cors-configuration"))
         emit({})
@@ -144,7 +151,7 @@ class FixtureScriptsTest(unittest.TestCase):
             "AWS_STATE_DIR": str(self.directory / "state"),
             "CORS_RESULT": str(self.directory / "cors.json"),
             "PREFIX": "tester",
-            "S3_BUCKET_NAME": "test-bucket",
+            "S3_BUCKET_NAME": "",
             "S3_ENV_FILE": str(self.env_file),
             "S3TABLES_TABLE_BUCKET_NAME": "test-bucket",
             "S3TABLES_NAMESPACE": "123test",
@@ -198,6 +205,56 @@ class FixtureScriptsTest(unittest.TestCase):
         result = self.run_script(SCRIPTS[1], "--force", UNRELATED="1")
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.mutations(), [])
+
+    def test_bucket_creation_uses_current_context_after_sourcing_config(self):
+        result = self.run_script(SCRIPTS[0], "--force", NEW_FIXTURE="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        contexts = [
+            ("changed-prefix", "fixture-profile", "eu-central-1", "123456789012", True),
+            ("changed-prefix", "another-profile", "eu-central-1", "987654321098", True),
+            ("changed-prefix", "another-profile", "us-west-1", "987654321098", True),
+            ("changed-prefix", "another-profile", "us-west-1", "987654321098", False),
+        ]
+        for prefix, profile, region, account, creates in contexts:
+            with self.subTest(prefix=prefix, profile=profile, region=region):
+                start = len(self.calls())
+                result = subprocess.run(
+                    ["bash", "-c", 'source "$1" || exit; PREFIX="$2" AWS_PROFILE="$3" AWS_REGION="$4" "$5" --force',
+                     "bash", str(self.env_file), prefix, profile, region, str(ROOT / SCRIPTS[0])],
+                    cwd=ROOT, env={**self.env, "NEW_FIXTURE": "1", "STUB_ACCOUNT_ID": account},
+                    capture_output=True, text=True, timeout=20,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                calls = self.calls()[start:]
+                expected_bucket = f"{prefix}-duckdb-aws-{account}-{region}"
+                creations = [args for args in calls if "create-bucket" in args]
+                self.assertEqual(len(creations), int(creates))
+                for args in calls:
+                    if "--bucket" in args:
+                        self.assertEqual(args[args.index("--bucket") + 1], expected_bucket)
+                    if "--expected-bucket-owner" in args:
+                        self.assertEqual(args[args.index("--expected-bucket-owner") + 1], account)
+                exports = [args for args in calls if "export-credentials" in args]
+                self.assertEqual(exports[-1][exports[-1].index("--profile") + 1], profile)
+                config = self.env_file.read_text()
+                self.assertIn(f"export AWS_S3_BUCKET={expected_bucket}\n", config)
+                self.assertIn(f"export AWS_REGION={region}\n", config)
+                self.assertIn(f"export PREFIX={prefix}\n", config)
+                self.assertIn(f"export AWS_PROFILE={profile}\n", config)
+                self.assertEqual(sum("put-object" in args for args in calls), 1)
+                self.assertFalse(any(arg.startswith("delete-") for args in calls for arg in args))
+        start = len(self.calls())
+        result = subprocess.run(
+            ["bash", "-c", 'source "$1" || exit; PREFIX=cleanup-only "$2" --force',
+             "bash", str(self.env_file), str(ROOT / SCRIPTS[1])],
+            cwd=ROOT, env={**self.env, "STUB_ACCOUNT_ID": account},
+            capture_output=True, text=True, timeout=20,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        deletions = [args for args in self.calls()[start:] if any(arg.startswith("delete-") for arg in args)]
+        self.assertEqual(len(deletions), 3)
+        self.assertTrue(all(args[args.index("--bucket") + 1] == expected_bucket for args in deletions))
+        self.assertFalse(self.env_file.exists())
 
     def test_bucket_creation_uses_regional_configuration(self):
         for region in ["us-east-1", "eu-central-1"]:

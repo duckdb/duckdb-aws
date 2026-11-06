@@ -8,11 +8,12 @@ Usage: $(basename "$0") [--force]
 
 Print the setup plan, or create/reuse a private S3 test bucket with --force.
 Uploads a three-row fixture and the Dutch railway CSV archive.
+Bucket names are derived from PREFIX, the authenticated AWS account and AWS_REGION.
+S3_BUCKET_NAME is ignored during creation; saved names are used for cleanup.
 
 Environment:
   AWS_PROFILE, AWS_REGION          AWS profile and region (default: eu-central-1).
   PREFIX                          Resource prefix (default: local username).
-  S3_BUCKET_NAME                  Exact bucket name; default includes prefix/account/region.
   S3_DATA_URL, S3_OBJECT_KEY       Railway source URL and destination key.
   S3_CORS_ALLOWED_ORIGINS         Space-separated origins; defaults to local ports and shell.duckdb.org.
   S3_ENV_FILE                     Generated config (default: test/sql/s3/s3.env).
@@ -93,6 +94,7 @@ upload_data() {
 
 main() {
 	parse_args "$@"
+	BUCKET=""
 	validate_configuration
 	command -v jq >/dev/null || { echo "jq is required" >&2; return 1; }
 	CORS=$(cors_configuration)

@@ -24,9 +24,23 @@ source test/sql/s3/s3.env
 Without `--force`, setup and cleanup only print a plan. They do not call AWS.
 With `--force`, setup creates or reuses
 `$PREFIX-duckdb-aws-$AWS_ACCOUNT_ID-$AWS_REGION`, where `PREFIX` defaults to your
-Unix username. Use lowercase letters, digits and hyphens in the prefix, or set
-`S3_BUCKET_NAME` explicitly. Bucket names are globally unique. Dotted names are
+Unix username. Use lowercase letters, digits and hyphens in the prefix.
+Creation always derives the name from the current prefix, authenticated AWS
+account and region; `S3_BUCKET_NAME` is ignored, including values from a
+previously sourced `s3.env`. Bucket names are globally unique. Dotted names are
 not supported by these scripts because the browser example uses HTTPS virtual-hosted access.
+
+To create or refresh another prefix/profile/region fixture:
+
+```bash
+PREFIX=vvvv AWS_PROFILE=s3resources AWS_REGION=us-west-1 \
+  ./scripts/s3/create_bucket.sh --force
+source test/sql/s3/s3.env
+```
+
+A matching managed bucket is reused and its test data and configuration are
+refreshed. The environment file is overwritten with the latest fixture settings.
+Buckets from earlier prefixes, accounts or regions are left untouched.
 
 The bucket contains:
 
@@ -107,7 +121,7 @@ browser test in DuckDB-Wasm.
 
 ## Cleanup
 
-Use the generated configuration to preserve any naming overrides:
+Use the generated configuration to select the exact saved bucket for cleanup:
 
 ```bash
 source test/sql/s3/s3.env
