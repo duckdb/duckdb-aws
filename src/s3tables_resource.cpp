@@ -128,7 +128,18 @@ void CreateFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &ou
 	sql += ", tags := " + tags.ToSQLString() + ")";
 
 	auto res = RunSQL(context, sql, "s3tables create");
-	output.data[0].Append(res->Collection().GetRows().GetValue(0, 0));
+	auto handle = res->Collection().GetRows().GetValue(0, 0);
+	// An empty ARN can mean a shadowing SQL macro or a lost response body (e.g. a 2xx PUT).
+	// Reject it here rather than passing an unusable handle to status.
+	if (MapLookup(handle, "arn").empty()) {
+		throw IOException(
+		    "s3tables create: s3tables_create_table_bucket returned an empty ARN for '%s'. "
+		    "If an AWS create request was sent, "
+		    "the bucket may already exist; list it with s3tables_table_buckets() and adopt it with REGISTER "
+		    "EXTERNAL RESOURCE",
+		    name);
+	}
+	output.data[0].Append(handle);
 	output.CheckCardinality(1);
 	state.done = true;
 }
