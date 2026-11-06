@@ -1,0 +1,122 @@
+# name: test/sql/s3/s3_functions.test
+# description: argument handling of the s3_* bucket functions (no AWS call is made)
+# group: [s3]
+
+require no_extension_autoloading "EXPECTED: Test relies on explicit INSTALL and LOAD"
+
+# Before LOAD aws, the functions do not exist.
+statement error
+SELECT * FROM s3_buckets();
+----
+
+require httpfs
+
+require aws
+
+# Every AWS call below is meant to fail or be skipped. Pin the identity to a bogus static key so
+# this holds even where the environment carries real credentials.
+statement ok
+CREATE SECRET bogus (TYPE aws, KEY_ID 'AKIAIOSFODNN7EXAMPLE', SECRET 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY', REGION 'eu-central-1');
+
+# Schema inspection does not contact AWS.
+query IIIIII
+DESCRIBE SELECT * FROM s3_buckets();
+----
+name	VARCHAR	YES	NULL	NULL	NULL
+region	VARCHAR	YES	NULL	NULL	NULL
+created_at	TIMESTAMP WITH TIME ZONE	YES	NULL	NULL	NULL
+
+query IIIIII
+DESCRIBE SELECT * FROM s3_get_bucket('x');
+----
+name	VARCHAR	YES	NULL	NULL	NULL
+region	VARCHAR	YES	NULL	NULL	NULL
+arn	VARCHAR	YES	NULL	NULL	NULL
+versioning	VARCHAR	YES	NULL	NULL	NULL
+block_public_access	BOOLEAN	YES	NULL	NULL	NULL
+
+# Explicit NULL or empty options are refused by name, at bind time.
+statement error
+SELECT * FROM s3_buckets(region := NULL);
+----
+region must not be NULL
+
+statement error
+SELECT * FROM s3_buckets(secret := '');
+----
+secret must not be empty
+
+statement error
+SELECT * FROM s3_create_bucket(NULL);
+----
+bucket name must not be NULL
+
+statement error
+SELECT * FROM s3_create_bucket('');
+----
+bucket name must not be empty
+
+statement error
+SELECT * FROM s3_create_bucket('x', dry_run := NULL);
+----
+dry_run must not be NULL
+
+# On create a NULL tag value has nothing to remove, so it is a mistake rather than a removal.
+statement error
+SELECT * FROM s3_create_bucket('x', tags := MAP {'team': NULL});
+----
+has a NULL value
+
+# The per-bucket functions take the name or the handle MAP s3_create_bucket returns.
+statement error
+SELECT * FROM s3_delete_bucket(MAP {'region': 'eu-central-1'});
+----
+handle is missing 'name'
+
+statement error
+SELECT * FROM s3_get_bucket('');
+----
+bucket name must not be empty
+
+# An update has to change something; an empty tags map changes nothing.
+statement error
+SELECT * FROM s3_update_bucket('x');
+----
+no change requested
+
+statement error
+SELECT * FROM s3_update_bucket('x', tags := MAP {}::MAP(VARCHAR, VARCHAR));
+----
+no change requested
+
+# dry_run stops before the mutation: no bucket exists, so the handle and ARN stay NULL while the
+# name and the resolved region are echoed back.
+query IIII
+SELECT handle, arn, name, region
+FROM s3_create_bucket('duckdb-test-bucket', region := 'eu-central-1', dry_run := true);
+----
+NULL	NULL	duckdb-test-bucket	eu-central-1
+
+# The secret's REGION is the fallback when no region argument is given.
+query I
+SELECT region FROM s3_create_bucket('duckdb-test-bucket', dry_run := true);
+----
+eu-central-1
+
+# The external-access guard applies at execution, so it also stops a statement prepared before
+# the setting changed.
+statement ok
+PREPARE list_buckets AS SELECT * FROM s3_buckets();
+
+statement ok
+SET enable_external_access = false;
+
+statement error
+EXECUTE list_buckets;
+----
+s3_buckets: listing S3 buckets is disabled through configuration
+
+statement error
+SELECT * FROM s3_create_bucket('x', dry_run := true);
+----
+s3_create_bucket: creating S3 buckets is disabled through configuration

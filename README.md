@@ -165,168 +165,113 @@ The script can also be called directly as `python3 scripts/quack_redshift.py <ac
 
 ## S3 buckets
 
-Six control-plane table functions for general-purpose S3 buckets: list, create, inspect, update
-and delete.
+Functions: `s3_buckets`, `s3_create_bucket`, `s3_get_bucket`, `s3_bucket_tags`,
+`s3_update_bucket`, `s3_delete_bucket`; external-resource type `aws:s3:bucket`.
 
-```sql
-LOAD aws;
-CREATE SECRET (TYPE aws, PROVIDER credential_chain, REGION 'eu-central-1');
-
-FROM s3_buckets();
-FROM s3_create_bucket('my-duckdb-bucket', dry_run := true);
-FROM s3_create_bucket('my-duckdb-bucket', versioning := true, tags := MAP {'team': 'data'});
-FROM s3_get_bucket('my-duckdb-bucket');
-FROM s3_bucket_tags('my-duckdb-bucket');
-FROM s3_update_bucket('my-duckdb-bucket', tags := MAP {'team': 'platform', 'owner': NULL});
-FROM s3_delete_bucket('my-duckdb-bucket', cascade := true);
+```shell
+# Build, then run the S3 tests. They need no AWS account: every AWS call in them is made with
+# a bogus key and expected to fail.
+GEN=ninja make
+./build/release/test/unittest "*/test/sql/s3/*"
 ```
 
-### Running against a local build
+```shell
+# End-to-end against AWS. Needs credentials the AWS CLI would accept and a region.
+export AWS_PROFILE=my-profile AWS_REGION=eu-central-1
+BUCKET="duckdb-s3-check-$(openssl rand -hex 6)"
 
-Build with `make` as described above, then start the built binary with unsigned extension
-loading and load the extension from the build tree:
-
-```bash
-./build/release/duckdb -unsigned \
-  -cmd "LOAD '$PWD/build/release/extension/aws/aws.duckdb_extension';"
+# duck SQL [duckdb flags]: one DuckDB session with the local aws and httpfs builds loaded and one
+# credential-chain secret for $AWS_REGION, which both the s3_* functions and s3:// reads and writes use.
+duck() {
+  local sql=$1; shift
+  ./build/release/duckdb -unsigned "$@" \
+    -cmd ".output /dev/null" \
+    -cmd "LOAD '$PWD/build/release/extension/httpfs/httpfs.duckdb_extension';" \
+    -cmd "LOAD '$PWD/build/release/extension/aws/aws.duckdb_extension';" \
+    -cmd "CREATE SECRET (TYPE s3, PROVIDER credential_chain, REGION '$AWS_REGION');" \
+    -cmd ".output stdout" \
+    -c "$sql"
+}
 ```
 
-Credentials come from an `aws` or `s3` secret; `PROVIDER credential_chain` picks up the
-environment, `AWS_PROFILE`, SSO and instance roles the same way the AWS CLI does.
-`s3_create_bucket` refuses to run without a region: pass `region :=`, set `REGION` on the
-secret, `SET s3_region = '...'`, or export `AWS_REGION`. The other functions start from that
-region, or the SDK default; the four that take a bucket follow S3 to the bucket's own region.
-When `aws_network_calls_via_duckdb` is on, also load `httpfs`, since these calls use PUT, POST,
-HEAD and DELETE.
-
-### Listing: `s3_buckets`
-
-```sql
-FROM s3_buckets();
-FROM s3_buckets(region := 'eu-central-1');
-FROM s3_buckets(region := 'eu-central-1', secret := 'my_aws_secret');
+```shell
+# The functions, in lifecycle order.
+duck "FROM s3_buckets();"
+duck "FROM s3_buckets(region := '$AWS_REGION');"
+duck "FROM s3_create_bucket('$BUCKET', dry_run := true);"
+duck "FROM s3_create_bucket('$BUCKET', versioning := true, tags := MAP {'team': 'data'});"
+duck "FROM s3_get_bucket('$BUCKET');"
+duck "FROM s3_bucket_tags('$BUCKET');"
+duck "FROM s3_update_bucket('$BUCKET', tags := MAP {'team': 'platform', 'owner': NULL}, block_public_access := true, dry_run := true);"
+duck "FROM s3_update_bucket('$BUCKET', tags := MAP {'team': 'platform', 'owner': NULL}, block_public_access := true);"
+duck "FROM s3_update_bucket('$BUCKET', versioning := false);"
+duck "FROM s3_get_bucket('$BUCKET'); FROM s3_bucket_tags('$BUCKET');"
+duck "COPY (SELECT 1 AS i) TO 's3://$BUCKET/one.parquet';"
+duck "FROM s3_delete_bucket('$BUCKET');"                                   # fails: BucketNotEmpty
+duck "FROM s3_delete_bucket('$BUCKET', cascade := true, dry_run := true);" # deleted_objects = 1
+duck "FROM s3_delete_bucket('$BUCKET', cascade := true);"
+duck "FROM s3_get_bucket('$BUCKET');"                                      # fails: NoSuchBucket
 ```
 
-`s3_buckets` lists general-purpose buckets owned by the authenticated account. It returns
-`name VARCHAR`, `region VARCHAR`, and `created_at TIMESTAMP WITH TIME ZONE`. The timestamp
-is S3's reported creation date, which can change after bucket configuration updates.
-Directory buckets, S3 table buckets, and buckets merely shared with the caller are not included.
+```shell
+# The external-resource type. CREATE tags the bucket with duckdb-external-resource-type = aws:s3:bucket
+# and DESTROY cascades because of that tag; a REGISTERed bucket carries no tag and is only deleted
+# when empty. Resources live in the session, so each flow is one duck call.
+duck "CREATE EXTERNAL RESOURCE 'aws:s3:bucket' AS scratch (REGION '$AWS_REGION', NAME '$BUCKET-managed');
+      SHOW EXTERNAL RESOURCES;
+      FROM s3_bucket_tags('$BUCKET-managed');
+      COPY (SELECT 1 AS i) TO 's3://$BUCKET-managed/one.parquet';
+      DESTROY EXTERNAL RESOURCE scratch;
+      FROM s3_buckets() WHERE name = '$BUCKET-managed';"
 
-Without `region`, the listing covers all regions in the caller's AWS partition. An explicit
-`region` filters the listing server-side and selects the matching regional endpoint. A region
-configured on a secret, in `s3_region`, in the environment, or in the AWS profile selects the
-endpoint but does not filter the results.
-
-The caller needs `s3:ListAllMyBuckets`; `s3:ListBucket` alone is not sufficient.
-
-### Creating: `s3_create_bucket`
-
-```sql
-FROM s3_create_bucket('my-duckdb-bucket');
-FROM s3_create_bucket('my-duckdb-bucket', region := 'us-east-1', versioning := true,
-                      block_public_access := true, tags := MAP {'team': 'data'});
-FROM s3_create_bucket('my-duckdb-bucket', dry_run := true);
+duck "FROM s3_create_bucket('$BUCKET-adopted');"
+duck "REGISTER EXTERNAL RESOURCE 'aws:s3:bucket' AS adopted FROM MAP {'name': '$BUCKET-adopted', 'region': '$AWS_REGION'};
+      SHOW ALL EXTERNAL RESOURCES;
+      DESTROY EXTERNAL RESOURCE adopted;"
 ```
 
-Returns one row: `handle MAP(VARCHAR, VARCHAR)`, `name`, `region`, `arn`. The handle holds
-`name` and `region` and can be passed to `s3_get_bucket`, `s3_bucket_tags`, `s3_update_bucket`
-and `s3_delete_bucket` in place of the name.
+## S3 Tables
 
-The region is where the bucket is created and must resolve; the function refuses to fall back
-to the SDK default. Two provenance tags, `created-by = duckdb` and `duckdb-version`, are set
-on every bucket; caller tags win on conflict. `versioning := true` enables versioning;
-`block_public_access` sets all four public access block flags to the given value. Options not
-given leave the AWS defaults. If any configuration step after `CreateBucket` fails, the new
-empty bucket is deleted again and the original error is raised, so a retry does not hit
-`BucketAlreadyOwnedByYou`. In us-east-1, where S3 answers `CreateBucket` for a bucket the
-account already owns with 200 instead of `BucketAlreadyOwnedByYou`, the function first probes
-the name with `HeadBucket` and refuses unless S3 answers 404; a creator racing between the probe
-and the create is not detected. `dry_run := true` resolves the identity and region, makes no S3
-call, and returns the row with a NULL `handle` and `arn`.
+Functions: `s3tables_table_buckets`, `s3tables_namespaces`, `s3tables_tables`,
+`s3tables_create_table_bucket`, `s3tables_get_table_bucket`, `s3tables_table_bucket_tags`,
+`s3tables_delete_table_bucket`; external-resource type `aws:s3tables:table-bucket`.
 
-### Inspecting: `s3_get_bucket` and `s3_bucket_tags`
-
-```sql
-FROM s3_get_bucket('my-duckdb-bucket');
-FROM s3_bucket_tags('my-duckdb-bucket');
+```shell
+# Build, then run the S3 Tables tests. s3tables_functions.test and s3tables_resource.test need no
+# AWS account. s3tables.test needs AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and the iceberg
+# extension, and is skipped without them.
+GEN=ninja make
+./build/release/test/unittest "*/test/sql/s3tables/*"
 ```
 
-`s3_get_bucket` returns `name`, `region`, `arn`, `versioning VARCHAR` (`Enabled`, `Suspended`,
-or NULL when never versioned) and `block_public_access BOOLEAN` (true only when all four flags
-are on, NULL when the bucket has no configuration of its own). A missing bucket fails with
-`NoSuchBucket`. `s3_bucket_tags` returns `key`, `value` rows and zero rows for an untagged bucket.
+```shell
+# End-to-end against AWS, with the duck helper and variables from the S3 section above.
+TABLE_BUCKET="duckdb-s3tables-check-$(openssl rand -hex 6)"
 
-### Updating: `s3_update_bucket`
-
-```sql
-FROM s3_update_bucket('my-duckdb-bucket', tags := MAP {'team': 'platform', 'owner': NULL});
-FROM s3_update_bucket('my-duckdb-bucket', versioning := false);
-FROM s3_update_bucket('my-duckdb-bucket', block_public_access := true, dry_run := true);
+duck "FROM s3tables_table_buckets('$AWS_REGION');"
+duck "FROM s3tables_create_table_bucket('$TABLE_BUCKET', region := '$AWS_REGION', dry_run := true);"
+ARN=$(duck "SELECT arn FROM s3tables_create_table_bucket('$TABLE_BUCKET', region := '$AWS_REGION');" -csv -noheader)
+echo "$ARN"
+duck "FROM s3tables_get_table_bucket('$ARN');"
+duck "FROM s3tables_table_bucket_tags('$ARN');"
+duck "FROM s3tables_namespaces('$ARN');"
+duck "FROM s3tables_tables('$ARN');"
+duck "FROM s3tables_delete_table_bucket('$ARN', cascade := true, dry_run := true);"
+duck "FROM s3tables_delete_table_bucket('$ARN', cascade := true);"
+duck "FROM s3tables_get_table_bucket('$ARN');"                             # fails: NotFoundException
 ```
 
-S3 has no update call, so this applies the individual settings: `tags`, then `versioning`,
-then `block_public_access`. At least one must be given; an empty `tags` map counts as not
-given. Tags merge into the existing set; a NULL value removes that key, and an update that
-empties the set removes the tag set. Setting `versioning := false` suspends versioning, since
-S3 cannot disable it once enabled. If one step fails, the function stops there and leaves the
-changes from earlier steps in place; the error names the call that failed.
+```shell
+# The external-resource type. Kind 'catalog', so a managed table bucket also attaches; attaching
+# needs the iceberg extension (INSTALL iceberg; once).
+duck "CREATE EXTERNAL RESOURCE 'aws:s3tables:table-bucket' AS tb (REGION '$AWS_REGION', NAME '$TABLE_BUCKET-managed');
+      SHOW EXTERNAL RESOURCES;
+      ATTACH TO EXTERNAL RESOURCE tb AS tables;
+      SHOW ALL TABLES;
+      DESTROY EXTERNAL RESOURCE tb;" -cmd "LOAD iceberg;"
 
-Returns one row: `status` (`updated` or `dry_run`), `name`, `region`, and the resulting
-`tags`, `versioning` and `block_public_access`, NULL for settings the call did not touch.
-`dry_run := true` reads the current tags and reports what would be written without writing.
-
-### Deleting: `s3_delete_bucket`
-
-```sql
-FROM s3_delete_bucket('my-duckdb-bucket');
-FROM s3_delete_bucket('my-duckdb-bucket', cascade := true);
-FROM s3_delete_bucket('my-duckdb-bucket', cascade := true, dry_run := true);
+duck "SHOW ALL EXTERNAL RESOURCES;"                                        # every table bucket, unmanaged
 ```
-
-`DeleteBucket` only succeeds on an empty bucket. With `cascade := true` the function first
-lists every object version and delete marker and removes them in batches of 1000, then deletes
-the bucket. This is irreversible. Objects under Object Lock retention, or in a bucket with MFA
-delete, fail the cascade; objects already deleted stay deleted and the error says how many. A
-writer racing the cascade makes the final delete fail with `BucketNotEmpty`. Unlike
-`s3tables_delete_table_bucket`, the function does not lock the bucket against writers during
-the cascade: a Deny bucket policy would also lock out the owner if the process died halfway.
-
-Returns one row: `status` (`deleted` or `dry_run`), `name`, `region`, `deleted_objects BIGINT`,
-`warning`. `dry_run := true` counts the objects a cascade would remove and warns when the bucket
-is not empty and `cascade` is off.
-
-### Behaviour shared by all S3 bucket functions
-
-Authentication uses an existing `aws` or `s3` secret. Without `secret`, a single explicit `aws`
-secret is preferred over a single explicit `s3` secret, then the default AWS credential chain
-is used. More than one `aws` secret, or no `aws` secret and more than one `s3` secret, is an
-error: name one with `secret :=`. Explicit NULL or empty arguments are rejected.
-
-Region resolution order is the `region` argument, the secret's `REGION`, `s3_region`,
-`AWS_REGION`/`AWS_DEFAULT_REGION`, then the AWS profile. For `s3_get_bucket`, `s3_bucket_tags`,
-`s3_update_bucket` and `s3_delete_bucket` that region is only where the lookup starts: the
-bucket's real region is taken from S3's `HeadBucket` answer and used for every further call, so
-these work on buckets in any region.
-
-Required permissions, per function:
-
-| Function | Actions |
-|---|---|
-| `s3_buckets` | `s3:ListAllMyBuckets` |
-| `s3_create_bucket` | `s3:CreateBucket`, `s3:PutBucketTagging`; `s3:PutBucketVersioning` and `s3:PutBucketPublicAccessBlock` when used; `s3:DeleteBucket` for the rollback; `s3:ListBucket` for the us-east-1 probe |
-| `s3_get_bucket` | `s3:ListBucket` (HeadBucket), `s3:GetBucketVersioning`, `s3:GetBucketPublicAccessBlock` |
-| `s3_bucket_tags` | `s3:ListBucket`, `s3:GetBucketTagging` |
-| `s3_update_bucket` | `s3:ListBucket`; `s3:GetBucketTagging` and `s3:PutBucketTagging` for `tags`; `s3:PutBucketVersioning` for `versioning`; `s3:PutBucketPublicAccessBlock` for `block_public_access` |
-| `s3_delete_bucket` | `s3:ListBucket`, `s3:DeleteBucket`; `s3:ListBucketVersions` for `cascade` or `dry_run`; `s3:DeleteObject` and `s3:DeleteObjectVersion` for `cascade` |
-
-AWS errors fail the query rather than returning an empty or silently incomplete result. All of
-these functions are blocked by `enable_external_access = false`, including statements prepared
-before the setting changed. `dry_run` is BOOLEAN; a value that does not cast to BOOLEAN is an
-error, never a real run.
-
-These functions use the AWS SDK's endpoints, including the SDK's own endpoint overrides from the
-environment and profile. S3-specific settings of an `s3` secret, such as `ENDPOINT` and
-`URL_STYLE`, are ignored, so S3-compatible providers are not supported.
 
 ## Tests
 
