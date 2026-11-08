@@ -141,6 +141,43 @@ Configuration is through environment variables:
 
 The script can also be called directly as `python3 scripts/quack_redshift.py <action> [--force]`, where the action is `setup`, `check`, `cleanup`, or `manual-test`.
 
+## AWS system tables
+
+AWS services publish inventories and logs as Apache Iceberg tables in AWS-managed S3 table buckets, one bucket per
+service, account and region, named `aws-<service>`: S3 Metadata (`aws-s3`: `b_<bucket>.journal`, `inventory`,
+`annotation`), the Glue Data Catalog export (`aws-catalog`: `glue.tables`, `glue.table_columns`,
+`catalog_metadata.*`), Athena usage (`aws-athena`: `metadata.query_executions`), Redshift (`aws-redshift`: the
+`sys_*` views), CloudWatch Logs (`aws-cloudwatch`). Each family is enabled per region in the owning service; once it
+is, the extension finds and reads its tables through the S3 Tables API alone, no Glue or Lake Formation involved.
+
+```sql
+FROM aws_system_tables();                              -- every system table in the default regions
+FROM aws_system_tables('us-east-1');                   -- one region, its errors thrown
+FROM aws_system_table('aws-catalog', 'glue', 'tables', region := 'us-east-1');  -- scan one (iceberg_scan)
+FROM aws_system_table_families();                      -- the known families and the resource type each is the inventory of
+FROM s3tables_table_metadata_location('arn:aws:s3tables:us-east-1:123456789012:bucket/aws-catalog', 'glue', 'tables');
+```
+
+`aws_system_tables` lists the tables of every `aws-*` bucket (`ListTableBuckets` of type `aws`, then `ListTables`),
+one row per table with `region`, `bucket`, `service`, `namespace`, `name`, `table_arn` and the table's type, owner
+service and timestamps; a region or bucket that cannot be listed is one row with `error` set. `aws_system_table`
+scans one table by bucket name (in `region`, or the region the usual resolution yields) or bucket ARN: it fetches
+the table's current metadata location and reads it with `iceberg_scan`, so the `iceberg` extension is loaded on
+demand and the data files are read with the ordinary S3 secret.
+
+The same tables are the external resource type `aws:system-table`, named by path:
+
+```sql
+SHOW ALL EXTERNAL RESOURCES;                           -- aws-catalog/glue/tables, aws-s3/b_my-bucket/inventory, ... alongside the table buckets
+ATTACH 'arn:aws:s3tables:us-east-1:123456789012:bucket/aws-catalog' AS c;   -- the bucket, through the arn storage route
+SELECT name, database_name FROM c.glue.tables;
+```
+
+The listing's rows carry the table ARN as handle and `region`, `bucket`, `namespace`, `table`, `service` and the
+table's type and timestamps as metadata. The status callback hands ATTACH the bucket ARN with the table's namespace
+as `default_schema`. Enabling a family from SQL (`CREATE EXTERNAL RESOURCE 'aws:system-table' ... (REGION ...)`)
+is not implemented yet; `aws_system_table_families` names the service call each one needs.
+
 ## Tests
 
 - [Redshift test setup](test/sql/redshift/README.md)

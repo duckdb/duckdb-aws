@@ -21,6 +21,7 @@
 #include <aws/s3tables/model/DeleteTableRequest.h>
 #include <aws/s3tables/model/GetTableBucketPolicyRequest.h>
 #include <aws/s3tables/model/GetTableBucketRequest.h>
+#include <aws/s3tables/model/GetTableMetadataLocationRequest.h>
 #include <aws/s3tables/model/ListNamespacesRequest.h>
 #include <aws/s3tables/model/ListTableBucketsRequest.h>
 #include <aws/s3tables/model/ListTablesRequest.h>
@@ -792,6 +793,72 @@ void GetBucketFun(ClientContext &context, TableFunctionInput &data_p, DataChunk 
 }
 
 //===--------------------------------------------------------------------===//
+// s3tables_table_metadata_location(table_bucket_arn, namespace, name)
+//
+// GetTableMetadataLocation: where the table's current Iceberg metadata file is, which is all an
+// Iceberg reader needs to scan it without going through a catalog. The system tables of the aws-*
+// buckets are read this way (see aws_system_table).
+//===--------------------------------------------------------------------===//
+
+struct MetadataLocationBindData : public TableFunctionData {
+	TableBucketArn arn;
+	string namespace_name;
+	string name;
+	string secret_name;
+};
+
+unique_ptr<FunctionData> MetadataLocationBind(ClientContext &, TableFunctionBindInput &input,
+                                              vector<LogicalType> &return_types, vector<Identifier> &names) {
+	auto result = make_uniq<MetadataLocationBindData>();
+	for (idx_t i = 0; i < 3; i++) {
+		if (input.inputs[i].IsNull()) {
+			throw InvalidInputException("s3tables_table_metadata_location: arguments must not be NULL");
+		}
+	}
+	result->arn = ParseTableBucketArn(StringValue::Get(input.inputs[0]), "s3tables_table_metadata_location");
+	result->namespace_name = StringValue::Get(input.inputs[1]);
+	result->name = StringValue::Get(input.inputs[2]);
+	if (result->namespace_name.empty() || result->name.empty()) {
+		throw InvalidInputException("s3tables_table_metadata_location: the namespace and name must not be empty");
+	}
+	result->secret_name = SecretParam(input);
+
+	names.emplace_back("metadata_location");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("warehouse_location");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("version_token");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	return std::move(result);
+}
+
+void MetadataLocationFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	AwsInstanceBinding aws_binding(DatabaseInstance::GetDatabase(context));
+	auto &data = data_p.bind_data->Cast<MetadataLocationBindData>();
+	auto &state = data_p.global_state->Cast<GetBucketState>();
+	if (state.done) {
+		return;
+	}
+	auto provider = ResolveProvider(context, data.secret_name);
+	auto client = MakeClient(provider, data.arn.region);
+	Aws::S3Tables::Model::GetTableMetadataLocationRequest req;
+	req.SetTableBucketARN(data.arn.raw.c_str());
+	req.SetNamespace(data.namespace_name.c_str());
+	req.SetName(data.name.c_str());
+	auto outcome = client.GetTableMetadataLocation(req);
+	if (!outcome.IsSuccess()) {
+		ThrowAwsError("GetTableMetadataLocation", outcome);
+	}
+	const auto &res = outcome.GetResult();
+	auto metadata_location = FromAws(res.GetMetadataLocation());
+	output.data[0].Append(metadata_location.empty() ? Value() : Value(metadata_location));
+	output.data[1].Append(Value(FromAws(res.GetWarehouseLocation())));
+	output.data[2].Append(Value(FromAws(res.GetVersionToken())));
+	output.CheckCardinality(1);
+	state.done = true;
+}
+
+//===--------------------------------------------------------------------===//
 // s3tables_table_bucket_tags(table_bucket_arn)
 //
 // ListTagsForResource as (key, value) rows. Tags are how a table bucket carries provenance that
@@ -1162,6 +1229,15 @@ void S3TablesFunctions::Register(ExtensionLoader &loader) {
 	TableFunction get_fn("s3tables_get_table_bucket", std::move(get_signature), GetBucketFun, GetBucketBind,
 	                     GetBucketInit);
 	loader.RegisterFunction(get_fn);
+
+	FunctionSignature metadata_location_signature;
+	metadata_location_signature.AddParameter("table_bucket_arn", LogicalType::VARCHAR)
+	    .AddParameter("namespace", LogicalType::VARCHAR)
+	    .AddParameter("name", LogicalType::VARCHAR)
+	    .WithTypedKwargs("options", with_secret);
+	TableFunction metadata_location_fn("s3tables_table_metadata_location", std::move(metadata_location_signature),
+	                                   MetadataLocationFun, MetadataLocationBind, GetBucketInit);
+	loader.RegisterFunction(metadata_location_fn);
 
 	FunctionSignature tags_signature;
 	tags_signature.AddParameter("table_bucket_arn", LogicalType::VARCHAR).WithTypedKwargs("options", with_secret);
