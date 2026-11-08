@@ -9,6 +9,8 @@
 #include "duckdb/main/secret/secret_manager.hpp"
 #include "duckdb/main/settings.hpp"
 
+#include <chrono>
+
 namespace duckdb {
 
 static constexpr const char *DEFAULT_CREDENTIALS_SETTING = "aws_default_credentials";
@@ -105,6 +107,34 @@ void AwsDefaultSecretStorage::SetSecrets(unique_ptr<const BaseSecret> resolved_s
 	s3_secret = std::move(s3);
 }
 
+//! Whether the credentials the chain resolved to are past the expiry it recorded (temporary credentials
+//! from STS, SSO or a container: see expiration_epoch_ms in CreateAWSSecretFromCredentialChain). A minute of
+//! margin, so a call that starts just before the deadline does not fail with them mid-flight.
+static bool CredentialsExpired(const BaseSecret &secret) {
+	auto &kv = secret.Cast<KeyValueSecret>();
+	auto expiration = kv.TryGetValue("expiration_epoch_ms");
+	if (expiration.IsNull()) {
+		return false;
+	}
+	auto now_ms =
+	    std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+	        .count();
+	return expiration.GetValue<int64_t>() <= now_ms + 60 * 1000;
+}
+
+void AwsDefaultSecretStorage::EnsureResolved(ClientContext &context) {
+	if (!resolved) {
+		Resolve(context);
+		return;
+	}
+	// Temporary credentials expire; the chain is where fresh ones come from (a renewed SSO login, the
+	// container or instance metadata, a rotated profile), so resolve it again rather than keep failing.
+	if (s3_secret && CredentialsExpired(*s3_secret)) {
+		DUCKDB_LOG_DEBUG(context, "aws.DefaultCredentials: the default credentials expired, resolving the chain again");
+		Resolve(context);
+	}
+}
+
 void AwsDefaultSecretStorage::Resolve(ClientContext &context) {
 	resolved = true;
 	auto input = DefaultSecretInput("s3", S3_SECRET_NAME, "credential_chain");
@@ -155,9 +185,7 @@ SecretMatch AwsDefaultSecretStorage::LookupSecret(const string &path, const stri
 	if (dropped) {
 		return best_match;
 	}
-	if (!resolved) {
-		Resolve(*transaction->context);
-	}
+	EnsureResolved(*transaction->context);
 	auto entry = MakeEntry(*SecretOfType(type));
 	return SelectBestMatch(*entry, path, tie_break_offset, best_match);
 }

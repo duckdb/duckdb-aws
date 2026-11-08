@@ -38,6 +38,8 @@ public:
 private:
 	//! Resolves the credential chain once; afterwards the result is used until it is refreshed or dropped
 	void Resolve(ClientContext &context);
+	//! Resolves the chain on the first lookup, and again when the credentials it found have expired
+	void EnsureResolved(ClientContext &context);
 	//! Sets both secrets from the S3 secret the chain resolved to
 	void SetSecrets(unique_ptr<const BaseSecret> s3);
 	optional_ptr<const BaseSecret> SecretOfType(const string &type) const;
