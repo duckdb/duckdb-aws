@@ -152,7 +152,7 @@ is, the extension finds and reads its tables through the S3 Tables API alone, no
 
 ```sql
 FROM aws_system_tables();                              -- every system table in the default regions
-FROM aws_system_tables('us-east-1');                   -- one region, its errors thrown
+FROM aws_system_tables(region := 'us-east-1');         -- one region, its errors thrown; regions := [...] for several
 FROM aws_system_table('aws-catalog', 'glue', 'tables', region := 'us-east-1');  -- scan one (iceberg_scan)
 FROM aws_system_table_families();                      -- the known families and the resource type each is the inventory of
 FROM s3tables_table_metadata_location('arn:aws:s3tables:us-east-1:123456789012:bucket/aws-catalog', 'glue', 'tables');
@@ -175,8 +175,24 @@ SELECT name, database_name FROM c.glue.tables;
 
 The listing's rows carry the table ARN as handle and `region`, `bucket`, `namespace`, `table`, `service` and the
 table's type and timestamps as metadata. The status callback hands ATTACH the bucket ARN with the table's namespace
-as `default_schema`. Enabling a family from SQL (`CREATE EXTERNAL RESOURCE 'aws:system-table' ... (REGION ...)`)
-is not implemented yet; `aws_system_table_families` names the service call each one needs.
+as `default_schema`.
+
+A family of system tables is enabled with `CREATE EXTERNAL RESOURCE`, in one region, named by the resource type it
+is the inventory of; `DESTROY` turns it off again, which for S3 Metadata deletes the bucket's journal and inventory
+tables (never the bucket's objects):
+
+```sql
+CREATE EXTERNAL RESOURCE 'aws:system-table' AS meta (TYPE 'aws:s3:bucket', BUCKET 'my-bucket', REGION 'us-east-1');
+ATTACH TO EXTERNAL RESOURCE meta AS m;             -- the aws-s3 bucket, default schema b_my-bucket
+SELECT count(*) FROM m.inventory;
+DESTROY EXTERNAL RESOURCE meta;
+```
+
+Only the S3 Metadata family (`TYPE 'aws:s3:bucket'`) can be enabled with the AWS SDK version this extension links;
+`TYPE 'aws:glue'` and `'aws:athena'` are refused until the vcpkg port moves to aws-sdk-cpp 1.11.924 or later, which
+has `PutDataCatalogExportConfiguration` and `CreateSystemTableConfiguration`. The configuration calls are also
+available directly: `s3_bucket_metadata_configuration(bucket, region :=)`, `s3_create_bucket_metadata_configuration(bucket,
+region :=, inventory := true, journal_expiration_days := 0)` and `s3_delete_bucket_metadata_configuration(bucket, region :=)`.
 
 ## Tests
 

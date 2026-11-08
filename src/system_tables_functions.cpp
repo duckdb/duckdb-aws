@@ -55,11 +55,12 @@ string ServiceOf(const string &bucket) {
 }
 
 //===--------------------------------------------------------------------===//
-// aws_system_tables([region | region_list] [, secret := ])
+// aws_system_tables([region := | regions := ] [, secret := ])
 //
 // Every table of every AWS-managed table bucket (ListTableBuckets type 'aws', then ListTables),
 // one row per table, with `error` set instead on a region or bucket that could not be listed.
-// Without a region the default regions are swept, as s3tables_table_buckets does.
+// `region` lists one region, its errors thrown; `regions` a list of them; neither sweeps the default
+// regions, as s3tables_table_buckets does.
 //===--------------------------------------------------------------------===//
 
 struct SystemTablesBindData : public TableFunctionData {
@@ -81,11 +82,14 @@ unique_ptr<GlobalTableFunctionState> SystemTablesInit(ClientContext &, TableFunc
 unique_ptr<FunctionData> SystemTablesBind(ClientContext &, TableFunctionBindInput &input,
                                           vector<LogicalType> &return_types, vector<Identifier> &names) {
 	auto result = make_uniq<SystemTablesBindData>();
-	if (!input.inputs.empty()) {
-		if (input.inputs[0].IsNull()) {
-			throw InvalidInputException("aws_system_tables: the region must not be NULL");
+	for (auto &np : input.named_parameters) {
+		auto key = StringUtil::Lower(np.first.GetIdentifierName());
+		if ((key == "region" || key == "regions") && !np.second.IsNull()) {
+			if (!result->regions.IsNull()) {
+				throw InvalidInputException("aws_system_tables: pass either region := or regions :=, not both");
+			}
+			result->regions = np.second;
 		}
-		result->regions = input.inputs[0];
 	}
 	result->secret_name = StringParam(input, "secret");
 
@@ -283,18 +287,14 @@ void SystemTablesFunctions::Register(ExtensionLoader &loader) {
 		options.Add("secret", LogicalType::VARCHAR);
 	};
 
-	// aws_system_tables() | (region) | (region_list)
-	TableFunctionSet tables_set("aws_system_tables");
-	tables_set.AddFunction(TableFunction(FunctionSignature().WithTypedKwargs("options", with_secret), SystemTablesFun,
-	                                     SystemTablesBind, SystemTablesInit));
-	tables_set.AddFunction(TableFunction(
-	    FunctionSignature().AddPositionalOnly("region", LogicalType::VARCHAR).WithTypedKwargs("options", with_secret),
-	    SystemTablesFun, SystemTablesBind, SystemTablesInit));
-	tables_set.AddFunction(TableFunction(FunctionSignature()
-	                                         .AddPositionalOnly("regions", LogicalType::LIST(LogicalType::VARCHAR))
-	                                         .WithTypedKwargs("options", with_secret),
-	                                     SystemTablesFun, SystemTablesBind, SystemTablesInit));
-	loader.RegisterFunction(tables_set);
+	FunctionSignature tables_signature;
+	tables_signature.WithTypedKwargs("options", [](TypedKwargs &options) {
+		options.Add("region", LogicalType::VARCHAR)
+		    .Add("regions", LogicalType::LIST(LogicalType::VARCHAR))
+		    .Add("secret", LogicalType::VARCHAR);
+	});
+	loader.RegisterFunction(TableFunction("aws_system_tables", std::move(tables_signature), SystemTablesFun,
+	                                      SystemTablesBind, SystemTablesInit));
 
 	FunctionSignature table_signature;
 	table_signature.AddParameter("bucket", LogicalType::VARCHAR)

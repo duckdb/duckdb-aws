@@ -49,7 +49,7 @@ us-east-1	aws-catalog	catalog	glue	tables	aws	false
 us-east-1	aws-s3	s3	b_my-bucket	journal	aws	false
 
 query II
-SELECT bucket, error LIKE '%AccessDeniedException%' FROM aws_system_tables('eu-central-1');
+SELECT bucket, error LIKE '%AccessDeniedException%' FROM aws_system_tables(region := 'eu-central-1');
 ----
 aws-redshift	true
 
@@ -83,11 +83,89 @@ SELECT * FROM __aws__system_table__status(MAP {'arn': 'arn:aws:s3tables:us-east-
 ----
 expected a table ARN
 
-# Enabling a family is not supported yet, and says so.
+# Enabling a family: TYPE and REGION are required, only the S3 Metadata family can be enabled with this SDK,
+# unknown types are refused before any call.
 statement error
-CREATE EXTERNAL RESOURCE 'aws:system-table' AS export (TYPE 'aws:glue', REGION 'us-east-1');
+CREATE EXTERNAL RESOURCE 'aws:system-table' AS x (REGION 'us-east-1');
 ----
-not supported yet
+TYPE is required
+
+statement error
+CREATE EXTERNAL RESOURCE 'aws:system-table' AS x (TYPE 'aws:s3:bucket', BUCKET 'my-bucket');
+----
+REGION is required
+
+statement error
+CREATE EXTERNAL RESOURCE 'aws:system-table' AS x (TYPE 'aws:glue', REGION 'us-east-1');
+----
+needs an AWS SDK newer
+
+statement error
+CREATE EXTERNAL RESOURCE 'aws:system-table' AS x (TYPE 'aws:nothing', REGION 'us-east-1');
+----
+no system tables are known for type 'aws:nothing'
+
+statement error
+CREATE EXTERNAL RESOURCE 'aws:system-table' AS x (TYPE 'aws:s3:bucket', REGION 'us-east-1');
+----
+BUCKET is required
+
+# Offline substitutes for the S3 Metadata configuration calls: the journal is ACTIVE and the inventory still
+# backfilling, as right after enabling.
+statement ok
+CREATE MACRO s3_create_bucket_metadata_configuration(bucket, region := NULL) AS TABLE
+SELECT bucket, region, 'arn:aws:s3tables:us-east-1:123456789012:bucket/aws-s3' AS table_bucket_arn, 'b_' || bucket AS namespace,
+       'CREATING' AS journal_status, NULL AS journal_table_arn, 'CREATING' AS inventory_status, NULL AS inventory_table_arn;
+
+statement ok
+CREATE MACRO s3_bucket_metadata_configuration(bucket, region := NULL) AS TABLE
+SELECT bucket, region, 'arn:aws:s3tables:us-east-1:123456789012:bucket/aws-s3' AS table_bucket_arn, 'b_' || bucket AS namespace,
+       'ACTIVE' AS journal_status, 'arn:aws:s3tables:us-east-1:123456789012:bucket/aws-s3/table/j' AS journal_table_arn,
+       'BACKFILLING' AS inventory_status, 'arn:aws:s3tables:us-east-1:123456789012:bucket/aws-s3/table/i' AS inventory_table_arn
+WHERE bucket = 'my-bucket';
+
+statement ok
+CREATE MACRO s3_delete_bucket_metadata_configuration(bucket, region := NULL) AS TABLE SELECT 'deleted' AS status;
+
+query IIII
+SELECT handle['family'], handle['type'], handle['region'], handle['bucket']
+FROM __aws__system_table__create(MAP {'type': 'aws:s3:bucket', 'region': 'us-east-1', 'bucket': 'my-bucket'});
+----
+s3-metadata	aws:s3:bucket	us-east-1	my-bucket
+
+query IIII
+SELECT state, result['default_schema'], result['journal'], result['inventory']
+FROM __aws__system_table__status(MAP {'family': 's3-metadata', 'region': 'us-east-1', 'bucket': 'my-bucket'});
+----
+ready	b_my-bucket	ACTIVE	BACKFILLING
+
+statement error
+SELECT * FROM __aws__system_table__status(MAP {'family': 's3-metadata', 'region': 'us-east-1', 'bucket': 'other'});
+----
+has no S3 Metadata configuration
+
+# CREATE waits for 'ready' through status, then the resource attaches as the aws-s3 bucket with its namespace.
+statement ok
+CREATE EXTERNAL RESOURCE 'aws:system-table' AS meta (TYPE 'aws:s3:bucket', BUCKET 'my-bucket', REGION 'us-east-1');
+
+query III
+SELECT name, managed, uri FROM duckdb_external_resources() WHERE name = 'meta';
+----
+meta	true	arn:aws:s3tables:us-east-1:123456789012:bucket/aws-s3
+
+# Destroy turns the family off; a system table found by the listing is not destroyed on its own.
+statement error
+SELECT * FROM __aws__system_table__destroy(MAP {'arn': 'arn:aws:s3tables:us-east-1:123456789012:bucket/aws-s3/table/t3'});
+----
+not deleted on its own
+
+statement ok
+DESTROY EXTERNAL RESOURCE meta;
+
+query I
+SELECT count(*) FROM duckdb_external_resources() WHERE name = 'meta';
+----
+0
 
 # The known families are data, not code.
 query III
