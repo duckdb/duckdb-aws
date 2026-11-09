@@ -30,26 +30,47 @@ tags call shows `created-by = duckdb` next to `team`, and the delete returns `st
 
 The external-resource type uses the same functions: `CREATE EXTERNAL RESOURCE 'aws:s3:bucket' AS
 scratch (REGION 'eu-central-1', NAME 'my-duckdb-bucket')` creates a bucket tagged
-`duckdb-external-resource-type = aws:s3:bucket`, `REGISTER EXTERNAL RESOURCE ... FROM MAP {'name':
-..., 'region': ...}` adopts an existing one, and `DESTROY EXTERNAL RESOURCE` cascades only when
-the bucket carries that tag.
+`duckdb-external-resource-type = aws:s3:bucket`, and `REGISTER EXTERNAL RESOURCE ... FROM MAP
+{'name': ..., 'region': ...}` registers an existing one. `DESTROY EXTERNAL RESOURCE scratch`
+deletes an empty bucket, including an adopted bucket. For a non-empty bucket it fails without
+deleting objects or versions and leaves the resource registered. The resource-type tag records
+which buckets DuckDB created; it does not make `DESTROY` empty them.
+
+To delete the contents of a registered bucket deliberately, inspect its exact handle and preview
+the deletion first. After reviewing the preview, run the cascade call separately:
+
+```sql
+SELECT handle FROM duckdb_external_resources() WHERE name = 'scratch';
+SET VARIABLE scratch_handle = (SELECT handle FROM duckdb_external_resources() WHERE name = 'scratch');
+FROM s3_delete_bucket(getvariable('scratch_handle'), cascade := true, dry_run := true);
+FROM s3_delete_bucket(getvariable('scratch_handle'), cascade := true);
+FROM deregister_external_resource('scratch');
+```
+
+The preview returns `status = dry_run` and an object count without changing the bucket. The
+cascade call permanently deletes all objects, versions and delete markers, then the bucket.
+Deregister only after successful deletion: `s3_delete_bucket` does not remove the local
+registration. Ordinary resource cleanup, including provisioning rollback, never cascades.
+Non-empty buckets that survive cleanup continue incurring storage charges.
 
 ## Tests
 
 ```shell
-./build/release/test/unittest 'test/sql/s3/*'
+./build/release/test/unittest '*/test/sql/s3/*'
 ```
 
 Without the fixture environment, `s3_functions.test` (argument handling, the external-access
-guard) and `s3_resource.test` (the `aws:s3:bucket` type and its callbacks) run; every AWS call in
-them is made with AWS's documented example key pair and expected to fail. After
+guard) and `s3_resource.test` (the `aws:s3:bucket` type and its callbacks) run. The resource tests
+use persistent SQL substitutes to reject implicit cascade and check registration after failed
+deletes; other AWS calls use AWS's documented example key pair and are expected to fail. After
 `source test/sql/s3/s3.env` (see [Setup](#setup)), three more run against the account:
 
 - `s3.test` reads the fixture object through an S3 secret.
 - `s3_functions_aws.test` lists and inspects the fixture bucket, then creates
   `$AWS_S3_BUCKET-fn`, reconfigures it, fills it and cascade-deletes it.
-- `s3_resource_aws.test` provisions `$AWS_S3_BUCKET-res` through the framework, adopts
-  `$AWS_S3_BUCKET-adopt`, and destroys both.
+- `s3_resource_aws.test` checks that `DESTROY` preserves objects and versions in tagged
+  `$AWS_S3_BUCKET-res` and `$AWS_S3_BUCKET-adopt` buckets, then explicitly cascade-deletes them.
+  It also adopts and destroys the empty `$AWS_S3_BUCKET-empty` bucket.
 
 If a run dies midway, remove the leftovers by hand before the next run:
 `FROM s3_delete_bucket('<bucket>', cascade := true);`. S3 can refuse to re-create a just-deleted
@@ -74,7 +95,7 @@ export AWS_REGION=eu-central-1
 ./scripts/s3/create_bucket.sh
 ./scripts/s3/create_bucket.sh --force
 source test/sql/s3/s3.env
-./build/release/test/unittest 'test/sql/s3/*'
+./build/release/test/unittest '*/test/sql/s3/*'
 ```
 
 Without `--force`, setup and cleanup only print a plan. They do not call AWS.
@@ -189,7 +210,7 @@ unset S3_TEST_AVAILABLE
 
 Cleanup verifies account, region, tags and versioning, refuses unrelated objects,
 then deletes only the two named objects and the bucket. It does not recursively
-empty a bucket, and it does not know about the `-fn`, `-res` and `-adopt` buckets the
+empty a bucket, and it does not know about the `-fn`, `-res`, `-adopt` and `-empty` buckets the
 AWS-backed tests create; those tests delete their own, see [Tests](#tests) for the
 manual fallback. Once the test object is gone, cleanup removes a matching generated
 environment file even if a later step fails. Already-sourced shells retain their

@@ -1,0 +1,157 @@
+# name: test/sql/s3tables/s3tables_resource_aws.test
+# description: S3 Tables resource teardown preserves data unless cascade is explicitly requested
+# group: [s3tables]
+
+# Opt in separately from the shared read fixture. Use a new AWS_S3TABLES_RESOURCE_BUCKET_NAME;
+# this test creates it and its '-empty' sibling, and explicitly deletes both.
+# If a run stops early, find these exact names in s3tables_table_buckets(region), inspect them,
+# then clean up using s3tables_delete_table_bucket('<arn>', cascade := true).
+
+require-env S3TABLES_RESOURCE_TEST_AVAILABLE 1
+
+require-env AWS_S3TABLES_RESOURCE_BUCKET_NAME
+
+require-env AWS_S3TABLES_REGION
+
+require-env S3TABLES_AWS_CREDENTIAL_CHAIN
+
+require httpfs
+
+require parquet
+
+require avro
+
+require iceberg
+
+require aws
+
+require json
+
+statement ok
+SET allow_persistent_secrets=false
+
+statement ok
+CREATE TEMPORARY SECRET s3tables_resource_credentials (
+    TYPE s3,
+    PROVIDER credential_chain,
+    CHAIN '{S3TABLES_AWS_CREDENTIAL_CHAIN}',
+    REGION '{AWS_S3TABLES_REGION}'
+);
+
+statement ok
+CREATE EXTERNAL RESOURCE 'aws:s3tables:table-bucket' AS owned
+(NAME '{AWS_S3TABLES_RESOURCE_BUCKET_NAME}', REGION '{AWS_S3TABLES_REGION}');
+
+statement ok
+SET VARIABLE bucket_arn = (SELECT uri FROM duckdb_external_resources() WHERE name = 'owned');
+
+query II
+SELECT key, value FROM s3tables_table_bucket_tags(getvariable('bucket_arn'))
+WHERE key = 'duckdb-external-resource-type';
+----
+duckdb-external-resource-type	aws:s3tables:table-bucket
+
+statement ok
+ATTACH TO EXTERNAL RESOURCE owned AS preservation_db;
+
+statement ok
+CREATE SCHEMA preservation_db.safety;
+
+statement ok
+CREATE TABLE preservation_db.safety.sentinel (i INTEGER);
+
+statement ok
+INSERT INTO preservation_db.safety.sentinel VALUES (1);
+
+statement error
+DESTROY EXTERNAL RESOURCE owned;
+----
+DeleteTableBucket
+
+query I
+SELECT i FROM preservation_db.safety.sentinel;
+----
+1
+
+query I
+SELECT count(*) FROM s3tables_namespaces(getvariable('bucket_arn')) WHERE namespace = 'safety';
+----
+1
+
+query I
+SELECT count(*) FROM duckdb_external_resources() WHERE name = 'owned';
+----
+1
+
+# A failed teardown must not leave a write-blocking seal behind.
+statement ok
+INSERT INTO preservation_db.safety.sentinel VALUES (2);
+
+statement ok
+DETACH preservation_db;
+
+# The same tagged bucket registered later has no additional deletion permission.
+statement ok
+SELECT * FROM deregister_external_resource('owned');
+
+statement ok
+REGISTER EXTERNAL RESOURCE 'aws:s3tables:table-bucket' AS adopted
+FROM MAP {'arn': getvariable('bucket_arn')};
+
+statement ok
+ATTACH TO EXTERNAL RESOURCE adopted AS preservation_db;
+
+statement error
+DESTROY EXTERNAL RESOURCE adopted;
+----
+DeleteTableBucket
+
+query I
+SELECT i FROM preservation_db.safety.sentinel ORDER BY i;
+----
+1
+2
+
+query I
+SELECT count(*) FROM duckdb_external_resources() WHERE name = 'adopted';
+----
+1
+
+statement ok
+DETACH preservation_db;
+
+query III
+SELECT status, deleted_tables, deleted_namespaces
+FROM s3tables_delete_table_bucket(getvariable('bucket_arn'), cascade := true, dry_run := true);
+----
+dry_run	1	1
+
+query III
+SELECT status, deleted_tables, deleted_namespaces
+FROM s3tables_delete_table_bucket(getvariable('bucket_arn'), cascade := true);
+----
+deleted	1	1
+
+statement ok
+SELECT * FROM deregister_external_resource('adopted');
+
+statement ok
+SET VARIABLE empty_arn = (
+    SELECT arn FROM s3tables_create_table_bucket(
+        '{AWS_S3TABLES_RESOURCE_BUCKET_NAME}-empty', region := '{AWS_S3TABLES_REGION}'
+    )
+);
+
+statement ok
+REGISTER EXTERNAL RESOURCE 'aws:s3tables:table-bucket' AS empty_adopted
+FROM MAP {'arn': getvariable('empty_arn')};
+
+statement ok
+DESTROY EXTERNAL RESOURCE empty_adopted;
+
+# Each delete above returned success, which is the proof the buckets are gone; a listing right after a
+# delete may still show them.
+query I
+SELECT count(*) FROM duckdb_external_resources() WHERE name IN ('owned', 'adopted', 'empty_adopted');
+----
+0
