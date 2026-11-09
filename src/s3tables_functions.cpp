@@ -1178,6 +1178,7 @@ void S3TablesFunctions::Register(ExtensionLoader &loader) {
 	auto with_secret = [](TypedKwargs &options) {
 		options.Add("secret", LogicalType::VARCHAR);
 	};
+	const string category = "s3tables";
 
 	// s3tables_table_buckets() | (region) | (region_list) — bind dispatches on the argument shape.
 	TableFunctionSet buckets_set("s3tables_table_buckets");
@@ -1190,13 +1191,20 @@ void S3TablesFunctions::Register(ExtensionLoader &loader) {
 	                                          .AddPositionalOnly("regions", LogicalType::LIST(LogicalType::VARCHAR))
 	                                          .WithTypedKwargs("options", with_secret),
 	                                      TableBucketsFun, TableBucketsBind, TableBucketsInit));
-	loader.RegisterFunction(buckets_set);
+	loader.RegisterFunction(Documented(
+	    std::move(buckets_set),
+	    "Lists S3 Tables table buckets: in one region, in a list of regions, or without an argument in every "
+	    "default region in parallel. A region that answers with an error becomes one row with `error` set.",
+	    "FROM s3tables_table_buckets('eu-central-1')", category));
 
 	FunctionSignature namespaces_signature;
 	namespaces_signature.AddParameter("table_bucket_arn", LogicalType::VARCHAR).WithTypedKwargs("options", with_secret);
-	TableFunction namespaces_fn("s3tables_namespaces", std::move(namespaces_signature), NamespacesFun, NamespacesBind,
-	                            NamespacesInit);
-	loader.RegisterFunction(namespaces_fn);
+	loader.RegisterFunction(Documented(
+	    TableFunction("s3tables_namespaces", std::move(namespaces_signature), NamespacesFun, NamespacesBind,
+	                  NamespacesInit),
+	    "Lists the namespaces of a table bucket; a namespace is what a schema of the attached catalog maps "
+	    "to.",
+	    "FROM s3tables_namespaces('arn:aws:s3tables:eu-central-1:123456789012:bucket/my-table-bucket')", category));
 
 	// s3tables_tables(table_bucket_arn) | (table_bucket_arn, namespace)
 	TableFunctionSet tables_set("s3tables_tables");
@@ -1209,7 +1217,12 @@ void S3TablesFunctions::Register(ExtensionLoader &loader) {
 	                                         .AddPositionalOnly("namespace", LogicalType::VARCHAR)
 	                                         .WithTypedKwargs("options", with_secret),
 	                                     TablesFun, TablesBind, TablesInit));
-	loader.RegisterFunction(tables_set);
+	loader.RegisterFunction(Documented(
+	    std::move(tables_set),
+	    "Lists the tables of a table bucket, in one namespace or across all of them, with each table's type, ARN "
+	    "and timestamps.",
+	    "FROM s3tables_tables('arn:aws:s3tables:eu-central-1:123456789012:bucket/my-table-bucket', 'sales')",
+	    category));
 
 	FunctionSignature create_signature;
 	create_signature.AddParameter("name", LogicalType::VARCHAR).WithTypedKwargs("options", [&](TypedKwargs &options) {
@@ -1220,15 +1233,22 @@ void S3TablesFunctions::Register(ExtensionLoader &loader) {
 		    // false and create a real bucket.
 		    .Add("dry_run", LogicalType::BOOLEAN);
 	});
-	TableFunction create_fn("s3tables_create_table_bucket", std::move(create_signature), CreateBucketFun,
-	                        CreateBucketBind, OnceInit);
-	loader.RegisterFunction(create_fn);
+	loader.RegisterFunction(Documented(
+	    TableFunction("s3tables_create_table_bucket", std::move(create_signature), CreateBucketFun, CreateBucketBind,
+	                  OnceInit),
+	    "Creates an S3 Tables table bucket in `region`, tagged with `created-by = duckdb` plus `tags`, and returns "
+	    "its ARN and a handle MAP. `dry_run` resolves region and credentials and makes no AWS call.",
+	    "FROM s3tables_create_table_bucket('my-table-bucket', region := 'eu-central-1')", category));
 
 	FunctionSignature get_signature;
 	get_signature.AddParameter("table_bucket_arn", LogicalType::VARCHAR).WithTypedKwargs("options", with_secret);
-	TableFunction get_fn("s3tables_get_table_bucket", std::move(get_signature), GetBucketFun, GetBucketBind,
-	                     GetBucketInit);
-	loader.RegisterFunction(get_fn);
+	loader.RegisterFunction(Documented(
+	    TableFunction("s3tables_get_table_bucket", std::move(get_signature), GetBucketFun, GetBucketBind,
+	                  GetBucketInit),
+	    "Returns one row for a table bucket given by ARN: name, region, owner account, bucket id, type and creation "
+	    "time. Fails with NotFoundException when it does not exist.",
+	    "FROM s3tables_get_table_bucket('arn:aws:s3tables:eu-central-1:123456789012:bucket/my-table-bucket')",
+	    category));
 
 	FunctionSignature metadata_location_signature;
 	metadata_location_signature.AddParameter("table_bucket_arn", LogicalType::VARCHAR)
@@ -1241,8 +1261,11 @@ void S3TablesFunctions::Register(ExtensionLoader &loader) {
 
 	FunctionSignature tags_signature;
 	tags_signature.AddParameter("table_bucket_arn", LogicalType::VARCHAR).WithTypedKwargs("options", with_secret);
-	TableFunction tags_fn("s3tables_table_bucket_tags", std::move(tags_signature), TagsFun, TagsBind, TagsInit);
-	loader.RegisterFunction(tags_fn);
+	loader.RegisterFunction(Documented(
+	    TableFunction("s3tables_table_bucket_tags", std::move(tags_signature), TagsFun, TagsBind, TagsInit),
+	    "Returns a table bucket's tags as (key, value) rows.",
+	    "FROM s3tables_table_bucket_tags('arn:aws:s3tables:eu-central-1:123456789012:bucket/my-table-bucket')",
+	    category));
 
 	// Takes the ARN directly, or the handle MAP the external-resource framework passes around.
 	auto delete_options = [](TypedKwargs &options) {
@@ -1259,7 +1282,15 @@ void S3TablesFunctions::Register(ExtensionLoader &loader) {
 	delete_set.AddFunction(TableFunction(
 	    FunctionSignature().AddPositionalOnly("handle", map_vv).WithTypedKwargs("options", delete_options),
 	    DeleteBucketFun, DeleteBucketBind, OnceInit));
-	loader.RegisterFunction(delete_set);
+	loader.RegisterFunction(Documented(
+	    std::move(delete_set),
+	    "Deletes a table bucket given by ARN or handle. AWS only deletes an empty bucket; `cascade := true` first "
+	    "deletes every table and namespace. It first tries to seal the bucket against new writes unless "
+	    "`seal := false` or a resource policy already exists; sealing failures are reported as warnings. "
+	    "`dry_run` counts what a cascade would remove.",
+	    "FROM s3tables_delete_table_bucket('arn:aws:s3tables:eu-central-1:123456789012:bucket/my-table-bucket', "
+	    "cascade := true)",
+	    category));
 }
 
 } // namespace duckdb

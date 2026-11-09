@@ -2,6 +2,7 @@
 
 #include "duckdb.hpp"
 #include "duckdb/main/secret/secret_manager.hpp"
+#include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 #include "duckdb/storage/storage_extension.hpp"
 
 #include <aws/core/auth/AWSCredentialsProvider.h>
@@ -44,6 +45,12 @@ string GetSecretString(const KeyValueSecret &secret, const string &key);
 //! caller in SDK allocation tags. Throws when the secret carries no credentials.
 std::shared_ptr<Aws::Auth::AWSCredentialsProvider> CredentialsProviderFromSecret(const KeyValueSecret &secret,
                                                                                  const string &service);
+
+//! Empty description parameter types apply the metadata to every overload.
+CreateTableFunctionInfo Documented(TableFunctionSet set, const string &description, const string &example,
+                                   const string &category);
+CreateTableFunctionInfo Documented(TableFunction function, const string &description, const string &example,
+                                   const string &category);
 
 //! Quote a value for a libpq connection string. Backslashes and single quotes must be escaped
 //! with a backslash; quoting the whole value keeps empty values and embedded spaces valid.
