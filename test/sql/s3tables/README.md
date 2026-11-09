@@ -1,9 +1,56 @@
-# Amazon S3 Tables test fixture
+# S3 Tables
+
+`s3tables_table_buckets`, `s3tables_namespaces` and `s3tables_tables` browse the S3 Tables control
+plane; `s3tables_create_table_bucket`, `s3tables_get_table_bucket`, `s3tables_table_bucket_tags` and
+`s3tables_delete_table_bucket` manage a table bucket; `aws:s3tables:table-bucket` is the matching
+external-resource type, a catalog, so `ATTACH TO EXTERNAL RESOURCE` works on it. A table bucket
+also attaches directly by ARN: `ATTACH 'arn:aws:s3tables:...' AS db`, through the iceberg extension.
+The rest of this file covers the tests and the table bucket fixture they run against.
+General-purpose S3 buckets, a different product with its own functions and fixture, are in the
+[S3 buckets README](../s3/README.md).
+
+## Functions
+
+Sign in first: `aws login --profile <name>`, and export `AWS_PROFILE` and `AWS_REGION`. Attaching
+needs the iceberg extension: `INSTALL iceberg;` once.
+
+```shell
+./build/release/duckdb -unsigned \
+  -cmd "LOAD '$PWD/build/release/extension/aws/aws.duckdb_extension';"
+```
+
+```sql
+CREATE SECRET (TYPE s3, PROVIDER credential_chain, REGION 'eu-central-1');
+FROM s3tables_table_buckets('eu-central-1');
+FROM s3tables_create_table_bucket('my-duckdb-table-bucket', region := 'eu-central-1');
+FROM s3tables_get_table_bucket('arn:aws:s3tables:eu-central-1:123456789012:bucket/my-duckdb-table-bucket');
+FROM s3tables_table_bucket_tags('arn:aws:s3tables:eu-central-1:123456789012:bucket/my-duckdb-table-bucket');
+FROM s3tables_namespaces('arn:aws:s3tables:eu-central-1:123456789012:bucket/my-duckdb-table-bucket');
+FROM s3tables_delete_table_bucket('arn:aws:s3tables:eu-central-1:123456789012:bucket/my-duckdb-table-bucket', cascade := true);
+```
+
+The first call lists the region's table buckets; the create returns one row with the new `arn`
+(use it in place of the example ARN above), the tags call shows `created-by = duckdb`, the
+namespaces call returns no rows for a new bucket, and the delete returns `status = deleted`.
+
+## Tests
+
+```shell
+./build/release/test/unittest 'test/sql/s3tables/*'
+```
+
+Without the fixture environment, `s3tables_functions.test` (ARN and argument validation) and
+`s3tables_resource.test` (the `aws:s3tables:table-bucket` type and its callbacks) run; every AWS
+call in them is made with a key that cannot resolve and expected to fail. After
+`source test/sql/s3tables/s3tables.env` (see [Create the fixture](#create-the-fixture)),
+`s3tables.test` attaches the fixture table bucket and reads its table. The `s3tables_*`
+lifecycle functions have no AWS-backed test yet.
+
+## Fixture
 
 `s3tables.test` connects to a real Amazon S3 Tables table bucket. The fixture
 scripts create a dedicated, prefix- and region-scoped table bucket containing
-one namespace and one Apache Iceberg table. This is separate from the
-[general-purpose S3 bucket](../s3/README.md) used for CSV files:
+one namespace and one Apache Iceberg table:
 
 ```text
 <prefix>-duckdb-s3tables-test-<region>
@@ -15,7 +62,7 @@ The defaults are `test.daily_sales`; `S3TABLES_NAMESPACE` and
 `S3TABLES_TABLE` can override them. The SQL test does not hardcode these names,
 the AWS account, region, or table-bucket ARN.
 
-## Prerequisites
+### Prerequisites
 
 - A current AWS CLI v2 with the `aws s3tables` commands.
 - `jq`.
@@ -34,7 +81,7 @@ the standard `amazonaws.com` suffix. DuckDB's `ENDPOINT_TYPE s3_tables`
 shorthand does not yet construct the `amazonaws.com.cn` endpoints required by
 the `aws-cn` partition.
 
-### IAM permissions
+#### IAM permissions
 
 The provisioning identity needs `sts:GetCallerIdentity` and these S3 Tables
 actions:
@@ -68,7 +115,7 @@ maintenance principal the required KMS permissions.
 For shared or production accounts, enable CloudTrail and relevant CloudWatch
 monitoring for S3 Tables activity.
 
-## Create the fixture
+### Create the fixture
 
 From the repository root, first inspect the dry-run plan:
 
@@ -131,7 +178,7 @@ checkout moves.
 Dry-run commands do not contact AWS. Provisioning, including population through
 DuckDB, is only performed with `--force`. Do not run create or destroy concurrently.
 
-## Run the test
+### Run the test
 
 ```bash
 source test/sql/s3tables/s3tables.env
@@ -141,7 +188,7 @@ source test/sql/s3tables/s3tables.env
 The `S3TABLES_TEST_AVAILABLE=1` guard is exported only after credentials load
 successfully. Without it the test skips before extension loading or AWS calls.
 
-## Destroy the fixture
+### Destroy the fixture
 
 Inspect the cleanup plan:
 
@@ -166,7 +213,7 @@ matching generated environment file is removed, even if unrelated resources
 prevent the remaining namespace or table-bucket cleanup. Unset the guard in
 shells that already sourced the file; deleting it cannot change their environment.
 
-## Cost and cleanup expectations
+### Cost and cleanup expectations
 
 Amazon S3 Tables charges for stored table data, requests, object monitoring,
 and automated maintenance such as compaction. See

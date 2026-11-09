@@ -1,14 +1,70 @@
-# Private S3 bucket tests
+# S3 buckets
 
-These scripts provision a general-purpose S3 bucket for native DuckDB tests and
-manual browser examples. They are separate from the [S3 Tables fixture](../s3tables/README.md),
-which uses a table bucket and an Iceberg REST catalog.
+`s3_buckets`, `s3_create_bucket`, `s3_get_bucket`, `s3_bucket_tags`, `s3_update_bucket` and
+`s3_delete_bucket` manage general-purpose S3 buckets from SQL; `aws:s3:bucket` is the matching
+external-resource type, for a bucket DuckDB provisions and tears down itself. The rest of this
+file covers the tests and the private fixture bucket they run against. S3 Tables, a different
+product with its own functions and fixture, is in the [S3 Tables README](../s3tables/README.md).
+
+## Functions
+
+Sign in first: `aws login --profile <name>`, and export `AWS_PROFILE` and `AWS_REGION`.
+
+```shell
+./build/release/duckdb -unsigned \
+  -cmd "LOAD '$PWD/build/release/extension/aws/aws.duckdb_extension';"
+```
+
+```sql
+CREATE SECRET (TYPE s3, PROVIDER credential_chain, REGION 'eu-central-1');
+FROM s3_buckets();
+FROM s3_create_bucket('my-duckdb-bucket', versioning := true, tags := MAP {'team': 'data'});
+FROM s3_get_bucket('my-duckdb-bucket');
+FROM s3_bucket_tags('my-duckdb-bucket');
+FROM s3_update_bucket('my-duckdb-bucket', tags := MAP {'owner': NULL}, block_public_access := true);
+FROM s3_delete_bucket('my-duckdb-bucket', cascade := true);
+```
+
+The first call lists the account's buckets; the create returns one row with a `handle` MAP, the
+tags call shows `created-by = duckdb` next to `team`, and the delete returns `status = deleted`.
+
+The external-resource type uses the same functions: `CREATE EXTERNAL RESOURCE 'aws:s3:bucket' AS
+scratch (REGION 'eu-central-1', NAME 'my-duckdb-bucket')` creates a bucket tagged
+`duckdb-external-resource-type = aws:s3:bucket`, `REGISTER EXTERNAL RESOURCE ... FROM MAP {'name':
+..., 'region': ...}` adopts an existing one, and `DESTROY EXTERNAL RESOURCE` cascades only when
+the bucket carries that tag.
+
+## Tests
+
+```shell
+./build/release/test/unittest 'test/sql/s3/*'
+```
+
+Without the fixture environment, `s3_functions.test` (argument handling, the external-access
+guard) and `s3_resource.test` (the `aws:s3:bucket` type and its callbacks) run; every AWS call in
+them is made with AWS's documented example key pair and expected to fail. After
+`source test/sql/s3/s3.env` (see [Setup](#setup)), three more run against the account:
+
+- `s3.test` reads the fixture object through an S3 secret.
+- `s3_functions_aws.test` lists and inspects the fixture bucket, then creates
+  `$AWS_S3_BUCKET-fn`, reconfigures it, fills it and cascade-deletes it.
+- `s3_resource_aws.test` provisions `$AWS_S3_BUCKET-res` through the framework, adopts
+  `$AWS_S3_BUCKET-adopt`, and destroys both.
+
+If a run dies midway, remove the leftovers by hand before the next run:
+`FROM s3_delete_bucket('<bucket>', cascade := true);`. S3 can refuse to re-create a just-deleted
+name for a while (`OperationAborted`), and bucket configuration reads are eventually consistent,
+so a check right after a write can occasionally see the old value; rerun.
 
 ## Setup
 
+The fixture scripts provision a general-purpose S3 bucket for the native tests above and
+for manual browser examples.
+
 Prerequisites: Bash, a current AWS CLI v2, `jq`, `curl`, `gzip`, and an authenticated
-AWS profile or exported AWS credentials. The native test needs a DuckDB build with
-`aws` and `httpfs`. Setup and cleanup are opt-in; normal tests do not create resources.
+AWS profile or exported AWS credentials. The native tests need a DuckDB build with
+`aws`, `httpfs` and `parquet`. Setup and cleanup are opt-in; the offline tests do not create
+resources.
 
 From the repository root:
 
@@ -46,6 +102,7 @@ The bucket contains:
 
 - `duckdb-fixture/data.csv.gz`: the three rows in [data.csv](data.csv). Setup replaces
   this fixture on each run, and `s3.test` checks the exact rows through an S3 secret.
+  `s3_functions_aws.test` reads the bucket's `Project = duckdb-aws` tag and its region.
 - `nl-railway/services-2025-03.csv.gz`: the public
   [Dutch railway services archive](https://blobs.duckdb.org/nl-railway/services-2025-03.csv.gz).
   Setup downloads it completely before uploading; reruns preserve an existing copy.
@@ -73,7 +130,7 @@ Malformed credentials with line breaks are rejected without printing their value
 `AWS_SESSION_TOKEN`, without relying on SDK support for the profile's login method.
 
 `S3_TEST_AVAILABLE=1` is exported only after credential loading succeeds. The live
-SQL test skips unless this guard is set. Merely having AWS credentials in your shell
+SQL tests skip unless this guard is set. Merely having AWS credentials in your shell
 does not enable it. Generated files are local to this checkout; regenerate them if
 you move the checkout.
 
@@ -132,7 +189,9 @@ unset S3_TEST_AVAILABLE
 
 Cleanup verifies account, region, tags and versioning, refuses unrelated objects,
 then deletes only the two named objects and the bucket. It does not recursively
-empty a bucket. Once the test object is gone, cleanup removes a matching generated
+empty a bucket, and it does not know about the `-fn`, `-res` and `-adopt` buckets the
+AWS-backed tests create; those tests delete their own, see [Tests](#tests) for the
+manual fallback. Once the test object is gone, cleanup removes a matching generated
 environment file even if a later step fails. Already-sourced shells retain their
 variables, so unset the guard there. Do not run setup or cleanup concurrently.
 
@@ -143,8 +202,14 @@ Use a dedicated test identity scoped to the bucket and its objects. Setup needs
 `s3:GetBucketTagging`, `s3:PutBucketTagging`, `s3:PutBucketOwnershipControls`,
 `s3:PutBucketPublicAccessBlock`, `s3:PutEncryptionConfiguration`, `s3:PutBucketCORS`,
 `s3:PutObject`, and `s3:GetObject`. Cleanup additionally needs `s3:DeleteObject` and
-`s3:DeleteBucket`. The scripts also use `sts:GetCallerIdentity`. The test reader only
-needs access to read the fixture; `s3:ListBucket` is useful for missing-key diagnostics.
+`s3:DeleteBucket`. The scripts also use `sts:GetCallerIdentity`. `s3.test` only needs to
+read the fixture; `s3:ListBucket` is useful for missing-key diagnostics.
+
+The function tests need more, since they create and delete their own buckets:
+`s3:ListAllMyBuckets`, `s3:CreateBucket`, `s3:ListBucket`, `s3:GetBucketTagging`,
+`s3:PutBucketTagging`, `s3:GetBucketVersioning`, `s3:PutBucketVersioning`,
+`s3:GetBucketPublicAccessBlock`, `s3:PutBucketPublicAccessBlock`, `s3:ListBucketVersions`,
+`s3:PutObject`, `s3:DeleteObject`, `s3:DeleteObjectVersion` and `s3:DeleteBucket`.
 
 Data is encrypted at rest and AWS traffic uses TLS. Storage, requests and data
 transfer incur [S3 charges](https://aws.amazon.com/s3/pricing/) until cleanup.

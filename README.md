@@ -163,71 +163,16 @@ Configuration is through environment variables:
 
 The script can also be called directly as `python3 scripts/quack_redshift.py <action> [--force]`, where the action is `setup`, `check`, `cleanup`, or `manual-test`.
 
-## S3 buckets
+## S3 buckets and S3 Tables
 
-`s3_buckets`, `s3_create_bucket`, `s3_get_bucket`, `s3_bucket_tags`, `s3_update_bucket` and
-`s3_delete_bucket` manage general-purpose S3 buckets from SQL; `aws:s3:bucket` is the matching
-external-resource type, for a bucket DuckDB provisions and tears down itself.
-
-Sign in first: `aws login --profile <name>`, and export `AWS_PROFILE` and `AWS_REGION`.
-
-```shell
-./build/release/duckdb -unsigned \
-  -cmd "LOAD '$PWD/build/release/extension/aws/aws.duckdb_extension';"
-```
-
-```sql
-CREATE SECRET (TYPE s3, PROVIDER credential_chain, REGION 'eu-central-1');
-FROM s3_buckets();
-FROM s3_create_bucket('my-duckdb-bucket', versioning := true, tags := MAP {'team': 'data'});
-FROM s3_get_bucket('my-duckdb-bucket');
-FROM s3_bucket_tags('my-duckdb-bucket');
-FROM s3_update_bucket('my-duckdb-bucket', tags := MAP {'owner': NULL}, block_public_access := true);
-FROM s3_delete_bucket('my-duckdb-bucket', cascade := true);
-```
-
-The first call lists the account's buckets; the create returns one row with a `handle` MAP, the
-tags call shows `created-by = duckdb` next to `team`, and the delete returns `status = deleted`.
-
-Tests: `build/release/test/unittest "*/test/sql/s3/*"`. `s3_functions_aws.test` and
-`s3_resource_aws.test` run only after `source test/sql/s3/s3.env`, the fixture environment written
-by `scripts/s3/create_bucket.sh` on the s3tables-test-fixtures branch; the other two need no AWS
-account.
-
-## S3 Tables
-
-Functions: `s3tables_table_buckets`, `s3tables_namespaces`, `s3tables_tables`,
-`s3tables_create_table_bucket`, `s3tables_get_table_bucket`, `s3tables_table_bucket_tags`,
-`s3tables_delete_table_bucket`; external-resource type `aws:s3tables:table-bucket`.
-
-```shell
-# Build, then run the S3 Tables tests. Without the fixture environment only s3tables_functions.test
-# and s3tables_resource.test run; they need no AWS account.
-GEN=ninja make
-./build/release/test/unittest "*/test/sql/s3tables/*"
-
-# With the fixture environment, s3tables.test runs too; it also needs the iceberg extension.
-# test/sql/s3tables/s3tables.env is written by scripts/s3tables/create_s3tables_test_fixture.sh on
-# the s3tables-test-fixtures branch. Source one env file per shell.
-source test/sql/s3tables/s3tables.env
-./build/release/test/unittest "*/test/sql/s3tables/*"
-```
-
-`s3tables.test` attaches the fixture table bucket and reads a table; the `s3tables_*` lifecycle
-functions have no AWS-backed test yet. To run one by hand:
-
-```shell
-./build/release/duckdb -unsigned \
-  -cmd "LOAD '$PWD/build/release/extension/aws/aws.duckdb_extension';" \
-  -cmd "CREATE SECRET (TYPE s3, PROVIDER credential_chain, REGION '$AWS_REGION');" \
-  -c "FROM s3tables_table_buckets('$AWS_REGION');"
-```
+- [S3 buckets](test/sql/s3/README.md): the `s3_*` table functions, the `aws:s3:bucket`
+  external-resource type, their tests and the private fixture bucket.
+- [S3 Tables](test/sql/s3tables/README.md): the `s3tables_*` table functions, the
+  `aws:s3tables:table-bucket` external-resource type, their tests and the table bucket fixture.
 
 ## Tests
 
 - [Redshift test setup](test/sql/redshift/README.md)
-- [Private S3 bucket tests and railway example](test/sql/s3/README.md)
-- [S3 Tables test setup](test/sql/s3tables/README.md)
 
 ## Documentation
 
