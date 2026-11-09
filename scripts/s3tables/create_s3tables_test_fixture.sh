@@ -6,6 +6,8 @@ source "$(dirname -- "${BASH_SOURCE[0]}")/fixture.sh"
 
 CREDENTIAL_CHAIN="${S3TABLES_AWS_CREDENTIAL_CHAIN:-env}"
 DUCKDB_BIN="${DUCKDB_BIN:-$PROJECT_ROOT/build/release/duckdb}"
+SQL_QUOTE="'"
+EXTENSION_REPOSITORY_SQL="${PROJECT_ROOT//$SQL_QUOTE/$SQL_QUOTE$SQL_QUOTE}/build/release/repository"
 TOTAL_STEPS=5
 TABLE_ARN=""
 
@@ -44,7 +46,8 @@ validate_credential_chain() {
 
 validate_duckdb_extensions() {
 	if ! "$DUCKDB_BIN" -unsigned -c \
-		"LOAD httpfs; LOAD aws; LOAD iceberg; LOAD parquet; LOAD avro; LOAD json;" >/dev/null; then
+		"SET extension_directories = ['$EXTENSION_REPOSITORY_SQL'];
+		 LOAD httpfs; LOAD aws; LOAD iceberg; LOAD parquet; LOAD avro; LOAD json;" >/dev/null; then
 		echo "DUCKDB_BIN must load the aws, httpfs, iceberg, parquet, avro, and json extensions" >&2
 		return 1
 	fi
@@ -168,6 +171,7 @@ create_or_reuse_table() {
 populate_table() {
 	echo "Replacing the table contents with the deterministic DuckDB fixture"
 	"$DUCKDB_BIN" -unsigned -batch -bail -no-init -c "
+		SET extension_directories = ['$EXTENSION_REPOSITORY_SQL'];
 		LOAD httpfs;
 		LOAD aws;
 		LOAD iceberg;

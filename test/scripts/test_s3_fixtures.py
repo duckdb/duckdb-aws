@@ -15,6 +15,11 @@ SCRIPTS = [
     "scripts/s3tables/destroy_s3tables_test_fixture.sh",
 ]
 LOCAL_DUCKDB = shutil.which(os.environ.get("DUCKDB_BIN", "duckdb")) or shutil.which(str(ROOT / "build/release/duckdb"))
+PROJECT_DUCKDB = ROOT / "build/release/duckdb"
+LOCAL_EXTENSION_BUILD = PROJECT_DUCKDB.is_file() and all(
+    any((ROOT / "build/release/repository").glob(f"*/*/{name}.duckdb_extension"))
+    for name in ["aws", "httpfs", "iceberg", "parquet", "avro", "json"]
+)
 
 AWS_STUB = r'''#!/usr/bin/env python3
 import json
@@ -408,6 +413,34 @@ class FixtureScriptsTest(unittest.TestCase):
                 self.assertEqual(checked.returncode == 0, succeeds, checked.stderr)
                 if not succeeds:
                     self.assertIn("Unexpected rows in the managed S3 Tables fixture", checked.stderr)
+
+    @unittest.skipUnless(LOCAL_EXTENSION_BUILD, "Local DuckDB and six built extensions required")
+    def test_tables_load_local_extensions_in_both_processes(self):
+        self.stub("duckdb", '''#!/usr/bin/env python3
+import json
+import os
+import subprocess
+import sys
+
+sql = sys.argv[sys.argv.index("-c") + 1]
+loads = ";".join(statement for statement in sql.split(";")
+                 if statement.strip().upper().startswith(("SET EXTENSION_DIRECTORIES", "LOAD "))) + ";"
+result = subprocess.run([os.environ["REAL_DUCKDB"], "-unsigned", "-no-init", "-c", loads],
+                        capture_output=True, text=True)
+if result.returncode:
+    print(result.stderr, file=sys.stderr)
+    sys.exit(result.returncode)
+with open(os.environ["DUCKDB_CALL_LOG"], "a") as log:
+    log.write(json.dumps(sys.argv[1:]) + "\\n")
+''')
+        log = self.directory / "duckdb-calls.jsonl"
+        result = self.run_script(
+            SCRIPTS[2], "--force", REAL_DUCKDB=str(PROJECT_DUCKDB), DUCKDB_CALL_LOG=str(log),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = [json.loads(line) for line in log.read_text().splitlines()]
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(self.env_file.exists())
 
     def test_tables_partial_cleanup_disables_environment(self):
         for absent in ["", "1"]:
