@@ -153,12 +153,8 @@ def split_options(by_function):
     return option_count
 
 
-def cell(text):
-    return text.replace("|", "\\|").replace("\r", " ").replace("\n", " ")
-
-
 def render(by_function, option_count):
-    lines = ["| Function | Description | Example |", "|---|---|---|"]
+    sections = []
     for name, overloads in by_function.items():
         count = option_count[name]
         signatures = []
@@ -167,18 +163,22 @@ def render(by_function, option_count):
             types = row["parameter_types"] or []
             positional = parameters[: len(parameters) - count]
             params = ", ".join(f"{p} {t}" for p, t in zip(positional, types))
-            signatures.append(f"`{name}({params})`")
+            signatures.append(f"- `{name}({params})`")
         first = overloads[0]
+        example = first["examples"][0].rstrip()
+        if not example.endswith(";"):
+            example += ";"
+        lines = [f"#### `{name}`", "", "```sql", example, "```", "", first["description"], "", "Signatures:", ""]
+        lines.extend(signatures)
         parameters = first["parameters"] or []
         types = first["parameter_types"] or []
         options = parameters[len(parameters) - count :]
         option_types = types[len(types) - count :]
         if options:
-            rendered = ", ".join(f"`{o} := {t}`" for o, t in zip(options, option_types))
-            signatures.append(f"options: {rendered}")
-        example = f"`{first['examples'][0]}`"
-        lines.append(f"| {'<br>'.join(cell(s) for s in signatures)} | {cell(first['description'])} | {cell(example)} |")
-    return "\n".join(lines)
+            lines.extend(["", "Options:", ""])
+            lines.extend(f"- `{o} := {t}`" for o, t in zip(options, option_types))
+        sections.append("\n".join(lines))
+    return "\n\n".join(sections)
 
 
 def find_blocks(text):
