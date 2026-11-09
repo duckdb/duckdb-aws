@@ -1,6 +1,18 @@
 # name: test/sql/s3tables/s3tables.test
 # group: [s3tables]
 
+require-env S3TABLES_TEST_AVAILABLE 1
+
+require-env AWS_S3TABLES_REGION
+
+require-env AWS_S3TABLES_TABLE_BUCKET_ARN
+
+require-env AWS_S3TABLES_NAMESPACE
+
+require-env AWS_S3TABLES_TABLE
+
+require-env S3TABLES_AWS_CREDENTIAL_CHAIN
+
 require httpfs
 
 require parquet
@@ -13,27 +25,32 @@ require aws
 
 require json
 
-require-env AWS_ACCESS_KEY_ID
-
-require-env AWS_SECRET_ACCESS_KEY
+statement ok
+SET allow_persistent_secrets=false
 
 statement ok
-LOAD aws
-
-statement ok
-CREATE SECRET (
+CREATE TEMPORARY SECRET s3tables_test_credentials (
     TYPE s3,
-    KEY_ID '{AWS_ACCESS_KEY_ID}',
-    SECRET '{AWS_SECRET_ACCESS_KEY}',
-    REGION 'eu-central-1'
+    PROVIDER credential_chain,
+    CHAIN '{S3TABLES_AWS_CREDENTIAL_CHAIN}',
+    REGION '{AWS_S3TABLES_REGION}'
 );
 
 statement ok
-ATTACH 'arn:aws:s3tables:eu-central-1:840140254803:bucket/duckdb-s3tables-test' as db;
+ATTACH '{AWS_S3TABLES_TABLE_BUCKET_ARN}' AS db (
+    SECRET s3tables_test_credentials
+);
 
 query III
-select * from db.test.daily_sales;
+SELECT * FROM db."{AWS_S3TABLES_NAMESPACE}"."{AWS_S3TABLES_TABLE}"
+ORDER BY sale_date, product, quantity;
 ----
 2020-07-21	SHOES	21
 2020-07-22	JACKET	3
 2020-07-24	SOCKS	87
+
+statement ok
+DETACH db
+
+statement ok
+DROP SECRET s3tables_test_credentials

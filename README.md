@@ -144,6 +144,8 @@ The script can also be called directly as `python3 scripts/quack_redshift.py <ac
 ## Tests
 
 - [Redshift test setup](test/sql/redshift/README.md)
+- [Private S3 bucket tests and railway example](test/sql/s3/README.md)
+- [S3 Tables test setup](test/sql/s3tables/README.md)
 
 ## Documentation
 
