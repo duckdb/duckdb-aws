@@ -114,8 +114,8 @@ bool TryGetRequestType(Aws::Http::HttpMethod method, RequestType &result) {
 	}
 }
 
-//! Core HTTPUtil implements only GET; Put/Head/Delete/Post all throw NotImplemented. Every
-//! AWS call this extension makes is a POST, so an httpfs-provided transport is required.
+//! Core HTTPUtil implements only GET; Put/Head/Delete/Post all throw NotImplemented. Some
+//! AWS calls use POST, so an httpfs-provided transport is required.
 //! Auto-load it rather than surfacing an opaque "POST request not implemented".
 HTTPUtil &GetTransport(DatabaseInstance &db) {
 	auto &http_util = HTTPUtil::Get(db);

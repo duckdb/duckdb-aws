@@ -1,0 +1,112 @@
+# name: test/sql/s3/s3_resource_aws.test
+# description: the aws:s3:bucket external-resource type against AWS: provision, inspect, adopt, destroy
+# group: [s3]
+
+# Needs the fixture environment: `source test/sql/s3/s3.env`. The test creates `{AWS_S3_BUCKET}-res`
+# and `{AWS_S3_BUCKET}-adopt` and destroys both; if a run dies in between, remove them by hand:
+#   FROM s3_delete_bucket('<AWS_S3_BUCKET>-res', cascade := true);
+#   FROM s3_delete_bucket('<AWS_S3_BUCKET>-adopt', cascade := true);
+
+require-env S3_TEST_AVAILABLE 1
+
+require-env AWS_S3_BUCKET
+
+require-env AWS_REGION
+
+require-env AWS_ACCESS_KEY_ID
+
+require-env AWS_SECRET_ACCESS_KEY
+
+require aws
+
+require httpfs
+
+require parquet
+
+statement ok
+SET allow_persistent_secrets=false
+
+statement ok
+CREATE TEMPORARY SECRET s3_fixture_credentials (
+    TYPE s3,
+    PROVIDER credential_chain,
+    CHAIN 'env',
+    REGION '{AWS_REGION}'
+);
+
+# The list callback sees the fixture bucket; this is what SHOW ALL EXTERNAL RESOURCES unions in.
+query II
+SELECT reference, state FROM __aws__s3__bucket__list(MAP {'region': '{AWS_REGION}'})
+WHERE handle['name'] = '{AWS_S3_BUCKET}';
+----
+s3://{AWS_S3_BUCKET}/	ready
+
+# Provisioning creates the bucket and stamps the resource-type tag.
+statement ok
+CREATE EXTERNAL RESOURCE 'aws:s3:bucket' AS scratch (REGION '{AWS_REGION}', NAME '{AWS_S3_BUCKET}-res');
+
+query IIII
+SELECT type, managed, uri, handle FROM duckdb_external_resources() WHERE name = 'scratch';
+----
+aws:s3:bucket	true	s3://{AWS_S3_BUCKET}-res/	{name={AWS_S3_BUCKET}-res, region={AWS_REGION}}
+
+query II
+SELECT key, value FROM s3_bucket_tags('{AWS_S3_BUCKET}-res')
+WHERE key IN ('created-by', 'duckdb-external-resource-type') ORDER BY key;
+----
+created-by	duckdb
+duckdb-external-resource-type	aws:s3:bucket
+
+# The tag makes destroy cascade, so a managed bucket with data is emptied and removed.
+statement ok
+COPY (SELECT 1 AS i) TO 's3://{AWS_S3_BUCKET}-res/one.parquet';
+
+statement ok
+DESTROY EXTERNAL RESOURCE scratch;
+
+query I
+SELECT count(*) FROM duckdb_external_resources() WHERE name = 'scratch';
+----
+0
+
+# Adoption: a bucket created outside the framework carries no resource-type tag.
+statement ok
+SELECT * FROM s3_create_bucket('{AWS_S3_BUCKET}-adopt', region := '{AWS_REGION}');
+
+statement ok
+REGISTER EXTERNAL RESOURCE 'aws:s3:bucket' AS adopted
+FROM MAP {'name': '{AWS_S3_BUCKET}-adopt', 'region': '{AWS_REGION}'};
+
+query III
+SELECT type, managed, uri FROM duckdb_external_resources() WHERE name = 'adopted';
+----
+aws:s3:bucket	true	s3://{AWS_S3_BUCKET}-adopt/
+
+# Without the tag, destroy does not cascade: a non-empty adopted bucket survives, and the resource
+# stays registered so the DESTROY can be retried.
+statement ok
+COPY (SELECT 1 AS i) TO 's3://{AWS_S3_BUCKET}-adopt/one.parquet';
+
+statement error
+DESTROY EXTERNAL RESOURCE adopted;
+----
+BucketNotEmpty
+
+query II
+SELECT (SELECT count(*) FROM duckdb_external_resources() WHERE name = 'adopted'),
+       (SELECT count(*) FROM s3_buckets() WHERE name = '{AWS_S3_BUCKET}-adopt');
+----
+1	1
+
+# The decision is read off the bucket, not off the registration: once the owner stamps the tag,
+# the same DESTROY cascades.
+statement ok
+SELECT * FROM s3_update_bucket('{AWS_S3_BUCKET}-adopt', tags := MAP {'duckdb-external-resource-type': 'aws:s3:bucket'});
+
+statement ok
+DESTROY EXTERNAL RESOURCE adopted;
+
+query I
+SELECT count(*) FROM duckdb_external_resources() WHERE name = 'adopted';
+----
+0

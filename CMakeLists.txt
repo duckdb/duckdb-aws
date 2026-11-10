@@ -36,6 +36,8 @@ set(EXTENSION_SOURCES
     src/redshift/redshift_utils.cpp
     src/redshift/redshift_serverless_utils.cpp
     src/redshift/redshift_storage.cpp
+    src/s3_functions.cpp
+    src/s3_resource.cpp
     src/utils/utils.cpp)
 add_library(${EXTENSION_NAME} STATIC ${EXTENSION_SOURCES})
 
@@ -64,7 +66,8 @@ find_package(
              redshift
              redshift-serverless
              cloudformation
-             s3tables)
+             s3tables
+             s3)
 
 # Build static lib
 target_include_directories(${EXTENSION_NAME}

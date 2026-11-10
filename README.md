@@ -103,6 +103,28 @@ To run the SQL in a fresh native DuckDB session:
 
 For the WASM shell, load compatible `httpfs`, `aws`, and `quack` extensions and run the file's SQL in a fresh session. Keep the file private and do not share SQL or errors containing credentials. Do not remove the logging-off guards around credential setup or paste credential statements into a session with trace logging enabled. Regenerate the file when its credentials expire. Python generation runs remote preparation queries, but does not execute the generated file or clean up AWS resources.
 
+### Print only the AWS secret SQL
+
+Unlike setup or manual-test generation, this command does not inspect or prepare Quack or Redshift:
+
+```bash
+AWS_PROFILE=s3resources AWS_REGION=eu-central-1 make sql-aws-session-token FORCE=1
+```
+
+Stdout contains only `CREATE OR REPLACE TEMPORARY SECRET aws_session_token (...)`, using
+`TYPE aws`, `PROVIDER config`, and the selected profile's temporary credentials.
+Nothing is executed in DuckDB, and the command writes no SQL file. Omit `FORCE=1`
+for a preview on stderr without exporting credentials. Requires Python 3 and AWS
+CLI v2 with `configure export-credentials`; no DuckDB build is needed.
+
+An [`aws login` profile](https://docs.aws.amazon.com/sdkref/latest/guide/feature-login-credentials.html)
+issues 15-minute credentials. This command exports the current credentials, which
+may be cached and have less than 15 minutes left. It rejects expired credentials,
+missing expiration or session tokens, and credentials with more than 15 minutes
+remaining; it does not shorten an existing session. The SQL contains no refresh
+token, so rerun the command after expiry. Keep the output private and execute it
+only after loading `aws`, with SQL logging disabled.
+
 ### Optional: create a new Quack stack manually
 
 This creates another billable EC2 instance, unlike the generated test's `REGISTER` command. Run it in a separate DuckDB session with an AWS secret and the `aws` and `quack` extensions loaded:
@@ -141,11 +163,16 @@ Configuration is through environment variables:
 
 The script can also be called directly as `python3 scripts/quack_redshift.py <action> [--force]`, where the action is `setup`, `check`, `cleanup`, or `manual-test`.
 
+## S3 buckets and S3 Tables
+
+- [S3 buckets](test/sql/s3/README.md): the `s3_*` table functions, the `aws:s3:bucket`
+  external-resource type, their tests and the private fixture bucket.
+- [S3 Tables](test/sql/s3tables/README.md): the `s3tables_*` table functions, the
+  `aws:s3tables:table-bucket` external-resource type, their tests and the table bucket fixture.
+
 ## Tests
 
 - [Redshift test setup](test/sql/redshift/README.md)
-- [Private S3 bucket tests and railway example](test/sql/s3/README.md)
-- [S3 Tables test setup](test/sql/s3tables/README.md)
 
 ## Documentation
 
