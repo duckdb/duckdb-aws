@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regenerate S3 and S3 Tables reference blocks from a local extension build.
+"""Regenerate the S3, S3 Tables and system-table function reference blocks from a local extension build.
 
 Reads registered metadata without executing examples. Text outside the generated markers
 is preserved; --check reports stale blocks without writing.
@@ -9,6 +9,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -17,8 +18,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_BUILD_DIR = REPO_ROOT / "build" / "release"
 DEFAULT_README = REPO_ROOT / "README.md"
 
-FAMILIES = {"s3": "s3_", "s3tables": "s3tables_"}
+# The category a function registers through Documented() places it in one of these README blocks.
+FAMILIES = ("s3", "s3tables", "system-tables")
+# Every function with one of these prefixes is public and must be documented.
+PUBLIC_PREFIXES = ("s3_", "s3tables_", "aws_system_")
 END_MARKER = "<!-- /generated -->"
+OPTION_IN_EXAMPLE = re.compile(r"\b(\w+)\s*:=")
 
 # Every table function the extension registers; filtering happens in Python, so a function that
 # lost its documentation is reported rather than silently dropped by a `categories` filter.
@@ -42,11 +47,12 @@ def sql_literal(value):
     return "'" + str(value).replace("'", "''") + "'"
 
 
-def family_of(function_name):
-    for family, prefix in FAMILIES.items():
-        if function_name.startswith(prefix):
-            return family
-    return None
+def is_public(function_name):
+    return not function_name.startswith("__") and function_name.startswith(PUBLIC_PREFIXES)
+
+
+def family_of(overloads):
+    return overloads[0]["categories"][0]
 
 
 def load_functions(duckdb, extension):
@@ -83,7 +89,7 @@ def public_functions(rows):
     by_function = {}
     for row in rows:
         name = row["function_name"]
-        if name.startswith("__") or family_of(name) is None:
+        if not is_public(name):
             continue
         by_function.setdefault(name, []).append(row)
 
@@ -99,7 +105,6 @@ def public_functions(rows):
 def validate_documentation(by_function):
     problems = []
     for name, overloads in by_function.items():
-        family = family_of(name)
         for row in overloads:
             signature = f"{name}({', '.join(row['parameters'] or [])})"
             if not row["description"]:
@@ -108,16 +113,17 @@ def validate_documentation(by_function):
                 problems.append(f"{signature}: no example")
             elif not row["examples"][0].startswith(f"FROM {name}("):
                 problems.append(f"{signature}: example does not call {name}: {row['examples'][0]!r}")
-            if row["categories"] != [family]:
-                problems.append(f"{signature}: categories {row['categories']!r}, expected {[family]!r}")
-    for family in FAMILIES:
-        if not any(family_of(name) == family for name in by_function):
-            problems.append(f"no public {FAMILIES[family]}* function found; is the build from this source tree?")
+            categories = row["categories"] or []
+            if len(categories) != 1 or categories[0] not in FAMILIES:
+                problems.append(f"{signature}: categories {categories!r}, expected one of {list(FAMILIES)!r}")
     if problems:
         raise GenerationError(
             "undocumented or misdocumented public functions (register them through Documented()):\n  "
             + "\n  ".join(problems)
         )
+    for family in FAMILIES:
+        if not any(family_of(overloads) == family for overloads in by_function.values()):
+            raise GenerationError(f"no public function in category {family!r}; is the build from this source tree?")
 
 
 def common_suffix(parameter_lists):
@@ -132,12 +138,15 @@ def common_suffix(parameter_lists):
 def split_options(by_function):
     """Infer options because the catalog flattens positional parameters and typed kwargs.
 
-    Shared overload suffixes supply an option vocabulary for single-overload functions.
-    This relies on their positional names not colliding with option names, such as region.
+    The option vocabulary is every name passed with `:=` in a registered example plus the
+    parameter suffix all overloads of a function share. A single-overload function whose last
+    positional parameter is named like an option (region, say) would be misread; none is today.
     """
     vocabulary = set()
     option_count = {}
     for name, rows in by_function.items():
+        for row in rows:
+            vocabulary.update(OPTION_IN_EXAMPLE.findall(row["examples"][0]))
         if len(rows) > 1:
             suffix = common_suffix([row["parameters"] or [] for row in rows])
             option_count[name] = len(suffix)
@@ -226,7 +235,7 @@ def generate(readme_text, rows):
     option_count = split_options(by_function)
     bodies = {}
     for family in FAMILIES:
-        members = {name: overloads for name, overloads in by_function.items() if family_of(name) == family}
+        members = {name: overloads for name, overloads in by_function.items() if family_of(overloads) == family}
         bodies[family] = render(members, option_count)
     return replace_blocks(readme_text, bodies)
 

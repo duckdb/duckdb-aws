@@ -29,3 +29,10 @@ quack-redshift-manual-test:
 .PHONY: sql-aws-session-token
 sql-aws-session-token:
 	@python3 "$(PROJ_DIR)scripts/generate_aws_secret.py" $(if $(filter 1,$(FORCE)),--force,)
+
+.PHONY: docs docs-check
+docs:
+	python3 "$(PROJ_DIR)scripts/generate_function_docs.py" --build-dir "$(PROJ_DIR)build/release"
+
+docs-check:
+	python3 "$(PROJ_DIR)scripts/generate_function_docs.py" --build-dir "$(PROJ_DIR)build/release" --check

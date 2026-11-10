@@ -1257,7 +1257,14 @@ void S3TablesFunctions::Register(ExtensionLoader &loader) {
 	    .WithTypedKwargs("options", with_secret);
 	TableFunction metadata_location_fn("s3tables_table_metadata_location", std::move(metadata_location_signature),
 	                                   MetadataLocationFun, MetadataLocationBind, GetBucketInit);
-	loader.RegisterFunction(metadata_location_fn);
+	loader.RegisterFunction(Documented(
+	    std::move(metadata_location_fn),
+	    "Returns where a table's current Iceberg metadata file is, with the warehouse location and version token: "
+	    "all an Iceberg reader needs to scan the table without a catalog. `metadata_location` is NULL while the "
+	    "table is still being created.",
+	    "FROM s3tables_table_metadata_location('arn:aws:s3tables:us-east-1:123456789012:bucket/aws-catalog', 'glue', "
+	    "'tables')",
+	    category));
 
 	FunctionSignature tags_signature;
 	tags_signature.AddParameter("table_bucket_arn", LogicalType::VARCHAR).WithTypedKwargs("options", with_secret);

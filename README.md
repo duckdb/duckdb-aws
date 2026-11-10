@@ -170,11 +170,12 @@ The script can also be called directly as `python3 scripts/quack_redshift.py <ac
 - [S3 Tables](test/sql/s3tables/README.md): the `s3tables_*` table functions, the
   `aws:s3tables:table-bucket` external-resource type, their tests and the table bucket fixture.
 
-The function reference below is generated from the description, example and category each
-function registers through `Documented()` (`src/utils/utils.cpp`). After changing a function or
-its documentation, rebuild and run `python3 scripts/generate_function_docs.py`; `--check` exits 1
-if the reference is stale, and a public function registered without documentation fails the run.
-Only the text between the `generated` markers is rewritten.
+The function references below, here and under [AWS system tables](#aws-system-tables), are
+generated from the description, example and category each function registers through
+`Documented()` (`src/utils/utils.cpp`). After changing a function or its documentation, rebuild
+and run `make docs`; `make docs-check` exits 1 if a reference is stale, and a public function
+registered without documentation fails either. Only the text between the `generated` markers is
+rewritten.
 
 ### S3 bucket functions
 
@@ -385,6 +386,22 @@ Options:
 
 - `secret := VARCHAR`
 
+#### `s3tables_table_metadata_location`
+
+```sql
+FROM s3tables_table_metadata_location('arn:aws:s3tables:us-east-1:123456789012:bucket/aws-catalog', 'glue', 'tables');
+```
+
+Returns where a table's current Iceberg metadata file is, with the warehouse location and version token: all an Iceberg reader needs to scan the table without a catalog. `metadata_location` is NULL while the table is still being created.
+
+Signatures:
+
+- `s3tables_table_metadata_location(table_bucket_arn VARCHAR, namespace VARCHAR, name VARCHAR)`
+
+Options:
+
+- `secret := VARCHAR`
+
 #### `s3tables_table_bucket_tags`
 
 ```sql
@@ -472,8 +489,111 @@ DESTROY EXTERNAL RESOURCE meta;
 Only the S3 Metadata family (`TYPE 'aws:s3:bucket'`) can be enabled with the AWS SDK version this extension links;
 `TYPE 'aws:glue'` and `'aws:athena'` are refused until the vcpkg port moves to aws-sdk-cpp 1.11.924 or later, which
 has `PutDataCatalogExportConfiguration` and `CreateSystemTableConfiguration`. The configuration calls are also
-available directly: `s3_bucket_metadata_configuration(bucket, region :=)`, `s3_create_bucket_metadata_configuration(bucket,
-region :=, inventory := true, journal_expiration_days := 0)` and `s3_delete_bucket_metadata_configuration(bucket, region :=)`.
+available directly as the `s3_*_metadata_configuration` functions below.
+
+### System table functions
+
+<!-- generated:system-tables -->
+#### `s3_bucket_metadata_configuration`
+
+```sql
+FROM s3_bucket_metadata_configuration('my-bucket', region := 'us-east-1');
+```
+
+Returns a bucket's S3 Metadata configuration as one row: the `aws-s3` table bucket and namespace its tables live in, and the status and ARN of the journal and inventory tables. No row when the bucket has no configuration.
+
+Signatures:
+
+- `s3_bucket_metadata_configuration(bucket VARCHAR)`
+
+Options:
+
+- `region := VARCHAR`
+- `secret := VARCHAR`
+
+#### `s3_create_bucket_metadata_configuration`
+
+```sql
+FROM s3_create_bucket_metadata_configuration('my-bucket', region := 'us-east-1', inventory := true, journal_expiration_days := 30);
+```
+
+Enables S3 Metadata for a bucket: a journal table always, an inventory table unless `inventory := false`, journal records kept forever unless `journal_expiration_days` is set. S3 creates the region's `aws-s3` table bucket on the first configuration. Returns the configuration as `s3_bucket_metadata_configuration` does, so the tables are typically still CREATING.
+
+Signatures:
+
+- `s3_create_bucket_metadata_configuration(bucket VARCHAR)`
+
+Options:
+
+- `region := VARCHAR`
+- `secret := VARCHAR`
+- `inventory := BOOLEAN`
+- `journal_expiration_days := BIGINT`
+
+#### `s3_delete_bucket_metadata_configuration`
+
+```sql
+FROM s3_delete_bucket_metadata_configuration('my-bucket', region := 'us-east-1');
+```
+
+Disables S3 Metadata for a bucket, which deletes its journal and inventory tables, irreversibly; the bucket's objects are untouched. Returns `status = deleted`, or `absent` when there was no configuration.
+
+Signatures:
+
+- `s3_delete_bucket_metadata_configuration(bucket VARCHAR)`
+
+Options:
+
+- `region := VARCHAR`
+- `secret := VARCHAR`
+
+#### `aws_system_tables`
+
+```sql
+FROM aws_system_tables(regions := ['us-east-1', 'eu-central-1']);
+```
+
+Lists every table of every AWS-managed `aws-*` table bucket, one row per table with its region, bucket, service, namespace, name, ARN, type and timestamps. Without an argument it sweeps the default regions; `regions` lists those regions; `region` lists one and throws its errors. Otherwise a region or bucket that cannot be listed becomes one row with `error` set.
+
+Signatures:
+
+- `aws_system_tables()`
+
+Options:
+
+- `region := VARCHAR`
+- `regions := VARCHAR[]`
+- `secret := VARCHAR`
+
+#### `aws_system_table`
+
+```sql
+FROM aws_system_table('aws-catalog', 'glue', 'tables', region := 'us-east-1');
+```
+
+Scans one system table through `iceberg_scan`, from the table's current metadata location. `bucket` is a table bucket name, looked up in `region` or the region the usual resolution yields, or a table bucket ARN, which carries its own region. Fails while the table is still being created and has no metadata.
+
+Signatures:
+
+- `aws_system_table(bucket VARCHAR, namespace VARCHAR, name VARCHAR)`
+
+Options:
+
+- `region := VARCHAR`
+- `secret := VARCHAR`
+
+#### `aws_system_table_families`
+
+```sql
+FROM aws_system_table_families();
+```
+
+Lists the known families of system tables: the `aws-*` bucket each lands in, its namespace and table patterns, the external-resource type it is the inventory of and the AWS call that enables it. Static; no AWS call.
+
+Signatures:
+
+- `aws_system_table_families()`
+<!-- /generated -->
 
 ## Tests
 
