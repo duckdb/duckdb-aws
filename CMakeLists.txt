@@ -42,6 +42,10 @@ set(EXTENSION_SOURCES
     src/s3_functions.cpp
     src/s3_resource.cpp
     src/utils/utils.cpp)
+if(EMSCRIPTEN)
+    list(APPEND EXTENSION_SOURCES src/wasm_compat.c)
+endif()
+
 add_library(${EXTENSION_NAME} STATIC ${EXTENSION_SOURCES})
 
 # On wasm the loadable target is an archive and DuckDB produces the side module
