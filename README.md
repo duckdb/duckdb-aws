@@ -170,6 +170,275 @@ The script can also be called directly as `python3 scripts/quack_redshift.py <ac
 - [S3 Tables](test/sql/s3tables/README.md): the `s3tables_*` table functions, the
   `aws:s3tables:table-bucket` external-resource type, their tests and the table bucket fixture.
 
+The function references below, here and under [AWS system tables](#aws-system-tables), are
+generated from the description, example and category each function registers through
+`Documented()` (`src/utils/utils.cpp`). After changing a function or its documentation, rebuild
+and run `make docs`; `make docs-check` exits 1 if a reference is stale, and a public function
+registered without documentation fails either. Only the text between the `generated` markers is
+rewritten.
+
+### S3 bucket functions
+
+<!-- generated:s3 -->
+#### `s3_buckets`
+
+```sql
+FROM s3_buckets(region := 'eu-central-1');
+```
+
+Lists the general-purpose S3 buckets the account owns, with each bucket's region and creation time. `region` filters to one region; without it every region in the partition is listed.
+
+Signatures:
+
+- `s3_buckets()`
+
+Options:
+
+- `region := VARCHAR`
+- `secret := VARCHAR`
+
+#### `s3_create_bucket`
+
+```sql
+FROM s3_create_bucket('my-bucket', region := 'eu-central-1', versioning := true, tags := MAP {'team': 'data'});
+```
+
+Creates a general-purpose S3 bucket in `region`, tags it with `created-by = duckdb` plus `tags`, and optionally enables versioning and blocks public access. Returns a handle MAP the other s3_* functions accept in place of the name. `dry_run` resolves region and credentials and makes no S3 call.
+
+Signatures:
+
+- `s3_create_bucket(name VARCHAR)`
+
+Options:
+
+- `region := VARCHAR`
+- `tags := MAP(VARCHAR, VARCHAR)`
+- `versioning := BOOLEAN`
+- `block_public_access := BOOLEAN`
+- `secret := VARCHAR`
+- `dry_run := BOOLEAN`
+
+#### `s3_get_bucket`
+
+```sql
+FROM s3_get_bucket('my-bucket');
+```
+
+Returns one row for a bucket given by name or handle: its region as S3 reports it, ARN, versioning status and whether all public access is blocked. Fails with NoSuchBucket when the bucket does not exist.
+
+Signatures:
+
+- `s3_get_bucket(name VARCHAR)`
+- `s3_get_bucket(handle MAP(VARCHAR, VARCHAR))`
+
+Options:
+
+- `region := VARCHAR`
+- `secret := VARCHAR`
+
+#### `s3_bucket_tags`
+
+```sql
+FROM s3_bucket_tags('my-bucket');
+```
+
+Returns a bucket's tags as (key, value) rows; zero rows for an untagged bucket.
+
+Signatures:
+
+- `s3_bucket_tags(name VARCHAR)`
+- `s3_bucket_tags(handle MAP(VARCHAR, VARCHAR))`
+
+Options:
+
+- `region := VARCHAR`
+- `secret := VARCHAR`
+
+#### `s3_update_bucket`
+
+```sql
+FROM s3_update_bucket('my-bucket', tags := MAP {'owner': NULL}, block_public_access := true);
+```
+
+Changes a bucket's tags, versioning and public-access block, in that order; pass non-empty tags or a setting. `tags` merges into the existing set and a NULL value removes a key; `versioning := false` suspends, since S3 cannot disable versioning. `dry_run` reports the result without writing.
+
+Signatures:
+
+- `s3_update_bucket(name VARCHAR)`
+- `s3_update_bucket(handle MAP(VARCHAR, VARCHAR))`
+
+Options:
+
+- `tags := MAP(VARCHAR, VARCHAR)`
+- `versioning := BOOLEAN`
+- `block_public_access := BOOLEAN`
+- `region := VARCHAR`
+- `secret := VARCHAR`
+- `dry_run := BOOLEAN`
+
+#### `s3_delete_bucket`
+
+```sql
+FROM s3_delete_bucket('my-bucket', cascade := true);
+```
+
+Deletes a bucket given by name or handle. S3 only deletes an empty bucket; `cascade := true` first removes every object version and delete marker, irreversibly. `dry_run` counts what a cascade would remove.
+
+Signatures:
+
+- `s3_delete_bucket(name VARCHAR)`
+- `s3_delete_bucket(handle MAP(VARCHAR, VARCHAR))`
+
+Options:
+
+- `cascade := BOOLEAN`
+- `region := VARCHAR`
+- `secret := VARCHAR`
+- `dry_run := BOOLEAN`
+<!-- /generated -->
+
+### S3 Tables functions
+
+<!-- generated:s3tables -->
+#### `s3tables_table_buckets`
+
+```sql
+FROM s3tables_table_buckets('eu-central-1');
+```
+
+Lists S3 Tables table buckets: in one region, in a list of regions, or without an argument in every default region in parallel. A region that answers with an error becomes one row with `error` set.
+
+Signatures:
+
+- `s3tables_table_buckets()`
+- `s3tables_table_buckets(region VARCHAR)`
+- `s3tables_table_buckets(regions VARCHAR[])`
+
+Options:
+
+- `secret := VARCHAR`
+
+#### `s3tables_namespaces`
+
+```sql
+FROM s3tables_namespaces('arn:aws:s3tables:eu-central-1:123456789012:bucket/my-table-bucket');
+```
+
+Lists the namespaces of a table bucket; a namespace is what a schema of the attached catalog maps to.
+
+Signatures:
+
+- `s3tables_namespaces(table_bucket_arn VARCHAR)`
+
+Options:
+
+- `secret := VARCHAR`
+
+#### `s3tables_tables`
+
+```sql
+FROM s3tables_tables('arn:aws:s3tables:eu-central-1:123456789012:bucket/my-table-bucket', 'sales');
+```
+
+Lists the tables of a table bucket, in one namespace or across all of them, with each table's type, ARN and timestamps.
+
+Signatures:
+
+- `s3tables_tables(table_bucket_arn VARCHAR)`
+- `s3tables_tables(table_bucket_arn VARCHAR, namespace VARCHAR)`
+
+Options:
+
+- `secret := VARCHAR`
+
+#### `s3tables_create_table_bucket`
+
+```sql
+FROM s3tables_create_table_bucket('my-table-bucket', region := 'eu-central-1');
+```
+
+Creates an S3 Tables table bucket in `region`, tagged with `created-by = duckdb` plus `tags`, and returns its ARN and a handle MAP. `dry_run` resolves region and credentials and makes no AWS call.
+
+Signatures:
+
+- `s3tables_create_table_bucket(name VARCHAR)`
+
+Options:
+
+- `region := VARCHAR`
+- `tags := MAP(VARCHAR, VARCHAR)`
+- `secret := VARCHAR`
+- `dry_run := BOOLEAN`
+
+#### `s3tables_get_table_bucket`
+
+```sql
+FROM s3tables_get_table_bucket('arn:aws:s3tables:eu-central-1:123456789012:bucket/my-table-bucket');
+```
+
+Returns one row for a table bucket given by ARN: name, region, owner account, bucket id, type and creation time. Fails with NotFoundException when it does not exist.
+
+Signatures:
+
+- `s3tables_get_table_bucket(table_bucket_arn VARCHAR)`
+
+Options:
+
+- `secret := VARCHAR`
+
+#### `s3tables_table_metadata_location`
+
+```sql
+FROM s3tables_table_metadata_location('arn:aws:s3tables:us-east-1:123456789012:bucket/aws-catalog', 'glue', 'tables');
+```
+
+Returns where a table's current Iceberg metadata file is, with the warehouse location and version token: all an Iceberg reader needs to scan the table without a catalog. `metadata_location` is NULL while the table is still being created.
+
+Signatures:
+
+- `s3tables_table_metadata_location(table_bucket_arn VARCHAR, namespace VARCHAR, name VARCHAR)`
+
+Options:
+
+- `secret := VARCHAR`
+
+#### `s3tables_table_bucket_tags`
+
+```sql
+FROM s3tables_table_bucket_tags('arn:aws:s3tables:eu-central-1:123456789012:bucket/my-table-bucket');
+```
+
+Returns a table bucket's tags as (key, value) rows.
+
+Signatures:
+
+- `s3tables_table_bucket_tags(table_bucket_arn VARCHAR)`
+
+Options:
+
+- `secret := VARCHAR`
+
+#### `s3tables_delete_table_bucket`
+
+```sql
+FROM s3tables_delete_table_bucket('arn:aws:s3tables:eu-central-1:123456789012:bucket/my-table-bucket', cascade := true);
+```
+
+Deletes a table bucket given by ARN or handle. AWS only deletes an empty bucket; `cascade := true` first deletes every table and namespace. It first tries to seal the bucket against new writes unless `seal := false` or a resource policy already exists; sealing failures are reported as warnings. `dry_run` counts what a cascade would remove.
+
+Signatures:
+
+- `s3tables_delete_table_bucket(table_bucket_arn VARCHAR)`
+- `s3tables_delete_table_bucket(handle MAP(VARCHAR, VARCHAR))`
+
+Options:
+
+- `cascade := BOOLEAN`
+- `seal := BOOLEAN`
+- `secret := VARCHAR`
+- `dry_run := BOOLEAN`
+<!-- /generated -->
+
 ## AWS system tables
 
 AWS services publish inventories and logs as Apache Iceberg tables in AWS-managed S3 table buckets, one bucket per
@@ -220,8 +489,111 @@ DESTROY EXTERNAL RESOURCE meta;
 Only the S3 Metadata family (`TYPE 'aws:s3:bucket'`) can be enabled with the AWS SDK version this extension links;
 `TYPE 'aws:glue'` and `'aws:athena'` are refused until the vcpkg port moves to aws-sdk-cpp 1.11.924 or later, which
 has `PutDataCatalogExportConfiguration` and `CreateSystemTableConfiguration`. The configuration calls are also
-available directly: `s3_bucket_metadata_configuration(bucket, region :=)`, `s3_create_bucket_metadata_configuration(bucket,
-region :=, inventory := true, journal_expiration_days := 0)` and `s3_delete_bucket_metadata_configuration(bucket, region :=)`.
+available directly as the `s3_*_metadata_configuration` functions below.
+
+### System table functions
+
+<!-- generated:system-tables -->
+#### `s3_bucket_metadata_configuration`
+
+```sql
+FROM s3_bucket_metadata_configuration('my-bucket', region := 'us-east-1');
+```
+
+Returns a bucket's S3 Metadata configuration as one row: the `aws-s3` table bucket and namespace its tables live in, and the status and ARN of the journal and inventory tables. No row when the bucket has no configuration.
+
+Signatures:
+
+- `s3_bucket_metadata_configuration(bucket VARCHAR)`
+
+Options:
+
+- `region := VARCHAR`
+- `secret := VARCHAR`
+
+#### `s3_create_bucket_metadata_configuration`
+
+```sql
+FROM s3_create_bucket_metadata_configuration('my-bucket', region := 'us-east-1', inventory := true, journal_expiration_days := 30);
+```
+
+Enables S3 Metadata for a bucket: a journal table always, an inventory table unless `inventory := false`, journal records kept forever unless `journal_expiration_days` is set. S3 creates the region's `aws-s3` table bucket on the first configuration. Returns the configuration as `s3_bucket_metadata_configuration` does, so the tables are typically still CREATING.
+
+Signatures:
+
+- `s3_create_bucket_metadata_configuration(bucket VARCHAR)`
+
+Options:
+
+- `region := VARCHAR`
+- `secret := VARCHAR`
+- `inventory := BOOLEAN`
+- `journal_expiration_days := BIGINT`
+
+#### `s3_delete_bucket_metadata_configuration`
+
+```sql
+FROM s3_delete_bucket_metadata_configuration('my-bucket', region := 'us-east-1');
+```
+
+Disables S3 Metadata for a bucket, which deletes its journal and inventory tables, irreversibly; the bucket's objects are untouched. Returns `status = deleted`, or `absent` when there was no configuration.
+
+Signatures:
+
+- `s3_delete_bucket_metadata_configuration(bucket VARCHAR)`
+
+Options:
+
+- `region := VARCHAR`
+- `secret := VARCHAR`
+
+#### `aws_system_tables`
+
+```sql
+FROM aws_system_tables(regions := ['us-east-1', 'eu-central-1']);
+```
+
+Lists every table of every AWS-managed `aws-*` table bucket, one row per table with its region, bucket, service, namespace, name, ARN, type and timestamps. Without an argument it sweeps the default regions; `regions` lists those regions; `region` lists one and throws its errors. Otherwise a region or bucket that cannot be listed becomes one row with `error` set.
+
+Signatures:
+
+- `aws_system_tables()`
+
+Options:
+
+- `region := VARCHAR`
+- `regions := VARCHAR[]`
+- `secret := VARCHAR`
+
+#### `aws_system_table`
+
+```sql
+FROM aws_system_table('aws-catalog', 'glue', 'tables', region := 'us-east-1');
+```
+
+Scans one system table through `iceberg_scan`, from the table's current metadata location. `bucket` is a table bucket name, looked up in `region` or the region the usual resolution yields, or a table bucket ARN, which carries its own region. Fails while the table is still being created and has no metadata.
+
+Signatures:
+
+- `aws_system_table(bucket VARCHAR, namespace VARCHAR, name VARCHAR)`
+
+Options:
+
+- `region := VARCHAR`
+- `secret := VARCHAR`
+
+#### `aws_system_table_families`
+
+```sql
+FROM aws_system_table_families();
+```
+
+Lists the known families of system tables: the `aws-*` bucket each lands in, its namespace and table patterns, the external-resource type it is the inventory of and the AWS call that enables it. Static; no AWS call.
+
+Signatures:
+
+- `aws_system_table_families()`
+<!-- /generated -->
 
 ## Tests
 

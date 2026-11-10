@@ -267,14 +267,19 @@ void DeleteFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &ou
 } // namespace
 
 void S3MetadataFunctions::Register(ExtensionLoader &loader) {
+	const string category = "system-tables";
 	auto with_region_and_secret = [](TypedKwargs &options) {
 		options.Add("region", LogicalType::VARCHAR).Add("secret", LogicalType::VARCHAR);
 	};
 
 	FunctionSignature get_signature;
 	get_signature.AddParameter("bucket", LogicalType::VARCHAR).WithTypedKwargs("options", with_region_and_secret);
-	loader.RegisterFunction(
-	    TableFunction("s3_bucket_metadata_configuration", std::move(get_signature), GetFun, GetBind, OnceInit));
+	loader.RegisterFunction(Documented(
+	    TableFunction("s3_bucket_metadata_configuration", std::move(get_signature), GetFun, GetBind, OnceInit),
+	    "Returns a bucket's S3 Metadata configuration as one row: the `aws-s3` table bucket and namespace its tables "
+	    "live in, and the status and ARN of the journal and inventory tables. No row when the bucket has no "
+	    "configuration.",
+	    "FROM s3_bucket_metadata_configuration('my-bucket', region := 'us-east-1')", category));
 
 	FunctionSignature create_signature;
 	create_signature.AddParameter("bucket", LogicalType::VARCHAR).WithTypedKwargs("options", [](TypedKwargs &options) {
@@ -283,13 +288,25 @@ void S3MetadataFunctions::Register(ExtensionLoader &loader) {
 		    .Add("inventory", LogicalType::BOOLEAN)
 		    .Add("journal_expiration_days", LogicalType::BIGINT);
 	});
-	loader.RegisterFunction(TableFunction("s3_create_bucket_metadata_configuration", std::move(create_signature),
-	                                      CreateFun, CreateBind, OnceInit));
+	loader.RegisterFunction(Documented(
+	    TableFunction("s3_create_bucket_metadata_configuration", std::move(create_signature), CreateFun, CreateBind,
+	                  OnceInit),
+	    "Enables S3 Metadata for a bucket: a journal table always, an inventory table unless `inventory := false`, "
+	    "journal records kept forever unless `journal_expiration_days` is set. S3 creates the region's `aws-s3` "
+	    "table bucket on the first configuration. Returns the configuration as `s3_bucket_metadata_configuration` "
+	    "does, so the tables are typically still CREATING.",
+	    "FROM s3_create_bucket_metadata_configuration('my-bucket', region := 'us-east-1', inventory := true, "
+	    "journal_expiration_days := 30)",
+	    category));
 
 	FunctionSignature delete_signature;
 	delete_signature.AddParameter("bucket", LogicalType::VARCHAR).WithTypedKwargs("options", with_region_and_secret);
-	loader.RegisterFunction(TableFunction("s3_delete_bucket_metadata_configuration", std::move(delete_signature),
-	                                      DeleteFun, DeleteBind, OnceInit));
+	loader.RegisterFunction(Documented(
+	    TableFunction("s3_delete_bucket_metadata_configuration", std::move(delete_signature), DeleteFun, DeleteBind,
+	                  OnceInit),
+	    "Disables S3 Metadata for a bucket, which deletes its journal and inventory tables, irreversibly; the "
+	    "bucket's objects are untouched. Returns `status = deleted`, or `absent` when there was no configuration.",
+	    "FROM s3_delete_bucket_metadata_configuration('my-bucket', region := 'us-east-1')", category));
 }
 
 } // namespace duckdb

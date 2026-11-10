@@ -1039,10 +1039,14 @@ void S3Functions::Register(ExtensionLoader &loader) {
 	auto with_region_secret = [](TypedKwargs &options) {
 		options.Add("region", LogicalType::VARCHAR).Add("secret", LogicalType::VARCHAR);
 	};
+	const string category = "s3";
 
-	loader.RegisterFunction(TableFunction("s3_buckets",
-	                                      FunctionSignature().WithTypedKwargs("options", with_region_secret),
-	                                      S3BucketsFun, S3BucketsBind, S3BucketsInit));
+	loader.RegisterFunction(Documented(
+	    TableFunction("s3_buckets", FunctionSignature().WithTypedKwargs("options", with_region_secret), S3BucketsFun,
+	                  S3BucketsBind, S3BucketsInit),
+	    "Lists the general-purpose S3 buckets the account owns, with each bucket's region and creation time. "
+	    "`region` filters to one region; without it every region in the partition is listed.",
+	    "FROM s3_buckets(region := 'eu-central-1')", category));
 
 	FunctionSignature create_signature;
 	create_signature.AddParameter("name", LogicalType::VARCHAR).WithTypedKwargs("options", [&](TypedKwargs &options) {
@@ -1055,13 +1059,25 @@ void S3Functions::Register(ExtensionLoader &loader) {
 		    // false and create a real bucket.
 		    .Add("dry_run", LogicalType::BOOLEAN);
 	});
-	loader.RegisterFunction(
-	    TableFunction("s3_create_bucket", std::move(create_signature), CreateBucketFun, CreateBucketBind, OnceInit));
+	loader.RegisterFunction(Documented(
+	    TableFunction("s3_create_bucket", std::move(create_signature), CreateBucketFun, CreateBucketBind, OnceInit),
+	    "Creates a general-purpose S3 bucket in `region`, tags it with `created-by = duckdb` plus `tags`, and "
+	    "optionally enables versioning and blocks public access. Returns a handle MAP the other s3_* functions "
+	    "accept in place of the name. `dry_run` resolves region and credentials and makes no S3 call.",
+	    "FROM s3_create_bucket('my-bucket', region := 'eu-central-1', versioning := true, tags := MAP {'team': "
+	    "'data'})",
+	    category));
 
 	loader.RegisterFunction(
-	    BucketFunctionSet("s3_get_bucket", with_region_secret, GetBucketFun, GetBucketBind, OnceInit));
+	    Documented(BucketFunctionSet("s3_get_bucket", with_region_secret, GetBucketFun, GetBucketBind, OnceInit),
+	               "Returns one row for a bucket given by name or handle: its region as S3 reports it, ARN, "
+	               "versioning status and whether all public access is blocked. Fails with NoSuchBucket when the "
+	               "bucket does not exist.",
+	               "FROM s3_get_bucket('my-bucket')", category));
 	loader.RegisterFunction(
-	    BucketFunctionSet("s3_bucket_tags", with_region_secret, BucketTagsFun, BucketTagsBind, TagsInit));
+	    Documented(BucketFunctionSet("s3_bucket_tags", with_region_secret, BucketTagsFun, BucketTagsBind, TagsInit),
+	               "Returns a bucket's tags as (key, value) rows; zero rows for an untagged bucket.",
+	               "FROM s3_bucket_tags('my-bucket')", category));
 
 	auto update_options = [map_vv](TypedKwargs &options) {
 		options.Add("tags", map_vv)
@@ -1071,8 +1087,12 @@ void S3Functions::Register(ExtensionLoader &loader) {
 		    .Add("secret", LogicalType::VARCHAR)
 		    .Add("dry_run", LogicalType::BOOLEAN);
 	};
-	loader.RegisterFunction(
-	    BucketFunctionSet("s3_update_bucket", update_options, UpdateBucketFun, UpdateBucketBind, OnceInit));
+	loader.RegisterFunction(Documented(
+	    BucketFunctionSet("s3_update_bucket", update_options, UpdateBucketFun, UpdateBucketBind, OnceInit),
+	    "Changes a bucket's tags, versioning and public-access block, in that order; pass non-empty tags or a setting. "
+	    "`tags` merges into the existing set and a NULL value removes a key; `versioning := false` suspends, since "
+	    "S3 cannot disable versioning. `dry_run` reports the result without writing.",
+	    "FROM s3_update_bucket('my-bucket', tags := MAP {'owner': NULL}, block_public_access := true)", category));
 
 	auto delete_options = [](TypedKwargs &options) {
 		options.Add("cascade", LogicalType::BOOLEAN)
@@ -1080,8 +1100,11 @@ void S3Functions::Register(ExtensionLoader &loader) {
 		    .Add("secret", LogicalType::VARCHAR)
 		    .Add("dry_run", LogicalType::BOOLEAN);
 	};
-	loader.RegisterFunction(
-	    BucketFunctionSet("s3_delete_bucket", delete_options, DeleteBucketFun, DeleteBucketBind, OnceInit));
+	loader.RegisterFunction(Documented(
+	    BucketFunctionSet("s3_delete_bucket", delete_options, DeleteBucketFun, DeleteBucketBind, OnceInit),
+	    "Deletes a bucket given by name or handle. S3 only deletes an empty bucket; `cascade := true` first removes "
+	    "every object version and delete marker, irreversibly. `dry_run` counts what a cascade would remove.",
+	    "FROM s3_delete_bucket('my-bucket', cascade := true)", category));
 }
 
 } // namespace duckdb

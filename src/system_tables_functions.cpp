@@ -283,6 +283,7 @@ void FamiliesFun(ClientContext &, TableFunctionInput &data_p, DataChunk &output)
 } // namespace
 
 void SystemTablesFunctions::Register(ExtensionLoader &loader) {
+	const string category = "system-tables";
 	auto with_secret = [](TypedKwargs &options) {
 		options.Add("secret", LogicalType::VARCHAR);
 	};
@@ -293,8 +294,14 @@ void SystemTablesFunctions::Register(ExtensionLoader &loader) {
 		    .Add("regions", LogicalType::LIST(LogicalType::VARCHAR))
 		    .Add("secret", LogicalType::VARCHAR);
 	});
-	loader.RegisterFunction(TableFunction("aws_system_tables", std::move(tables_signature), SystemTablesFun,
-	                                      SystemTablesBind, SystemTablesInit));
+	loader.RegisterFunction(Documented(
+	    TableFunction("aws_system_tables", std::move(tables_signature), SystemTablesFun, SystemTablesBind,
+	                  SystemTablesInit),
+	    "Lists every table of every AWS-managed `aws-*` table bucket, one row per table with its region, bucket, "
+	    "service, namespace, name, ARN, type and timestamps. Without an argument it sweeps the default regions; "
+	    "`regions` lists those regions; `region` lists one and throws its errors. Otherwise a region or bucket that "
+	    "cannot be listed becomes one row with `error` set.",
+	    "FROM aws_system_tables(regions := ['us-east-1', 'eu-central-1'])", category));
 
 	FunctionSignature table_signature;
 	table_signature.AddParameter("bucket", LogicalType::VARCHAR)
@@ -305,10 +312,20 @@ void SystemTablesFunctions::Register(ExtensionLoader &loader) {
 	    });
 	TableFunction table_fn("aws_system_table", std::move(table_signature), nullptr, nullptr, nullptr);
 	table_fn.bind_replace = SystemTableBindReplace;
-	loader.RegisterFunction(table_fn);
+	loader.RegisterFunction(Documented(
+	    std::move(table_fn),
+	    "Scans one system table through `iceberg_scan`, from the table's current metadata location. `bucket` is a "
+	    "table bucket name, looked up in `region` or the region the usual resolution yields, or a table bucket "
+	    "ARN, which carries its own region. Fails while the table is still being created and has no metadata.",
+	    "FROM aws_system_table('aws-catalog', 'glue', 'tables', region := 'us-east-1')", category));
 
 	TableFunction families_fn("aws_system_table_families", {}, FamiliesFun, FamiliesBind, FamiliesInit);
-	loader.RegisterFunction(families_fn);
+	loader.RegisterFunction(Documented(
+	    std::move(families_fn),
+	    "Lists the known families of system tables: the `aws-*` bucket each lands in, its namespace and table "
+	    "patterns, the external-resource type it is the inventory of and the AWS call that enables it. Static; "
+	    "no AWS call.",
+	    "FROM aws_system_table_families()", category));
 }
 
 } // namespace duckdb

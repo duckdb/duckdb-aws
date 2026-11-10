@@ -3,8 +3,10 @@
 `s3_buckets`, `s3_create_bucket`, `s3_get_bucket`, `s3_bucket_tags`, `s3_update_bucket` and
 `s3_delete_bucket` manage general-purpose S3 buckets from SQL; `aws:s3:bucket` is the matching
 external-resource type, for a bucket DuckDB provisions and tears down itself. The rest of this
-file covers the tests and the private fixture bucket they run against. S3 Tables, a different
-product with its own functions and fixture, is in the [S3 Tables README](../s3tables/README.md).
+file covers the tests and the private fixture bucket they run against. The generated function
+reference is in the [repository README](../../../README.md#s3-buckets-and-s3-tables).
+S3 Tables, a different product with its own functions and fixture, is in the
+[S3 Tables README](../s3tables/README.md).
 
 ## Functions
 
@@ -158,6 +160,35 @@ credentials and the same region and S3 URL. Native `CHAIN 'env'` cannot read you
 terminal environment inside a browser. Keep the session token on one physical line,
 never put credentials in a page URL or committed SQL, and do not use builds that log
 request headers. `which_secret` confirms secret selection, not authentication.
+
+### Write Parquet to S3
+
+`COPY` converts the public railway CSV to Parquet in an existing S3 bucket.
+Replace `<bucket-name>` with your bucket name and `<region>` with its AWS region.
+After sourcing the generated environment, start an interactive native session:
+
+```shell
+./build/release/duckdb -unsigned \
+  -cmd "LOAD '$PWD/build/release/extension/httpfs/httpfs.duckdb_extension';" \
+  -cmd "LOAD '$PWD/build/release/extension/aws/aws.duckdb_extension';"
+```
+
+```sql
+CREATE TEMPORARY SECRET railway (
+    TYPE s3, PROVIDER credential_chain, CHAIN 'env', REGION '<region>'
+);
+
+COPY (
+    SELECT *
+    FROM read_csv('https://blobs.duckdb.org/nl-railway/services-2025-03.csv.gz')
+)
+TO 's3://<bucket-name>/nl-railway/services-2025-03.parquet'
+(FORMAT PARQUET);
+
+SELECT *
+FROM read_parquet('s3://<bucket-name>/nl-railway/services-2025-03.parquet')
+LIMIT 10;
+```
 
 ## Browser CORS
 

@@ -5,7 +5,8 @@ plane; `s3tables_create_table_bucket`, `s3tables_get_table_bucket`, `s3tables_ta
 `s3tables_delete_table_bucket` manage a table bucket; `aws:s3tables:table-bucket` is the matching
 external-resource type, a catalog, so `ATTACH TO EXTERNAL RESOURCE` works on it. A table bucket
 also attaches directly by ARN: `ATTACH 'arn:aws:s3tables:...' AS db`, through the iceberg extension.
-The rest of this file covers the tests and the table bucket fixture they run against.
+The rest of this file covers the tests and the table bucket fixture they run against. The
+generated function reference is in the [repository README](../../../README.md#s3-buckets-and-s3-tables).
 General-purpose S3 buckets, a different product with its own functions and fixture, are in the
 [S3 buckets README](../s3/README.md).
 
