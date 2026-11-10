@@ -25,3 +25,7 @@ quack-redshift-cleanup:
 
 quack-redshift-manual-test:
 	python3 "$(PROJ_DIR)scripts/generate_manual_test_with_secrets.py" $(if $(filter 1,$(FORCE)),--force,)
+
+.PHONY: sql-aws-session-token
+sql-aws-session-token:
+	@python3 "$(PROJ_DIR)scripts/generate_aws_secret.py" $(if $(filter 1,$(FORCE)),--force,)
