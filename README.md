@@ -163,6 +163,33 @@ Configuration is through environment variables:
 
 The script can also be called directly as `python3 scripts/quack_redshift.py <action> [--force]`, where the action is `setup`, `check`, `cleanup`, or `manual-test`.
 
+## Redshift with the amazon_redshift extension
+
+When the `amazon_redshift` extension is loaded, by `LOAD` or by any ATTACH with `TYPE amazon_redshift`
+(it is not autoloaded), a Redshift ATTACH, by `TYPE redshift` or by a Redshift ARN, attaches through it
+instead of the postgres extension. This extension still resolves the target and the secret, and a
+region for a lookup, then hands `amazon_redshift` the target's endpoint as a
+`redshift://<endpoint>:<port>` path, with `SECRET`, `DATABASE` and the ATTACH's `REGION`.
+`amazon_redshift` connects with its own client, verifies the endpoint's TLS certificate, and gets its
+own database credentials from the same aws or s3 secret.
+
+- A cluster identifier or an ARN is looked up as before. With `HOST`, `PORT` and `DATABASE` all
+  given, a cluster identifier is not looked up.
+- A `redshift://` endpoint path and the empty path go to `amazon_redshift` as given, with the
+  ATTACH's `REGION`.
+- `HOST` set to the target's own endpoint is handed off. Any other `HOST`, such as a tunnel, an IP
+  address or a proxy, stays on the postgres extension.
+- `SCHEMA`, `ISOLATION_LEVEL`, `USE_TEXT_PROTOCOL`, `SECRET_STORAGE_TABLE`, `CONNECT_DISPLAY` and
+  `DURATION_SECONDS` are ignored.
+- `PROFILE` and `CREDENTIAL_PROVIDER` are refused: create a secret instead, e.g.
+  `CREATE SECRET (TYPE aws, PROVIDER credential_chain, PROFILE '<profile>')`. `ACCOUNT_ID` is refused
+  too, except with the empty path: a workgroup's account comes from its ARN, its endpoint, or
+  `ACCOUNT_ID` beside `WORKGROUP` with the empty path.
+- Other options go to `amazon_redshift`, which refuses those it does not know.
+- `amazon_redshift`'s own rules apply. For example, its handle cannot be read-only, it is queried with
+  `redshift_query(<handle>, '<Redshift SQL>')` rather than browsed, and it supports only the regions
+  of the `aws` partition that it knows, so a target in another region fails once it is loaded.
+
 ## S3 buckets and S3 Tables
 
 - [S3 buckets](test/sql/s3/README.md): the `s3_*` table functions, the `aws:s3:bucket`
