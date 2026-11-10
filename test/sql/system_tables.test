@@ -1,0 +1,180 @@
+# name: test/sql/system_tables.test
+# description: aws_system_tables() over the s3tables_* functions, and the aws:system-table external resource type
+# group: [sql]
+
+require no_extension_autoloading "EXPECTED: the callbacks are not in the autoload table, the test relies on explicit INSTALL and LOAD"
+
+require aws
+
+# Offline substitutes for the S3 Tables calls. The callbacks run on a separate connection, so the macros must
+# not be temporary. Two AWS-managed buckets and one customer bucket in us-east-1, an AWS-managed bucket the
+# caller may not read in eu-central-1, and one region that answers with an error.
+statement ok
+CREATE VIEW mock_table_buckets AS
+SELECT * FROM (VALUES
+    ('us-east-1', 'arn:aws:s3tables:us-east-1:123456789012:bucket/aws-catalog', 'aws-catalog', '123456789012', 'id1', 'aws', '2026-11-08T01:42:00Z', NULL),
+    ('us-east-1', 'arn:aws:s3tables:us-east-1:123456789012:bucket/aws-s3', 'aws-s3', '123456789012', 'id2', 'aws', '2026-11-08T01:43:00Z', NULL),
+    ('us-east-1', 'arn:aws:s3tables:us-east-1:123456789012:bucket/mine', 'mine', '123456789012', 'id3', 'customer', '2026-11-01T00:00:00Z', NULL),
+    ('eu-central-1', 'arn:aws:s3tables:eu-central-1:123456789012:bucket/aws-redshift', 'aws-redshift', '123456789012', 'id4', 'aws', '2026-11-08T01:44:00Z', NULL),
+    ('ap-south-1', NULL, NULL, NULL, NULL, NULL, NULL, 'opted out')
+) t(region, arn, name, owner_account_id, table_bucket_id, type, created_at, error);
+
+statement ok
+CREATE MACRO s3tables_table_buckets(r := NULL) AS TABLE FROM mock_table_buckets WHERE r IS NULL OR region = r;
+
+statement ok
+CREATE MACRO s3tables_tables(table_bucket_arn) AS TABLE
+SELECT CASE WHEN bucket_arn LIKE '%/aws-redshift'
+            THEN error('S3 Tables ListTables failed: AccessDeniedException - not allowed') ELSE namespace END AS namespace,
+       name, type, table_arn, created_at, modified_at, managed_by_service, namespace_id
+FROM (VALUES
+    ('arn:aws:s3tables:us-east-1:123456789012:bucket/aws-catalog', 'glue', 'tables', 'aws', 'arn:aws:s3tables:us-east-1:123456789012:bucket/aws-catalog/table/t1', '2026-11-08T01:44:00Z', '2026-11-08T01:44:30Z', 'glue', 'ns1'),
+    ('arn:aws:s3tables:us-east-1:123456789012:bucket/aws-catalog', 'glue', 'table_columns', 'aws', 'arn:aws:s3tables:us-east-1:123456789012:bucket/aws-catalog/table/t2', '2026-11-08T01:44:00Z', '2026-11-08T01:44:30Z', 'glue', 'ns1'),
+    ('arn:aws:s3tables:us-east-1:123456789012:bucket/aws-s3', 'b_my-bucket', 'journal', 'aws', 'arn:aws:s3tables:us-east-1:123456789012:bucket/aws-s3/table/t3', '2026-11-08T01:45:00Z', '2026-11-08T01:45:00Z', 's3', 'ns2'),
+    ('arn:aws:s3tables:us-east-1:123456789012:bucket/mine', 'demo', 'cities', 'customer', 'arn:aws:s3tables:us-east-1:123456789012:bucket/mine/table/t4', '2026-11-01T00:00:00Z', '2026-11-01T00:00:00Z', NULL, 'ns3'),
+    ('arn:aws:s3tables:eu-central-1:123456789012:bucket/aws-redshift', 'refused', 'refused', 'aws', 'arn:aws:s3tables:eu-central-1:123456789012:bucket/aws-redshift/table/t5', NULL, NULL, NULL, NULL)
+) t(bucket_arn, namespace, name, type, table_arn, created_at, modified_at, managed_by_service, namespace_id)
+WHERE bucket_arn = table_bucket_arn;
+
+# Only AWS-managed buckets are system tables; the customer bucket is left out, the refused bucket and the
+# refused region come back as error rows.
+query IIIIIII
+SELECT region, bucket, service, namespace, name, type, error IS NOT NULL AS failed
+FROM aws_system_tables() ORDER BY region, bucket, namespace, name;
+----
+ap-south-1	NULL	NULL	NULL	NULL	NULL	true
+eu-central-1	aws-redshift	redshift	NULL	NULL	NULL	true
+us-east-1	aws-catalog	catalog	glue	table_columns	aws	false
+us-east-1	aws-catalog	catalog	glue	tables	aws	false
+us-east-1	aws-s3	s3	b_my-bucket	journal	aws	false
+
+query II
+SELECT bucket, error LIKE '%AccessDeniedException%' FROM aws_system_tables(region := 'eu-central-1');
+----
+aws-redshift	true
+
+# The listing: one row per readable system table, named by its path, the table ARN as handle and reference.
+query IIII
+SELECT name, reference, state, metadata['service'] FROM __aws__system_table__list(MAP {}) ORDER BY name;
+----
+aws-catalog/glue/table_columns	arn:aws:s3tables:us-east-1:123456789012:bucket/aws-catalog/table/t2	ready	catalog
+aws-catalog/glue/tables	arn:aws:s3tables:us-east-1:123456789012:bucket/aws-catalog/table/t1	ready	catalog
+aws-s3/b_my-bucket/journal	arn:aws:s3tables:us-east-1:123456789012:bucket/aws-s3/table/t3	ready	s3
+
+query I
+SELECT list_function FROM duckdb_external_resource_types() WHERE name = 'aws:system-table';
+----
+__aws__system_table__list
+
+# Status attaches the bucket with the namespace as default schema, through the arn storage route.
+query IIII
+SELECT state, result['uri'], result['attached_db_type'], result['default_schema']
+FROM __aws__system_table__status(MAP {'arn': 'arn:aws:s3tables:us-east-1:123456789012:bucket/aws-catalog/table/t1'});
+----
+ready	arn:aws:s3tables:us-east-1:123456789012:bucket/aws-catalog	arn	glue
+
+statement error
+SELECT * FROM __aws__system_table__status(MAP {'arn': 'arn:aws:s3tables:us-east-1:123456789012:bucket/aws-catalog/table/nope'});
+----
+no table with ARN
+
+statement error
+SELECT * FROM __aws__system_table__status(MAP {'arn': 'arn:aws:s3tables:us-east-1:123456789012:bucket/aws-catalog'});
+----
+expected a table ARN
+
+# Enabling a family: TYPE and REGION are required, only the S3 Metadata family can be enabled with this SDK,
+# unknown types are refused before any call.
+statement error
+CREATE EXTERNAL RESOURCE 'aws:system-table' AS x (REGION 'us-east-1');
+----
+TYPE is required
+
+statement error
+CREATE EXTERNAL RESOURCE 'aws:system-table' AS x (TYPE 'aws:s3:bucket', BUCKET 'my-bucket');
+----
+REGION is required
+
+statement error
+CREATE EXTERNAL RESOURCE 'aws:system-table' AS x (TYPE 'aws:glue', REGION 'us-east-1');
+----
+needs an AWS SDK newer
+
+statement error
+CREATE EXTERNAL RESOURCE 'aws:system-table' AS x (TYPE 'aws:nothing', REGION 'us-east-1');
+----
+no system tables are known for type 'aws:nothing'
+
+statement error
+CREATE EXTERNAL RESOURCE 'aws:system-table' AS x (TYPE 'aws:s3:bucket', REGION 'us-east-1');
+----
+BUCKET is required
+
+# Offline substitutes for the S3 Metadata configuration calls: the journal is ACTIVE and the inventory still
+# backfilling, as right after enabling.
+statement ok
+CREATE MACRO s3_create_bucket_metadata_configuration(bucket, region := NULL) AS TABLE
+SELECT bucket, region, 'arn:aws:s3tables:us-east-1:123456789012:bucket/aws-s3' AS table_bucket_arn, 'b_' || bucket AS namespace,
+       'CREATING' AS journal_status, NULL AS journal_table_arn, 'CREATING' AS inventory_status, NULL AS inventory_table_arn;
+
+statement ok
+CREATE MACRO s3_bucket_metadata_configuration(bucket, region := NULL) AS TABLE
+SELECT bucket, region, 'arn:aws:s3tables:us-east-1:123456789012:bucket/aws-s3' AS table_bucket_arn, 'b_' || bucket AS namespace,
+       'ACTIVE' AS journal_status, 'arn:aws:s3tables:us-east-1:123456789012:bucket/aws-s3/table/j' AS journal_table_arn,
+       'BACKFILLING' AS inventory_status, 'arn:aws:s3tables:us-east-1:123456789012:bucket/aws-s3/table/i' AS inventory_table_arn
+WHERE bucket = 'my-bucket';
+
+statement ok
+CREATE MACRO s3_delete_bucket_metadata_configuration(bucket, region := NULL) AS TABLE SELECT 'deleted' AS status;
+
+query IIII
+SELECT handle['family'], handle['type'], handle['region'], handle['bucket']
+FROM __aws__system_table__create(MAP {'type': 'aws:s3:bucket', 'region': 'us-east-1', 'bucket': 'my-bucket'});
+----
+s3-metadata	aws:s3:bucket	us-east-1	my-bucket
+
+query IIII
+SELECT state, result['default_schema'], result['journal'], result['inventory']
+FROM __aws__system_table__status(MAP {'family': 's3-metadata', 'region': 'us-east-1', 'bucket': 'my-bucket'});
+----
+ready	b_my-bucket	ACTIVE	BACKFILLING
+
+statement error
+SELECT * FROM __aws__system_table__status(MAP {'family': 's3-metadata', 'region': 'us-east-1', 'bucket': 'other'});
+----
+has no S3 Metadata configuration
+
+# CREATE waits for 'ready' through status, then the resource attaches as the aws-s3 bucket with its namespace.
+statement ok
+CREATE EXTERNAL RESOURCE 'aws:system-table' AS meta (TYPE 'aws:s3:bucket', BUCKET 'my-bucket', REGION 'us-east-1');
+
+query III
+SELECT name, managed, uri FROM duckdb_external_resources() WHERE name = 'meta';
+----
+meta	true	arn:aws:s3tables:us-east-1:123456789012:bucket/aws-s3
+
+# Destroy turns the family off; a system table found by the listing is not destroyed on its own.
+statement error
+SELECT * FROM __aws__system_table__destroy(MAP {'arn': 'arn:aws:s3tables:us-east-1:123456789012:bucket/aws-s3/table/t3'});
+----
+not deleted on its own
+
+statement ok
+DESTROY EXTERNAL RESOURCE meta;
+
+query I
+SELECT count(*) FROM duckdb_external_resources() WHERE name = 'meta';
+----
+0
+
+# The known families are data, not code.
+query III
+SELECT family, bucket, resource_type FROM aws_system_table_families() WHERE namespace_pattern = 'glue';
+----
+glue-catalog-export	aws-catalog	aws:glue
+
+# aws_system_table looks the bucket up by name in the given region before touching the table.
+statement error
+SELECT * FROM aws_system_table('aws-catalog', 'glue', 'tables', region := 'eu-west-1');
+----
+no table bucket 'aws-catalog' in region 'eu-west-1'

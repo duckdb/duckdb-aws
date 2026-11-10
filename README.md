@@ -170,6 +170,59 @@ The script can also be called directly as `python3 scripts/quack_redshift.py <ac
 - [S3 Tables](test/sql/s3tables/README.md): the `s3tables_*` table functions, the
   `aws:s3tables:table-bucket` external-resource type, their tests and the table bucket fixture.
 
+## AWS system tables
+
+AWS services publish inventories and logs as Apache Iceberg tables in AWS-managed S3 table buckets, one bucket per
+service, account and region, named `aws-<service>`: S3 Metadata (`aws-s3`: `b_<bucket>.journal`, `inventory`,
+`annotation`), the Glue Data Catalog export (`aws-catalog`: `glue.tables`, `glue.table_columns`,
+`catalog_metadata.*`), Athena usage (`aws-athena`: `metadata.query_executions`), Redshift (`aws-redshift`: the
+`sys_*` views), CloudWatch Logs (`aws-cloudwatch`). Each family is enabled per region in the owning service; once it
+is, the extension finds and reads its tables through the S3 Tables API alone, no Glue or Lake Formation involved.
+
+```sql
+FROM aws_system_tables();                              -- every system table in the default regions
+FROM aws_system_tables(region := 'us-east-1');         -- one region, its errors thrown; regions := [...] for several
+FROM aws_system_table('aws-catalog', 'glue', 'tables', region := 'us-east-1');  -- scan one (iceberg_scan)
+FROM aws_system_table_families();                      -- the known families and the resource type each is the inventory of
+FROM s3tables_table_metadata_location('arn:aws:s3tables:us-east-1:123456789012:bucket/aws-catalog', 'glue', 'tables');
+```
+
+`aws_system_tables` lists the tables of every `aws-*` bucket (`ListTableBuckets` of type `aws`, then `ListTables`),
+one row per table with `region`, `bucket`, `service`, `namespace`, `name`, `table_arn` and the table's type, owner
+service and timestamps; a region or bucket that cannot be listed is one row with `error` set. `aws_system_table`
+scans one table by bucket name (in `region`, or the region the usual resolution yields) or bucket ARN: it fetches
+the table's current metadata location and reads it with `iceberg_scan`, so the `iceberg` extension is loaded on
+demand and the data files are read with the ordinary S3 secret.
+
+The same tables are the external resource type `aws:system-table`, named by path:
+
+```sql
+SHOW ALL EXTERNAL RESOURCES;                           -- aws-catalog/glue/tables, aws-s3/b_my-bucket/inventory, ... alongside the table buckets
+ATTACH 'arn:aws:s3tables:us-east-1:123456789012:bucket/aws-catalog' AS c;   -- the bucket, through the arn storage route
+SELECT name, database_name FROM c.glue.tables;
+```
+
+The listing's rows carry the table ARN as handle and `region`, `bucket`, `namespace`, `table`, `service` and the
+table's type and timestamps as metadata. The status callback hands ATTACH the bucket ARN with the table's namespace
+as `default_schema`.
+
+A family of system tables is enabled with `CREATE EXTERNAL RESOURCE`, in one region, named by the resource type it
+is the inventory of; `DESTROY` turns it off again, which for S3 Metadata deletes the bucket's journal and inventory
+tables (never the bucket's objects):
+
+```sql
+CREATE EXTERNAL RESOURCE 'aws:system-table' AS meta (TYPE 'aws:s3:bucket', BUCKET 'my-bucket', REGION 'us-east-1');
+ATTACH TO EXTERNAL RESOURCE meta AS m;             -- the aws-s3 bucket, default schema b_my-bucket
+SELECT count(*) FROM m.inventory;
+DESTROY EXTERNAL RESOURCE meta;
+```
+
+Only the S3 Metadata family (`TYPE 'aws:s3:bucket'`) can be enabled with the AWS SDK version this extension links;
+`TYPE 'aws:glue'` and `'aws:athena'` are refused until the vcpkg port moves to aws-sdk-cpp 1.11.924 or later, which
+has `PutDataCatalogExportConfiguration` and `CreateSystemTableConfiguration`. The configuration calls are also
+available directly: `s3_bucket_metadata_configuration(bucket, region :=)`, `s3_create_bucket_metadata_configuration(bucket,
+region :=, inventory := true, journal_expiration_days := 0)` and `s3_delete_bucket_metadata_configuration(bucket, region :=)`.
+
 ## Tests
 
 - [Redshift test setup](test/sql/redshift/README.md)

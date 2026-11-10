@@ -32,7 +32,10 @@ set(EXTENSION_SOURCES
     src/rds/rds_storage.cpp
     src/quack_on_ec2_resource.cpp
     src/s3tables_functions.cpp
+    src/s3_metadata_functions.cpp
     src/s3tables_resource.cpp
+    src/system_tables_functions.cpp
+    src/system_tables_resource.cpp
     src/redshift/redshift_utils.cpp
     src/redshift/redshift_serverless_utils.cpp
     src/redshift/redshift_storage.cpp
