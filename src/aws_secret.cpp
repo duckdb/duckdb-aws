@@ -306,9 +306,9 @@ public:
 	}
 };
 
-static std::shared_ptr<Aws::Auth::AWSCredentialsProvider> BuildDefaultAwsCredentialsProvider() {
+static std::shared_ptr<Aws::Auth::AWSCredentialsProvider> BuildDefaultAwsCredentialsProvider(DatabaseInstance &db) {
 	if constexpr (AWS_DISABLE_IMDS) {
-		return Aws::MakeShared<DuckDBCustomAWSCredentialsProviderChain>("DuckDBAwsDefault", "env;config", false);
+		return Aws::MakeShared<DuckDBCustomAWSCredentialsProviderChain>("DuckDBAwsDefault", db, "env;config", false);
 	} else {
 		return Aws::MakeShared<Aws::Auth::DefaultAWSCredentialsProviderChain>("DuckDBAwsDefault");
 	}
@@ -435,15 +435,15 @@ unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &context
 		if (item == "container") {
 			using Aws::Auth::GeneralHTTPCredentialsProvider;
 			auto &os_util = OSUtil::Get(*context.db);
-			DUCKDB_LOG_DEBUG(
-			    context,
-			    "aws.CredentialChain: container credentials config: relative_uri='%s', full_uri='%s', "
-			    "auth_token_file='%s', auth_token %s",
-			    os_util.GetEnv(GeneralHTTPCredentialsProvider::AWS_CONTAINER_CREDENTIALS_RELATIVE_URI),
-			    os_util.GetEnv(GeneralHTTPCredentialsProvider::AWS_CONTAINER_CREDENTIALS_FULL_URI),
-			    os_util.GetEnv(GeneralHTTPCredentialsProvider::AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE),
-			    os_util.GetEnv(GeneralHTTPCredentialsProvider::AWS_CONTAINER_AUTHORIZATION_TOKEN).empty() ? "unset"
-			                                                                                              : "set");
+			DUCKDB_LOG_DEBUG(context,
+			                 "aws.CredentialChain: container credentials config: relative_uri='%s', full_uri='%s', "
+			                 "auth_token_file='%s', auth_token %s",
+			                 os_util.GetEnv(GeneralHTTPCredentialsProvider::AWS_CONTAINER_CREDENTIALS_RELATIVE_URI),
+			                 os_util.GetEnv(GeneralHTTPCredentialsProvider::AWS_CONTAINER_CREDENTIALS_FULL_URI),
+			                 os_util.GetEnv(GeneralHTTPCredentialsProvider::AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE),
+			                 os_util.GetEnv(GeneralHTTPCredentialsProvider::AWS_CONTAINER_AUTHORIZATION_TOKEN).empty()
+			                     ? "unset"
+			                     : "set");
 			break;
 		}
 	}
@@ -477,7 +477,7 @@ unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &context
 			Aws::Auth::ProfileConfigFileAWSCredentialsProvider provider(profile.c_str());
 			credentials = provider.GetAWSCredentials();
 		} else {
-			credentials = BuildDefaultAwsCredentialsProvider()->GetAWSCredentials();
+			credentials = BuildDefaultAwsCredentialsProvider(*context.db)->GetAWSCredentials();
 		}
 	}
 
@@ -630,7 +630,7 @@ BuildAwsCredentialsProvider(DatabaseInstance &db, const std::string &chain, bool
 			return Aws::MakeShared<Aws::Auth::ProfileConfigFileAWSCredentialsProvider>("DuckDBAwsProfile",
 			                                                                           profile.c_str());
 		}
-		return BuildDefaultAwsCredentialsProvider();
+		return BuildDefaultAwsCredentialsProvider(db);
 	}
 	return Aws::MakeShared<DuckDBCustomAWSCredentialsProviderChain>("DuckDBCustomChain", db, chain, require_credentials,
 	                                                                profile, assume_role_arn, external_id,
