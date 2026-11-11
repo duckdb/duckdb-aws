@@ -20,6 +20,15 @@ if(NOT DUCKDB_AWS_GIT_SHA)
 endif()
 add_compile_definitions(DUCKDB_AWS_GIT_SHA="${DUCKDB_AWS_GIT_SHA}")
 
+# For hosts running untrusted queries: register only the credential_chain secret provider, restricted
+# to CHAIN 'sts' with an explicit ASSUME_ROLE_ARN. Drops the default secrets, the redshift/rds/arn
+# ATTACH types and the cloudformation/quack-on-ec2 functions, which all act with the AWS identity of
+# the host, as well as the chains and options through which the AWS SDK reads host files.
+option(DUCKDB_AWS_STS_ONLY "Only allow credential_chain secrets with CHAIN 'sts'" OFF)
+if(DUCKDB_AWS_STS_ONLY)
+  add_compile_definitions(DUCKDB_AWS_STS_ONLY)
+endif()
+
 set(EXTENSION_SOURCES
     src/arn_storage.cpp
     src/aws_default_secret_storage.cpp

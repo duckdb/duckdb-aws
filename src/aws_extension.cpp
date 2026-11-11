@@ -40,8 +40,9 @@ static void LoadInternal(ExtensionLoader &loader) {
 	RegisterDuckDBAwsHttpClientFactory(loader.GetDatabaseInstance());
 
 	CreateAwsSecretFunctions::InitializeCurlCertificates(loader.GetDatabaseInstance());
-	CreateAwsLegacyFunctionStubs::Register(loader);
 	CreateAwsSecretFunctions::Register(loader);
+#ifndef DUCKDB_AWS_STS_ONLY
+	CreateAwsLegacyFunctionStubs::Register(loader);
 	AwsDefaultSecretStorage::Register(loader);
 
 	// Makes `ATTACH '<cluster-id>' (TYPE redshift, ...)` resolve to the redshift storage extension.
@@ -55,6 +56,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	CloudFormationFunctions::Register(loader);
 	QuackOnEc2Resource::Register(loader);
+#endif
 }
 
 void AwsExtension::Load(ExtensionLoader &loader) {

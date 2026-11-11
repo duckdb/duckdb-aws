@@ -331,6 +331,22 @@ CreateRDSSecretWithProvider(std::shared_ptr<DuckDBCustomAWSCredentialsProviderCh
 	return result;
 }
 
+#ifdef DUCKDB_AWS_STS_ONLY
+//! Every other chain hands the AWS identity of the host to the caller, and these options make the AWS SDK read
+//! host files (profiles, credential_process, token files) outside of the file systems of DuckDB.
+static void ThrowUnlessStsOnly(CreateSecretInput &input) {
+	if (TryGetStringParam(input, "chain") != "sts" || TryGetStringParam(input, "assume_role_arn").empty()) {
+		throw PermissionException("This build of the aws extension only supports credential_chain secrets with "
+		                          "CHAIN 'sts' and an ASSUME_ROLE_ARN");
+	}
+	for (auto option : {"profile", "web_identity_token_file"}) {
+		if (input.options.find(option) != input.options.end()) {
+			throw PermissionException("This build of the aws extension does not support the '%s' option", option);
+		}
+	}
+}
+#endif
+
 //! This is the actual callback function
 unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &context, CreateSecretInput &input) {
 	// the credential providers read files and make requests through the AWS SDK, outside of the file systems of DuckDB
@@ -338,6 +354,9 @@ unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &context
 		throw PermissionException(
 		    "The credential_chain provider cannot be used when external access is disabled (enable_external_access)");
 	}
+#ifdef DUCKDB_AWS_STS_ONLY
+	ThrowUnlessStsOnly(input);
+#endif
 	AwsInstanceBinding aws_binding(DatabaseInstance::GetDatabase(context));
 	Aws::Auth::AWSCredentials credentials;
 
