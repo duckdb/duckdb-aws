@@ -34,18 +34,63 @@ The first call lists the region's table buckets; the create returns one row with
 (use it in place of the example ARN above), the tags call shows `created-by = duckdb`, the
 namespaces call returns no rows for a new bucket, and the delete returns `status = deleted`.
 
+`DESTROY EXTERNAL RESOURCE` deletes only empty table buckets, including adopted ones. For a
+bucket containing tables or namespaces it fails without deleting them, leaves the registration
+in place and does not install a teardown seal policy. The resource-type tag records which buckets
+DuckDB created; it does not make `DESTROY` empty them.
+
+To delete a registered table bucket and its contents deliberately, inspect the exact ARN and
+preview the deletion. Detach all borrowing attachments first. After reviewing the preview, run
+the cascade call separately:
+
+```sql
+SELECT handle FROM duckdb_external_resources() WHERE name = 'scratch';
+SET VARIABLE scratch_handle = (SELECT handle FROM duckdb_external_resources() WHERE name = 'scratch');
+FROM s3tables_delete_table_bucket(getvariable('scratch_handle'), cascade := true, dry_run := true);
+FROM s3tables_delete_table_bucket(getvariable('scratch_handle'), cascade := true);
+FROM deregister_external_resource('scratch');
+```
+
+The preview returns `status = dry_run` and table and namespace counts without changing the
+bucket. The cascade call permanently deletes the tables, namespaces and bucket. Deregister only
+after successful deletion: the bucket function does not update local registrations or detach
+borrowers. Temporary-resource teardown on `DETACH`, disconnect or shutdown also never cascades.
+If the bucket is non-empty, cleanup can fail or log a warning and leave it in AWS; inspect its
+ARN and explicitly clean it up to stop ongoing charges.
+
 ## Tests
 
 ```shell
-./build/release/test/unittest 'test/sql/s3tables/*'
+./build/release/test/unittest '*/test/sql/s3tables/*'
 ```
 
 Without the fixture environment, `s3tables_functions.test` (ARN and argument validation) and
-`s3tables_resource.test` (the `aws:s3tables:table-bucket` type and its callbacks) run; every AWS
-call in them is made with a key that cannot resolve and expected to fail. After
+`s3tables_resource.test` (the `aws:s3tables:table-bucket` type and its callbacks) run. Resource
+tests use persistent SQL substitutes to reject implicit cascade and check failed deletion;
+other AWS calls use a key that cannot resolve and are expected to fail. After
 `source test/sql/s3tables/s3tables.env` (see [Create the fixture](#create-the-fixture)),
-`s3tables.test` attaches the fixture table bucket and reads its table. The `s3tables_*`
-lifecycle functions have no AWS-backed test yet.
+`s3tables.test` attaches the fixture table bucket and reads its table.
+
+The resource lifecycle test needs a separate opt-in and a new bucket name. It creates that
+bucket and its `-empty` sibling, checks that rejected `DESTROY` leaves the table readable and
+writable, and explicitly cleans up both buckets. It does not alter the shared read fixture.
+The build needs `httpfs`, `iceberg`, `avro`, `parquet`, `json` and `aws`; the test identity also
+needs table-bucket creation/deletion, namespace and table creation/deletion, tag reads, and
+Iceberg read/write permissions. The explicit cascade can use table-bucket policy permissions
+for its temporary seal.
+
+```shell
+source test/sql/s3tables/s3tables.env
+export AWS_S3TABLES_RESOURCE_BUCKET_NAME="duckdb-cascade-check-$(date +%s)"
+S3TABLES_RESOURCE_TEST_AVAILABLE=1 \
+  ./build/release/test/unittest '*/test/sql/s3tables/s3tables_resource_aws.test'
+```
+
+If a run stops early, find the two exact bucket names with `s3tables_table_buckets` and review
+their ARNs before calling `s3tables_delete_table_bucket(arn, cascade := true)`. To check the
+policy after a rejected `DESTROY` in a manual session, run
+`aws s3tables get-table-bucket-policy --region <region> --table-bucket-arn <arn>`; a fresh bucket
+must still return `NotFoundException`, not a `DuckDBTeardownSeal` policy.
 
 ## Fixture
 
@@ -183,7 +228,7 @@ DuckDB, is only performed with `--force`. Do not run create or destroy concurren
 
 ```bash
 source test/sql/s3tables/s3tables.env
-./build/release/test/unittest test/sql/s3tables/s3tables.test
+./build/release/test/unittest '*/test/sql/s3tables/s3tables.test'
 ```
 
 The `S3TABLES_TEST_AVAILABLE=1` guard is exported only after credentials load

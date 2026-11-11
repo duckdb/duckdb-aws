@@ -21,7 +21,6 @@ FROM duckdb_external_resource_types() WHERE name = 'aws:s3tables:table-bucket';
 ----
 aws:s3tables:table-bucket	catalog	extension	__aws__s3tables__table_bucket__create	__aws__s3tables__table_bucket__status	__aws__s3tables__table_bucket__list
 
-# A destroy callback is registered too — teardown is the half that needs the cascade.
 query I
 SELECT destroy_function FROM duckdb_external_resource_types() WHERE name = 'aws:s3tables:table-bucket';
 ----
@@ -72,3 +71,80 @@ statement error
 SELECT * FROM __aws__s3tables__table_bucket__create(MAP {'name': 'armless', 'region': 'eu-central-1'});
 ----
 <REGEX>:.*s3tables_create_table_bucket returned an empty ARN for 'armless'\. If an AWS create request was sent, the bucket may already exist;.*
+
+# The delete substitute errors on cascade=true even for an empty bucket, so a teardown that
+# cascades cannot pass by luck; the tags substitute reports a matching tag, so a teardown that
+# cascades on the tag errors the same way. A failed delete must leave the resource registered.
+statement ok
+CREATE TABLE bucket_contents (arn VARCHAR);
+INSERT INTO bucket_contents VALUES
+    ('arn:aws:s3tables:eu-central-1:123456789012:bucket/owned'),
+    ('arn:aws:s3tables:eu-central-1:123456789012:bucket/adopted');
+
+statement ok
+CREATE OR REPLACE MACRO s3tables_create_table_bucket(name, region := NULL, tags := NULL) AS TABLE
+SELECT MAP {'arn': 'arn:aws:s3tables:' || region || ':123456789012:bucket/' || name} AS handle;
+
+statement ok
+CREATE MACRO s3tables_get_table_bucket(bucket_arn) AS TABLE
+SELECT bucket_arn AS arn;
+
+statement ok
+CREATE MACRO s3tables_table_bucket_tags(bucket_arn) AS TABLE
+SELECT 'duckdb-external-resource-type' AS key, 'aws:s3tables:table-bucket' AS value;
+
+statement ok
+CREATE MACRO s3tables_delete_table_bucket(handle, cascade := false) AS TABLE
+SELECT CASE
+    WHEN cascade THEN error('implicit cascade requested')
+    WHEN EXISTS (SELECT 1 FROM bucket_contents WHERE arn = handle['arn']) THEN error('ConflictException: bucket is not empty')
+    ELSE 'deleted'
+END AS status;
+
+statement ok
+CREATE EXTERNAL RESOURCE 'aws:s3tables:table-bucket' AS owned (NAME 'owned', REGION 'eu-central-1');
+
+statement ok
+REGISTER EXTERNAL RESOURCE 'aws:s3tables:table-bucket' AS adopted
+FROM MAP {'arn': 'arn:aws:s3tables:eu-central-1:123456789012:bucket/adopted'};
+
+statement error
+DESTROY EXTERNAL RESOURCE owned;
+----
+bucket is not empty
+
+statement error
+DESTROY EXTERNAL RESOURCE adopted;
+----
+bucket is not empty
+
+query I
+SELECT count(*) FROM duckdb_external_resources() WHERE name IN ('owned', 'adopted');
+----
+2
+
+statement ok
+REGISTER EXTERNAL RESOURCE 'aws:s3tables:table-bucket' AS empty_adopted
+FROM MAP {'arn': 'arn:aws:s3tables:eu-central-1:123456789012:bucket/empty'};
+
+statement ok
+DESTROY EXTERNAL RESOURCE empty_adopted;
+
+query I
+SELECT count(*) FROM duckdb_external_resources() WHERE name = 'empty_adopted';
+----
+0
+
+statement ok
+DELETE FROM bucket_contents;
+
+statement ok
+DESTROY EXTERNAL RESOURCE owned;
+
+statement ok
+DESTROY EXTERNAL RESOURCE adopted;
+
+query I
+SELECT count(*) FROM duckdb_external_resources() WHERE name IN ('owned', 'adopted');
+----
+0

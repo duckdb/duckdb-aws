@@ -15,8 +15,7 @@
 namespace duckdb {
 
 //! The external-resource type name, also stamped as a tag on every bucket this recipe creates, so
-//! a bucket carries its own provenance: the resource manager's notion of "managed" lives in memory
-//! and dies with the process, but the tag survives, and destroy consults it before cascading.
+//! s3tables_table_bucket_tags shows which buckets DuckDB made after the process that made them is gone.
 static constexpr const char *S3TABLES_TYPE = "aws:s3tables:table-bucket";
 static constexpr const char *RESOURCE_TYPE_TAG = "duckdb-external-resource-type";
 
@@ -115,8 +114,6 @@ void CreateFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &ou
 	}
 	auto region = MapLookup(bind.input, "region");
 
-	// The resource-type tag is what makes the bucket self-describing: destroy reads it back to
-	// decide whether this bucket is ours to empty (see DestroyFun).
 	vector<Value> tag_keys {Value(string(RESOURCE_TYPE_TAG))};
 	vector<Value> tag_values {Value(string(S3TABLES_TYPE))};
 	auto tags = Value::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR, std::move(tag_keys), std::move(tag_values));
@@ -190,11 +187,9 @@ void StatusFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &ou
 //===--------------------------------------------------------------------===//
 // destroy(handle MAP) -> TABLE(status VARCHAR)
 //
-// DeleteTableBucket only succeeds on an empty bucket, so a bucket with data needs the cascade in
-// s3tables_delete_table_bucket (seal, empty, delete). Whether to cascade is NOT a flag someone has
-// to remember: it is read off the bucket itself. A bucket carrying this recipe's resource-type tag
-// was provisioned by DuckDB and is ours to empty; a bucket that was merely REGISTERed is someone
-// else's data, and is deleted only if it is already empty.
+// DeleteTableBucket only succeeds on an empty bucket. Resource teardown never deletes tables or
+// namespaces and never seals the bucket; cascading requires an explicit
+// s3tables_delete_table_bucket call with cascade := true.
 //===--------------------------------------------------------------------===//
 
 unique_ptr<FunctionData> DestroyBind(ClientContext &, TableFunctionBindInput &input, vector<LogicalType> &return_types,
@@ -214,14 +209,8 @@ void DestroyFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &o
 	auto &bind = data_p.bind_data->Cast<AdapterBindData>();
 	auto arn = HandleArn(bind.input, "s3tables destroy");
 
-	auto tag_sql = "SELECT count(*) FROM s3tables_table_bucket_tags(" + Value(arn).ToSQLString() +
-	               ") WHERE key = " + Value(string(RESOURCE_TYPE_TAG)).ToSQLString() +
-	               " AND value = " + Value(string(S3TABLES_TYPE)).ToSQLString();
-	auto tag_res = RunSQL(context, tag_sql, "s3tables destroy");
-	auto duckdb_managed = tag_res->Collection().GetRows().GetValue(0, 0).GetValue<int64_t>() > 0;
-
-	auto sql = "SELECT status FROM s3tables_delete_table_bucket(" + HandleForArn(arn).ToSQLString() +
-	           ", cascade := " + string(duckdb_managed ? "true" : "false") + ")";
+	auto sql =
+	    "SELECT status FROM s3tables_delete_table_bucket(" + HandleForArn(arn).ToSQLString() + ", cascade := false)";
 	auto res = RunSQL(context, sql, "s3tables destroy");
 	output.data[0].Append(res->Collection().GetRows().GetValue(0, 0));
 	output.CheckCardinality(1);
