@@ -13,6 +13,7 @@
 #include "duckdb/logging/logger.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
+#include "duckdb/main/os_util.hpp"
 #include "duckdb/main/settings.hpp"
 
 #include <aws/core/Aws.h>
@@ -167,20 +168,20 @@ Aws::Config::Profile GetAwsProfile(const std::string &profile_name, const bool r
 }
 
 //! Whether the container runtime (ECS, EKS Pod Identity) advertises a container credentials endpoint
-static bool ContainerCredentialsEndpointSet() {
+static bool ContainerCredentialsEndpointSet(DatabaseInstance &db) {
 	using Aws::Auth::GeneralHTTPCredentialsProvider;
-	auto relative_uri =
-	    FileSystem::GetEnvVariable(GeneralHTTPCredentialsProvider::AWS_CONTAINER_CREDENTIALS_RELATIVE_URI);
-	auto full_uri = FileSystem::GetEnvVariable(GeneralHTTPCredentialsProvider::AWS_CONTAINER_CREDENTIALS_FULL_URI);
+	auto &os_util = OSUtil::Get(db);
+	auto relative_uri = os_util.GetEnv(GeneralHTTPCredentialsProvider::AWS_CONTAINER_CREDENTIALS_RELATIVE_URI);
+	auto full_uri = os_util.GetEnv(GeneralHTTPCredentialsProvider::AWS_CONTAINER_CREDENTIALS_FULL_URI);
 	return !relative_uri.empty() || !full_uri.empty();
 }
 
 //! Generate a custom credential provider chain for authentication
 class DuckDBCustomAWSCredentialsProviderChain : public Aws::Auth::AWSCredentialsProviderChain {
 public:
-	explicit DuckDBCustomAWSCredentialsProviderChain(const string &credential_chain, const bool require_credentials,
-	                                                 const string &profile = "", const string &assume_role_arn = "",
-	                                                 const string &external_id = "",
+	explicit DuckDBCustomAWSCredentialsProviderChain(DatabaseInstance &db, const string &credential_chain,
+	                                                 const bool require_credentials, const string &profile = "",
+	                                                 const string &assume_role_arn = "", const string &external_id = "",
 	                                                 const string &web_identity_token_file = "",
 	                                                 const string &session_name = "") {
 		auto chain_list = StringUtil::Split(credential_chain, ';');
@@ -225,15 +226,16 @@ public:
 				// Container credentials (ECS task role, EKS Pod Identity), built like the SDK's default chain.
 				// https://docs.aws.amazon.com/sdkref/latest/guide/feature-container-credentials.html
 				// Skipped in a longer chain when no endpoint is set (#230); on its own it fails below (#175).
-				if (!ContainerCredentialsEndpointSet() && chain_list.size() > 1) {
+				if (!ContainerCredentialsEndpointSet(db) && chain_list.size() > 1) {
 					continue;
 				}
 				using Aws::Auth::GeneralHTTPCredentialsProvider;
+				auto &os_util = OSUtil::Get(db);
 				auto container_provider = std::make_shared<GeneralHTTPCredentialsProvider>(
-				    FileSystem::GetEnvVariable(GeneralHTTPCredentialsProvider::AWS_CONTAINER_CREDENTIALS_RELATIVE_URI),
-				    FileSystem::GetEnvVariable(GeneralHTTPCredentialsProvider::AWS_CONTAINER_CREDENTIALS_FULL_URI),
-				    FileSystem::GetEnvVariable(GeneralHTTPCredentialsProvider::AWS_CONTAINER_AUTHORIZATION_TOKEN),
-				    FileSystem::GetEnvVariable(GeneralHTTPCredentialsProvider::AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE));
+				    os_util.GetEnv(GeneralHTTPCredentialsProvider::AWS_CONTAINER_CREDENTIALS_RELATIVE_URI),
+				    os_util.GetEnv(GeneralHTTPCredentialsProvider::AWS_CONTAINER_CREDENTIALS_FULL_URI),
+				    os_util.GetEnv(GeneralHTTPCredentialsProvider::AWS_CONTAINER_AUTHORIZATION_TOKEN),
+				    os_util.GetEnv(GeneralHTTPCredentialsProvider::AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE));
 				if (!container_provider->IsValid()) {
 					throw InvalidConfigurationException(
 					    "Chain value 'container' requires container credentials to be available: "
@@ -314,9 +316,9 @@ public:
 	}
 };
 
-static std::shared_ptr<Aws::Auth::AWSCredentialsProvider> BuildDefaultAwsCredentialsProvider() {
+static std::shared_ptr<Aws::Auth::AWSCredentialsProvider> BuildDefaultAwsCredentialsProvider(DatabaseInstance &db) {
 	if constexpr (AWS_DISABLE_IMDS) {
-		return Aws::MakeShared<DuckDBCustomAWSCredentialsProviderChain>("DuckDBAwsDefault", "env;config", false);
+		return Aws::MakeShared<DuckDBCustomAWSCredentialsProviderChain>("DuckDBAwsDefault", db, "env;config", false);
 	} else {
 		return Aws::MakeShared<Aws::Auth::DefaultAWSCredentialsProviderChain>("DuckDBAwsDefault");
 	}
@@ -442,17 +444,17 @@ unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &context
 	for (const auto &item : StringUtil::Split(chain, ';')) {
 		if (item == "container") {
 			using Aws::Auth::GeneralHTTPCredentialsProvider;
-			DUCKDB_LOG_DEBUG(
-			    context,
-			    "aws.CredentialChain: container credentials config: relative_uri='%s', full_uri='%s', "
-			    "auth_token_file='%s', auth_token %s",
-			    FileSystem::GetEnvVariable(GeneralHTTPCredentialsProvider::AWS_CONTAINER_CREDENTIALS_RELATIVE_URI),
-			    FileSystem::GetEnvVariable(GeneralHTTPCredentialsProvider::AWS_CONTAINER_CREDENTIALS_FULL_URI),
-			    FileSystem::GetEnvVariable(GeneralHTTPCredentialsProvider::AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE),
-			    FileSystem::GetEnvVariable(GeneralHTTPCredentialsProvider::AWS_CONTAINER_AUTHORIZATION_TOKEN).empty()
-			        ? "unset"
-			        : "set");
-			if (!ContainerCredentialsEndpointSet() && StringUtil::Split(chain, ';').size() > 1) {
+			auto &os_util = OSUtil::Get(*context.db);
+			DUCKDB_LOG_DEBUG(context,
+			                 "aws.CredentialChain: container credentials config: relative_uri='%s', full_uri='%s', "
+			                 "auth_token_file='%s', auth_token %s",
+			                 os_util.GetEnv(GeneralHTTPCredentialsProvider::AWS_CONTAINER_CREDENTIALS_RELATIVE_URI),
+			                 os_util.GetEnv(GeneralHTTPCredentialsProvider::AWS_CONTAINER_CREDENTIALS_FULL_URI),
+			                 os_util.GetEnv(GeneralHTTPCredentialsProvider::AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE),
+			                 os_util.GetEnv(GeneralHTTPCredentialsProvider::AWS_CONTAINER_AUTHORIZATION_TOKEN).empty()
+			                     ? "unset"
+			                     : "set");
+			if (!ContainerCredentialsEndpointSet(*context.db) && StringUtil::Split(chain, ';').size() > 1) {
 				DUCKDB_LOG_DEBUG(context,
 				                 "aws.CredentialChain: no container credentials endpoint set, skipping 'container' in "
 				                 "chain '%s'",
@@ -469,9 +471,9 @@ unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &context
 		if (chain.empty()) {
 			throw InvalidConfigurationException("Invalid RDS secret parameters, 'CHAIN' option must be specified");
 		}
-		auto provider = Aws::MakeShared<DuckDBCustomAWSCredentialsProviderChain>("rds", chain, require_credentials,
-		                                                                         profile, assume_role, external_id,
-		                                                                         web_identity_token_file, session_name);
+		auto provider = Aws::MakeShared<DuckDBCustomAWSCredentialsProviderChain>(
+		    "rds", *context.db, chain, require_credentials, profile, assume_role, external_id, web_identity_token_file,
+		    session_name);
 		return CreateRDSSecretWithProvider(provider, input, region);
 	}
 
@@ -483,15 +485,15 @@ unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &context
 	}
 
 	if (!chain.empty()) {
-		DuckDBCustomAWSCredentialsProviderChain provider(chain, require_credentials, profile, assume_role, external_id,
-		                                                 web_identity_token_file, session_name);
+		DuckDBCustomAWSCredentialsProviderChain provider(*context.db, chain, require_credentials, profile, assume_role,
+		                                                 external_id, web_identity_token_file, session_name);
 		credentials = provider.GetAWSCredentials();
 	} else {
 		if (input.options.find("profile") != input.options.end()) {
 			Aws::Auth::ProfileConfigFileAWSCredentialsProvider provider(profile.c_str());
 			credentials = provider.GetAWSCredentials();
 		} else {
-			credentials = BuildDefaultAwsCredentialsProvider()->GetAWSCredentials();
+			credentials = BuildDefaultAwsCredentialsProvider(*context.db)->GetAWSCredentials();
 		}
 	}
 
@@ -502,7 +504,8 @@ unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &context
 		// Then we create the credentials using an sts provider. This (should) be the default behavior of the SDK
 		// see https://docs.aws.amazon.com/sdk-for-cpp/v1/developer-guide/credproviders.html
 		chain = "config";
-		DuckDBCustomAWSCredentialsProviderChain provider(chain, require_credentials, profile, assume_role, external_id);
+		DuckDBCustomAWSCredentialsProviderChain provider(*context.db, chain, require_credentials, profile, assume_role,
+		                                                 external_id);
 		credentials = provider.GetAWSCredentials();
 	}
 
@@ -634,17 +637,18 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromNone(ClientContext &, CreateSec
 }
 
 std::shared_ptr<Aws::Auth::AWSCredentialsProvider>
-BuildAwsCredentialsProvider(const std::string &chain, bool require_credentials, const std::string &profile,
-                            const std::string &assume_role_arn, const std::string &external_id,
-                            const std::string &web_identity_token_file, const std::string &session_name) {
+BuildAwsCredentialsProvider(DatabaseInstance &db, const std::string &chain, bool require_credentials,
+                            const std::string &profile, const std::string &assume_role_arn,
+                            const std::string &external_id, const std::string &web_identity_token_file,
+                            const std::string &session_name) {
 	if (chain.empty()) {
 		if (!profile.empty()) {
 			return Aws::MakeShared<Aws::Auth::ProfileConfigFileAWSCredentialsProvider>("DuckDBAwsProfile",
 			                                                                           profile.c_str());
 		}
-		return BuildDefaultAwsCredentialsProvider();
+		return BuildDefaultAwsCredentialsProvider(db);
 	}
-	return Aws::MakeShared<DuckDBCustomAWSCredentialsProviderChain>("DuckDBCustomChain", chain, require_credentials,
+	return Aws::MakeShared<DuckDBCustomAWSCredentialsProviderChain>("DuckDBCustomChain", db, chain, require_credentials,
 	                                                                profile, assume_role_arn, external_id,
 	                                                                web_identity_token_file, session_name);
 }

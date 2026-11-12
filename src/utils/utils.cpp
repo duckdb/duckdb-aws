@@ -168,6 +168,24 @@ std::shared_ptr<Aws::Auth::AWSCredentialsProvider> CredentialsProviderFromSecret
 	                                                                session_token.c_str());
 }
 
+CreateTableFunctionInfo Documented(TableFunctionSet set, const string &description, const string &example,
+                                   const string &category) {
+	CreateTableFunctionInfo info(std::move(set));
+	FunctionDescription doc;
+	doc.description = description;
+	doc.examples.push_back(example);
+	doc.categories.push_back(category);
+	info.descriptions.push_back(std::move(doc));
+	return info;
+}
+
+CreateTableFunctionInfo Documented(TableFunction function, const string &description, const string &example,
+                                   const string &category) {
+	TableFunctionSet set(function.name);
+	set.AddFunction(std::move(function));
+	return Documented(std::move(set), description, example, category);
+}
+
 string EscapeConnectionValue(const string &value) {
 	string result = "'";
 	for (auto c : value) {

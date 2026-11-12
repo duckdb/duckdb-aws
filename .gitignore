@@ -8,3 +8,12 @@ test/python/__pycache__/
 .Rhistory
 test/sql/redshift/redshift.env
 test/sql/redshift/serverless/redshift-serverless.env
+.quack-redshift/
+/manual_test_with_secrets.sql
+/.manual_test_with_secrets.sql.*
+scripts/__pycache__/
+test/scripts/__pycache__/
+
+# Generated fixture environments; resource identifiers and the AWS profile name, never secrets
+test/sql/s3/s3.env
+test/sql/s3tables/s3tables.env

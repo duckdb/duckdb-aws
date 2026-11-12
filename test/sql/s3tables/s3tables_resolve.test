@@ -1,0 +1,68 @@
+# name: test/sql/s3tables/s3tables_resolve.test
+# description: The table-bucket list callback names each bucket, and the resolve callback finds buckets by name or ARN
+# group: [s3tables]
+
+require no_extension_autoloading "EXPECTED: the callbacks are not in the autoload table, the test relies on explicit INSTALL and LOAD"
+
+require aws
+
+# Offline substitutes for the S3 Tables calls. The callbacks run on a separate connection, so the macros
+# must not be temporary. Two buckets share the name 'data' in different regions, and one region answers
+# with an error.
+statement ok
+CREATE MACRO s3tables_table_buckets() AS TABLE
+SELECT t.*, '123456789012' AS owner_account_id, 'customer' AS type, '2026-01-01T00:00:00Z' AS created_at
+FROM (VALUES
+    ('eu-central-1', 'arn:aws:s3tables:eu-central-1:123456789012:bucket/data', 'data', NULL),
+    ('us-east-1', 'arn:aws:s3tables:us-east-1:123456789012:bucket/data', 'data', NULL),
+    ('eu-central-1', 'arn:aws:s3tables:eu-central-1:123456789012:bucket/logs', 'logs', NULL),
+    ('ap-south-1', NULL, NULL, 'not offered')
+) t(region, arn, name, error);
+
+statement ok
+CREATE MACRO s3tables_get_table_bucket(bucket_arn) AS TABLE
+SELECT bucket_arn AS arn, split_part(bucket_arn, '/', 2) AS name, split_part(bucket_arn, ':', 4) AS region;
+
+# Listing names each bucket after its S3 Tables bucket name.
+query TTTT
+SELECT handle, name, reference, state FROM __aws__s3tables__table_bucket__list(MAP {}) ORDER BY reference;
+----
+{arn='arn:aws:s3tables:eu-central-1:123456789012:bucket/data'}	data	arn:aws:s3tables:eu-central-1:123456789012:bucket/data	ready
+{arn='arn:aws:s3tables:eu-central-1:123456789012:bucket/logs'}	logs	arn:aws:s3tables:eu-central-1:123456789012:bucket/logs	ready
+{arn='arn:aws:s3tables:us-east-1:123456789012:bucket/data'}	data	arn:aws:s3tables:us-east-1:123456789012:bucket/data	ready
+
+# The type registers the resolve callback.
+query I
+SELECT resolve_function FROM duckdb_external_resource_types() WHERE name = 'aws:s3tables:table-bucket';
+----
+__aws__s3tables__table_bucket__resolve
+
+# A bare name filters the sweep: a name used in two regions resolves to both buckets, with the same handles
+# listing reports.
+query TTTT
+SELECT handle, name, reference, state FROM __aws__s3tables__table_bucket__resolve('data') ORDER BY reference;
+----
+{arn='arn:aws:s3tables:eu-central-1:123456789012:bucket/data'}	data	arn:aws:s3tables:eu-central-1:123456789012:bucket/data	ready
+{arn='arn:aws:s3tables:us-east-1:123456789012:bucket/data'}	data	arn:aws:s3tables:us-east-1:123456789012:bucket/data	ready
+
+query TTTT
+SELECT handle, name, reference, state FROM __aws__s3tables__table_bucket__resolve('logs');
+----
+{arn='arn:aws:s3tables:eu-central-1:123456789012:bucket/logs'}	logs	arn:aws:s3tables:eu-central-1:123456789012:bucket/logs	ready
+
+query I
+SELECT count(*) FROM __aws__s3tables__table_bucket__resolve('nope');
+----
+0
+
+# An ARN names one bucket, fetched directly rather than swept.
+query TTTT
+SELECT handle, name, reference, state
+FROM __aws__s3tables__table_bucket__resolve('arn:aws:s3tables:us-east-1:123456789012:bucket/data');
+----
+{arn='arn:aws:s3tables:us-east-1:123456789012:bucket/data'}	data	arn:aws:s3tables:us-east-1:123456789012:bucket/data	ready
+
+statement error
+SELECT * FROM __aws__s3tables__table_bucket__resolve(NULL);
+----
+the name must not be NULL

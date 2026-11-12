@@ -1,0 +1,53 @@
+# name: test/sql/s3/s3_resource.test
+# description: the aws:s3:bucket external-resource type and its callbacks
+# group: [s3]
+
+require no_extension_autoloading "EXPECTED: Test relies on explicit INSTALL and LOAD"
+
+require httpfs
+
+require aws
+
+# Every AWS call below is meant to fail. Pin the identity to the AWS documentation's example key
+# pair, which never resolves to a real identity, so this holds even where the environment carries
+# real credentials: the provisioning statement further down would otherwise create a real bucket.
+statement ok
+CREATE SECRET example_credentials (TYPE aws, KEY_ID 'AKIAIOSFODNN7EXAMPLE', SECRET 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY', REGION 'eu-central-1');
+
+# The type is registered from C++ (origin 'extension'), so LOAD aws is all a user needs. Its kind
+# is 'storage': a bucket is listed and destroyed, not attached.
+query IIIIII
+SELECT name, kind, origin, create_function, status_function, list_function
+FROM duckdb_external_resource_types() WHERE name = 'aws:s3:bucket';
+----
+aws:s3:bucket	storage	extension	__aws__s3__bucket__create	__aws__s3__bucket__status	__aws__s3__bucket__list
+
+query I
+SELECT destroy_function FROM duckdb_external_resource_types() WHERE name = 'aws:s3:bucket';
+----
+__aws__s3__bucket__destroy
+
+# The handle is `name` plus `region`; one without a name is refused before any AWS call.
+statement error
+SELECT * FROM __aws__s3__bucket__status(MAP {'region': 'eu-central-1'});
+----
+handle is missing 'name'
+
+statement error
+SELECT * FROM __aws__s3__bucket__destroy(MAP {'region': 'eu-central-1'});
+----
+handle is missing 'name'
+
+# Provisioning through the framework reaches the create callback and, from there, the AWS call,
+# which the example key fails: the error names the callback rather than anything earlier in the chain.
+statement error
+CREATE EXTERNAL RESOURCE 'aws:s3:bucket' AS bucket_x (REGION 'eu-central-1');
+----
+<REGEX>:.*__aws__s3__bucket__create.*
+
+# Adoption of an existing bucket goes through status, not create.
+statement error
+REGISTER EXTERNAL RESOURCE 'aws:s3:bucket' AS bucket_y
+FROM MAP {'name': 'duckdb-no-such-bucket-0000', 'region': 'eu-central-1'};
+----
+<REGEX>:.*__aws__s3__bucket__status.*
