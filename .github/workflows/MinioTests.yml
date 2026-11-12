@@ -107,6 +107,13 @@ jobs:
           sleep 1
           ./build/release/test/unittest test/sql/env/aws_secret_container_env.test
 
+      - name: Run invalid container credentials env tests
+        shell: bash
+        env:
+          AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: duckdb-invalid-relative-uri
+        run: |
+          ./build/release/test/unittest test/sql/env/aws_secret_container_invalid_env.test
+
       - name: Run mitmproxy
         shell: bash
         run: |
