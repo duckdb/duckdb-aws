@@ -19,14 +19,24 @@
 #include "duckdb/main/extension/extension_loader.hpp"
 #include <duckdb/parser/parsed_data/create_scalar_function_info.hpp>
 #include <aws/core/Aws.h>
+#include <mutex>
 #include <aws/core/auth/AWSCredentialsProviderChain.h>
 #include <aws/core/client/ClientConfiguration.h>
 
 namespace duckdb {
 
+//! LOAD can run for several databases of one process at the same time (duckdb/duckdb#28518). The SDK's initialization
+//! is process state and is not thread safe, so it happens exactly once per process; the extension never shuts it down.
+static void InitAwsSdkOnce() {
+	static std::once_flag initialized;
+	std::call_once(initialized, [] {
+		Aws::SDKOptions options;
+		Aws::InitAPI(options);
+	});
+}
+
 static void LoadInternal(ExtensionLoader &loader) {
-	Aws::SDKOptions options;
-	Aws::InitAPI(options);
+	InitAwsSdkOnce();
 
 	// Opt-in on native, where the default keeps the AWS SDK's own HTTP client; defaults to true
 	// under wasm, where the bridge is the only path and the setting is otherwise ignored.

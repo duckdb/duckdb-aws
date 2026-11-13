@@ -1,4 +1,5 @@
 #include "aws_http_client.hpp"
+#include "duckdb/common/mutex.hpp"
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/http_util.hpp"
@@ -49,6 +50,10 @@ static constexpr const char *NETWORK_VIA_DUCKDB_SETTING = "aws_network_calls_via
 //! Set by AwsInstanceBinding for the duration of an operation, so the process-global
 //! factory can tell which DatabaseInstance an AWS client is being built for.
 static thread_local weak_ptr<DatabaseInstance> bound_instance;
+namespace {
+extern mutex fallback_db_mutex;
+extern weak_ptr<DatabaseInstance> fallback_db;
+} // namespace
 
 AwsInstanceBinding::AwsInstanceBinding(DatabaseInstance &db) : previous(bound_instance) {
 	bound_instance = weak_ptr<DatabaseInstance>(db.shared_from_this());
@@ -335,8 +340,7 @@ private:
 
 class DuckDBAwsHttpClientFactory : public Aws::Http::HttpClientFactory {
 public:
-	explicit DuckDBAwsHttpClientFactory(weak_ptr<DatabaseInstance> db_p) : db(std::move(db_p)) {
-	}
+	DuckDBAwsHttpClientFactory() = default;
 
 	void InitStaticState() override {
 #if AWS_HTTP_SDK_FALLBACK_CURL
@@ -359,7 +363,8 @@ public:
 		if (!bound_instance.expired()) {
 			return bound_instance;
 		}
-		return db;
+		lock_guard<mutex> guard(fallback_db_mutex);
+		return fallback_db;
 	}
 
 	std::shared_ptr<Aws::Http::HttpClient>
@@ -408,14 +413,29 @@ private:
 	weak_ptr<DatabaseInstance> db;
 };
 
+//! The database whose settings AWS clients built outside any binding follow: the last one to LOAD the extension.
+//! Process state, written by every LOAD and read by the factory, so it lives behind a mutex.
+mutex fallback_db_mutex;
+weak_ptr<DatabaseInstance> fallback_db;
+
 } // namespace
 
 void RegisterDuckDBAwsHttpClientFactory(DatabaseInstance &db) {
 	// NOTE: Aws::Http::SetHttpClientFactory is process-global, so with several DatabaseInstances
 	// in one process the last LOAD wins and all AWS traffic follows that instance's HTTP
 	// settings. The weak_ptr keeps that from becoming a use-after-free when it is closed.
-	weak_ptr<DatabaseInstance> weak_db = db.shared_from_this();
-	Aws::Http::SetHttpClientFactory(Aws::MakeShared<DuckDBAwsHttpClientFactory>("DuckDBAwsHttp", weak_db));
+	//
+	// LOAD can run for several databases at the same time (duckdb/duckdb#28518). SetHttpClientFactory tears down and
+	// rebuilds SDK state and is not thread safe, so the factory is installed exactly once per process; later LOADs
+	// only move the fallback database it reads.
+	{
+		lock_guard<mutex> guard(fallback_db_mutex);
+		fallback_db = db.shared_from_this();
+	}
+	static std::once_flag installed;
+	std::call_once(installed, [] {
+		Aws::Http::SetHttpClientFactory(Aws::MakeShared<DuckDBAwsHttpClientFactory>("DuckDBAwsHttp"));
+	});
 }
 
 } // namespace duckdb
