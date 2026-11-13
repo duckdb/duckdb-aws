@@ -50,7 +50,7 @@ add_library(${EXTENSION_NAME} STATIC ${EXTENSION_SOURCES})
 # module imports every out-of-line Aws:: symbol from the host and fails to load.
 if(EMSCRIPTEN)
   set(DUCKDB_EXTENSION_AWS_LINKED_LIBS
-      "../../vcpkg_installed/wasm32-emscripten/lib/lib*.a")
+      "../../vcpkg_installed/${VCPKG_TARGET_TRIPLET}/lib/lib*.a")
 endif()
 
 set(PARAMETERS "-warnings")
