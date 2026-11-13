@@ -68,7 +68,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	// Listing + lifecycle over the S3 Tables control plane.
 	S3TablesFunctions::Register(loader);
-	// The aws:s3tables:table-bucket external-resource type, built on those functions.
+	// The aws:s3tables:bucket external-resource type, built on those functions.
 	S3TablesResource::Register(loader);
 
 	// The AWS system tables: Iceberg tables AWS services write into the account's aws-* table buckets,

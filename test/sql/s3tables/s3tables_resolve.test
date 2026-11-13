@@ -25,7 +25,7 @@ SELECT bucket_arn AS arn, split_part(bucket_arn, '/', 2) AS name, split_part(buc
 
 # Listing names each bucket after its S3 Tables bucket name.
 query TTTT
-SELECT handle, name, reference, state FROM __aws__s3tables__table_bucket__list(MAP {}) ORDER BY reference;
+SELECT handle, name, reference, state FROM __aws__s3tables__bucket__list(MAP {}) ORDER BY reference;
 ----
 {arn='arn:aws:s3tables:eu-central-1:123456789012:bucket/data'}	data	arn:aws:s3tables:eu-central-1:123456789012:bucket/data	ready
 {arn='arn:aws:s3tables:eu-central-1:123456789012:bucket/logs'}	logs	arn:aws:s3tables:eu-central-1:123456789012:bucket/logs	ready
@@ -33,36 +33,36 @@ SELECT handle, name, reference, state FROM __aws__s3tables__table_bucket__list(M
 
 # The type registers the resolve callback.
 query I
-SELECT resolve_function FROM duckdb_external_resource_types() WHERE name = 'aws:s3tables:table-bucket';
+SELECT resolve_function FROM duckdb_external_resource_types() WHERE name = 'aws:s3tables:bucket';
 ----
-__aws__s3tables__table_bucket__resolve
+__aws__s3tables__bucket__resolve
 
 # A bare name filters the sweep: a name used in two regions resolves to both buckets, with the same handles
 # listing reports.
 query TTTT
-SELECT handle, name, reference, state FROM __aws__s3tables__table_bucket__resolve('data') ORDER BY reference;
+SELECT handle, name, reference, state FROM __aws__s3tables__bucket__resolve('data') ORDER BY reference;
 ----
 {arn='arn:aws:s3tables:eu-central-1:123456789012:bucket/data'}	data	arn:aws:s3tables:eu-central-1:123456789012:bucket/data	ready
 {arn='arn:aws:s3tables:us-east-1:123456789012:bucket/data'}	data	arn:aws:s3tables:us-east-1:123456789012:bucket/data	ready
 
 query TTTT
-SELECT handle, name, reference, state FROM __aws__s3tables__table_bucket__resolve('logs');
+SELECT handle, name, reference, state FROM __aws__s3tables__bucket__resolve('logs');
 ----
 {arn='arn:aws:s3tables:eu-central-1:123456789012:bucket/logs'}	logs	arn:aws:s3tables:eu-central-1:123456789012:bucket/logs	ready
 
 query I
-SELECT count(*) FROM __aws__s3tables__table_bucket__resolve('nope');
+SELECT count(*) FROM __aws__s3tables__bucket__resolve('nope');
 ----
 0
 
 # An ARN names one bucket, fetched directly rather than swept.
 query TTTT
 SELECT handle, name, reference, state
-FROM __aws__s3tables__table_bucket__resolve('arn:aws:s3tables:us-east-1:123456789012:bucket/data');
+FROM __aws__s3tables__bucket__resolve('arn:aws:s3tables:us-east-1:123456789012:bucket/data');
 ----
 {arn='arn:aws:s3tables:us-east-1:123456789012:bucket/data'}	data	arn:aws:s3tables:us-east-1:123456789012:bucket/data	ready
 
 statement error
-SELECT * FROM __aws__s3tables__table_bucket__resolve(NULL);
+SELECT * FROM __aws__s3tables__bucket__resolve(NULL);
 ----
 the name must not be NULL

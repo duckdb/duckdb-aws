@@ -168,7 +168,7 @@ The script can also be called directly as `python3 scripts/quack_redshift.py <ac
 - [S3 buckets](test/sql/s3/README.md): the `s3_*` table functions, the `aws:s3:bucket`
   external-resource type, their tests and the private fixture bucket.
 - [S3 Tables](test/sql/s3tables/README.md): the `s3tables_*` table functions, the
-  `aws:s3tables:table-bucket` external-resource type, their tests and the table bucket fixture.
+  `aws:s3tables:bucket` external-resource type, their tests and the table bucket fixture.
 
 The function references below, here and under [AWS system tables](#aws-system-tables), are
 generated from the description, example and category each function registers through
