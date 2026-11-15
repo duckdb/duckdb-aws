@@ -27,6 +27,7 @@
 #include <aws/identity-management/auth/STSAssumeRoleCredentialsProvider.h>
 #include <aws/rds/RDSClient.h>
 #include <aws/sts/STSClient.h>
+#include <mutex>
 
 #include <sys/stat.h>
 
@@ -637,13 +638,20 @@ BuildAwsCredentialsProvider(DatabaseInstance &db, const std::string &chain, bool
 }
 
 void CreateAwsSecretFunctions::InitializeCurlCertificates(DatabaseInstance &db) {
-	for (string &caFile : certFileLocations) {
-		struct stat buf;
-		if (stat(caFile.c_str(), &buf) == 0) {
-			SELECTED_CURL_CERT_PATH = caFile;
-			DUCKDB_LOG_DEBUG(db, "aws.CaCertificateDetection: CA path: %s", SELECTED_CURL_CERT_PATH);
-			return;
+	// The CA path is process state, read whenever a client is configured. LOAD can run for several databases at the
+	// same time (duckdb/duckdb#28518), so it is detected exactly once and never written again.
+	static std::once_flag detected;
+	std::call_once(detected, [] {
+		for (string &caFile : certFileLocations) {
+			struct stat buf;
+			if (stat(caFile.c_str(), &buf) == 0) {
+				SELECTED_CURL_CERT_PATH = caFile;
+				return;
+			}
 		}
+	});
+	if (!SELECTED_CURL_CERT_PATH.empty()) {
+		DUCKDB_LOG_DEBUG(db, "aws.CaCertificateDetection: CA path: %s", SELECTED_CURL_CERT_PATH);
 	}
 }
 
