@@ -2,7 +2,7 @@
 
 `s3tables_table_buckets`, `s3tables_namespaces` and `s3tables_tables` browse the S3 Tables control
 plane; `s3tables_create_table_bucket`, `s3tables_get_table_bucket`, `s3tables_table_bucket_tags` and
-`s3tables_delete_table_bucket` manage a table bucket; `aws:s3tables:table-bucket` is the matching
+`s3tables_delete_table_bucket` manage a table bucket; `aws:s3tables:bucket` is the matching
 external-resource type, a catalog, so `ATTACH TO EXTERNAL RESOURCE` works on it. A table bucket
 also attaches directly by ARN: `ATTACH 'arn:aws:s3tables:...' AS db`, through the iceberg extension.
 The rest of this file covers the tests and the table bucket fixture they run against. The
@@ -41,7 +41,7 @@ namespaces call returns no rows for a new bucket, and the delete returns `status
 ```
 
 Without the fixture environment, `s3tables_functions.test` (ARN and argument validation) and
-`s3tables_resource.test` (the `aws:s3tables:table-bucket` type and its callbacks) run; every AWS
+`s3tables_resource.test` (the `aws:s3tables:bucket` type and its callbacks) run; every AWS
 call in them is made with a key that cannot resolve and expected to fail. After
 `source test/sql/s3tables/s3tables.env` (see [Create the fixture](#create-the-fixture)),
 `s3tables.test` attaches the fixture table bucket and reads its table. The `s3tables_*`

@@ -17,7 +17,7 @@ namespace duckdb {
 //! The external-resource type name, also stamped as a tag on every bucket this recipe creates, so
 //! a bucket carries its own provenance: the resource manager's notion of "managed" lives in memory
 //! and dies with the process, but the tag survives, and destroy consults it before cascading.
-static constexpr const char *S3TABLES_TYPE = "aws:s3tables:table-bucket";
+static constexpr const char *S3TABLES_TYPE = "aws:s3tables:bucket";
 static constexpr const char *RESOURCE_TYPE_TAG = "duckdb-external-resource-type";
 
 namespace {
@@ -355,26 +355,26 @@ void ResolveFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &o
 void S3TablesResource::Register(ExtensionLoader &loader) {
 	auto map_vv = LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR);
 
-	TableFunction create_fn("__aws__s3tables__table_bucket__create", {map_vv}, CreateFun, CreateBind, AdapterInit);
+	TableFunction create_fn("__aws__s3tables__bucket__create", {map_vv}, CreateFun, CreateBind, AdapterInit);
 	loader.RegisterFunction(create_fn);
-	TableFunction status_fn("__aws__s3tables__table_bucket__status", {map_vv}, StatusFun, StatusBind, AdapterInit);
+	TableFunction status_fn("__aws__s3tables__bucket__status", {map_vv}, StatusFun, StatusBind, AdapterInit);
 	loader.RegisterFunction(status_fn);
-	TableFunction destroy_fn("__aws__s3tables__table_bucket__destroy", {map_vv}, DestroyFun, DestroyBind, AdapterInit);
+	TableFunction destroy_fn("__aws__s3tables__bucket__destroy", {map_vv}, DestroyFun, DestroyBind, AdapterInit);
 	loader.RegisterFunction(destroy_fn);
-	TableFunction list_fn("__aws__s3tables__table_bucket__list", {map_vv}, ListFun, ListBind, ListInit);
+	TableFunction list_fn("__aws__s3tables__bucket__list", {map_vv}, ListFun, ListBind, ListInit);
 	loader.RegisterFunction(list_fn);
-	TableFunction resolve_fn("__aws__s3tables__table_bucket__resolve", {LogicalType::VARCHAR}, ResolveFun, ResolveBind,
+	TableFunction resolve_fn("__aws__s3tables__bucket__resolve", {LogicalType::VARCHAR}, ResolveFun, ResolveBind,
 	                         ListInit);
 	loader.RegisterFunction(resolve_fn);
 
 	ExternalResourceType type;
 	type.name = S3TABLES_TYPE;
 	type.kind = "catalog";
-	type.create_function = "__aws__s3tables__table_bucket__create";
-	type.status_function = "__aws__s3tables__table_bucket__status";
-	type.destroy_function = "__aws__s3tables__table_bucket__destroy";
-	type.resolve_function = "__aws__s3tables__table_bucket__resolve";
-	type.list_function = "__aws__s3tables__table_bucket__list";
+	type.create_function = "__aws__s3tables__bucket__create";
+	type.status_function = "__aws__s3tables__bucket__status";
+	type.destroy_function = "__aws__s3tables__bucket__destroy";
+	type.resolve_function = "__aws__s3tables__bucket__resolve";
+	type.list_function = "__aws__s3tables__bucket__list";
 	type.origin = "extension";
 	ExternalResourceTypeRegistry::Get(loader.GetDatabaseInstance()).Add(std::move(type));
 }
