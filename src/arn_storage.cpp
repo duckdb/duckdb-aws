@@ -1,6 +1,7 @@
 #include "arn_storage.hpp"
 
 #include "arn.hpp"
+#include "utils/host_extension.hpp"
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/common/case_insensitive_map.hpp"
 #include "duckdb/common/exception.hpp"
@@ -10,7 +11,6 @@
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/main/extension_helper.hpp"
-#include "duckdb/main/extension_load_options.hpp"
 #include "duckdb/parser/parsed_data/attach_info.hpp"
 #include "duckdb/storage/storage_extension.hpp"
 #include "duckdb/transaction/transaction_manager.hpp"
@@ -143,59 +143,35 @@ public:
 // name - registering a type replaces the stand-in, so from then on the extension answers directly.
 //===--------------------------------------------------------------------===//
 
-//! What the stand-in stands for: the type it is registered as, the extension that really serves it, and the
-//! repository host the extension has to be installed from
+//! What the stand-in stands for: the type it is registered as, and the extension from a host that really serves it
 struct HostExtensionInfo : public StorageExtensionInfo {
-	HostExtensionInfo(string type_name_p, string extension_name_p, string host_p)
-	    : type_name(std::move(type_name_p)), extension_name(std::move(extension_name_p)), host(std::move(host_p)) {
+	HostExtensionInfo(string type_name_p, string extension_name, string host)
+	    : type_name(std::move(type_name_p)), extension(std::move(extension_name), std::move(host)) {
 	}
 
 	string type_name;
-	string extension_name;
-	string host;
+	HostExtension extension;
 
 	//! Whether the registered type is still this stand-in
 	bool IsSelf(optional_ptr<StorageExtension> registered) const {
 		return registered && registered->storage_info.get() == this;
 	}
 
-	//! Whether `INSTALL <extension> FROM <host>` has been run: the installed file sits in the repository's own folder
-	bool IsInstalled(DatabaseInstance &db) const {
-		auto &fs = FileSystem::GetFileSystem(db);
-		for (auto &directory : ExtensionHelper::GetExtensionDirectoryPath(db, fs)) {
-			auto path = fs.JoinPath(fs.JoinPath(fs.JoinPath(directory, "repositories"), host),
-			                        extension_name + ".duckdb_extension");
-			if (fs.FileExists(path)) {
-				return true;
-			}
-		}
-		return false;
-	}
-
 	//! The type as the extension from the host registers it; loads the extension first when it is only installed
 	optional_ptr<StorageExtension> Resolve(ClientContext &context, const string &path) const {
-		auto &db = DatabaseInstance::GetDatabase(context);
-		auto &config = DBConfig::GetConfig(db);
+		auto &config = DBConfig::GetConfig(DatabaseInstance::GetDatabase(context));
 		auto registered = StorageExtension::Find(config, type_name);
 		if (registered && !IsSelf(registered)) {
 			return registered;
 		}
-		if (!IsInstalled(db)) {
-			throw MissingExtensionException(
-			    "Attaching '%s' requires the '%s' extension from %s, which is not installed. Run `INSTALL %s FROM "
-			    "%s;` first (and `CREATE EXTENSION REPOSITORY %s;` if that repository was not added yet), or use TYPE "
-			    "%s_postgres for the Postgres-based attach of this extension",
-			    path, extension_name, host, extension_name, host, host, extension_name);
-		}
-		ExtensionLoadOptions load_options;
-		load_options.extension_name = extension_name;
-		load_options.repository = host;
-		ExtensionHelper::LoadExternalExtension(context, load_options);
+		extension.Load(context, StringUtil::Format("Attaching '%s'", path),
+		               StringUtil::Format("use TYPE %s_postgres for the Postgres-based attach of this extension",
+		                                  extension.extension_name));
 		registered = StorageExtension::Find(config, type_name);
 		if (!registered || IsSelf(registered)) {
 			throw InvalidConfigurationException("The '%s' extension from %s was loaded but did not register a '%s' "
 			                                    "storage type, so '%s' cannot be attached through it",
-			                                    extension_name, host, type_name, path);
+			                                    extension.extension_name, extension.host, type_name, path);
 		}
 		return registered;
 	}

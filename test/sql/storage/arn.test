@@ -55,6 +55,22 @@ ATTACH 'arn:aws:redshift-serverless:eu-central-1:840140254803:workgroup/wg' AS d
 ----
 <REGEX>:Missing Extension Error.*requires the 'redshift' extension from aws.amazon.com.*
 
+# A repository that only carries the host's name, added with a prefix, is not the host's: the extension is not loaded
+# from it, whether or not something is installed there
+statement ok
+SET allow_extension_repositories='allowed'
+
+statement ok
+CREATE EXTENSION REPOSITORY 'aws.amazon.com' WITH PREFIX 'http://not.the.host.example/repo' USING PUBLIC KEY 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAt9+KeDkWJa7SiBb7AMdXAPV2qpRunztoC2c7DtRmN9+Lq2YQm4rMQmmAQcwyxTxcK8vwPKOiE4mLMwmQMvTty9tL+buREfvg5KJ+FY3Bv05cZYsf7VuYgUDcw41zSEE5W1thh5PiafcrMn7CPF0jN0oFfVvAHB/fAM0yaZGPKs3WYqnHAHa6v/cVMeiWZ/lQORCBqqL2hii1fEiuIqw6AOEoZVsN0/lqm7GfnD899zrzLOPRuP4YFg46drL1UyNdg+4TquJ2OV9kR4CAfdGRexqHFWLmoxkTfnUxJ4yL+gkV57K1H+smEdKrDhDX68pEFM/34E2eVKZoRU/0paxDZQIDAQAB'
+
+statement error
+ATTACH 'arn:aws:redshift:eu-central-1:840140254803:namespace:e542f89f-b604-4110-a337-f7ba8c7ce156' AS db;
+----
+<REGEX>:Permission Error.*repository named 'aws.amazon.com' was added with a prefix.*not resolved from the host.*CREATE EXTENSION REPOSITORY aws.amazon.com.*
+
+statement ok
+DROP EXTENSION REPOSITORY 'aws.amazon.com'
+
 # Naming the type is the same as the default
 statement error
 ATTACH 'arn:aws:redshift:eu-central-1:840140254803:namespace:e542f89f-b604-4110-a337-f7ba8c7ce156' AS db (TYPE redshift);
