@@ -443,7 +443,8 @@ Options:
 
 `ATTACH 'arn:aws:<service>:<region>:<account>:<resource>'` goes to the storage type that serves the ARN's service, with
 the ARN as its path; the type reads region, account and resource off it, so none of those can be set as ATTACH
-options. An explicit `TYPE` names the storage type directly instead.
+options. The Redshift ARNs below are the exception: see the note after the table. An explicit `TYPE` names the storage
+type directly instead.
 
 | ARN | default type | also |
 |---|---|---|
@@ -457,6 +458,13 @@ options. An explicit `TYPE` names the storage type directly instead.
 ATTACH without it fails saying so. `TYPE redshift_postgres` is this extension's own attach, which resolves the cluster,
 workgroup or namespace through the Redshift APIs and hands a connection string to the postgres extension. Both take a
 bare identifier as well: `ATTACH '<cluster-id>' AS db (TYPE redshift_postgres, REGION '<region>')`.
+
+The redshift extension makes no AWS call of its own, so it cannot turn the namespace or workgroup ID in these Redshift
+ARNs into the endpoint it names. For an ARN without `TYPE`, this extension first looks the target up, in the ARN's
+region with the secret `SECRET` names (or, without `SECRET`, the AWS secret it would pick itself), and hands the
+`redshift` type the path `redshift://<endpoint>:<port>`, adding `SECRET` naming that secret when none was given, and
+`DATABASE` naming the target's default database when neither `DATABASE` nor `DBNAME` was given, so that a database
+given there wins. The other ATTACH options are passed on as given; the redshift extension decides which it takes.
 
 ## AWS system tables
 

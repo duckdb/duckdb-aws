@@ -9,6 +9,9 @@
 namespace duckdb {
 
 class ExtensionLoader;
+struct AttachInfo;
+struct AttachOptions;
+struct ParsedArn;
 
 enum class RedshiftTargetType : uint8_t {
 	PROVISIONED_CLUSTER,
@@ -37,6 +40,13 @@ struct RedshiftIamCredentials {
 struct Redshift {
 	//! Register the 'redshift' storage extension, which is what makes
 	static void RegisterStorageExtension(ExtensionLoader &loader);
+
+	//! For the redshift extension, which makes no AWS call of its own: an ARN that names its target by ID (a
+	//! provisioned namespace, a Serverless workgroup or namespace) becomes the path `redshift://<endpoint>:<port>` of
+	//! the target the lookup finds; DATABASE, when neither it nor DBNAME is given, becomes the target's default
+	//! database, and SECRET, when not given, the secret the lookup used. The other options are left as they are, and so
+	//! is every other ARN.
+	static void ResolveArnById(ClientContext &context, const ParsedArn &arn, AttachInfo &info, AttachOptions &options);
 
 	//! Look up a cluster by identifier via the Redshift `DescribeClusters` API. Throws when the
 	//! cluster does not exist or exposes no endpoint (e.g. while it is still being created).

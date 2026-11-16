@@ -1,6 +1,7 @@
 #include "arn_storage.hpp"
 
 #include "arn.hpp"
+#include "redshift/redshift_utils.hpp"
 #include "utils/host_extension.hpp"
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/common/case_insensitive_map.hpp"
@@ -21,20 +22,26 @@ namespace duckdb {
 // ARN storage dispatch
 //
 // ATTACH 'arn:aws:<service>:...' without a TYPE goes to the storage type that serves the ARN's service, with the
-// ARN as its path: the type reads region, account and resource off it. An explicit TYPE bypasses this and names the
-// type directly, so `(TYPE redshift_postgres)` is this extension's own Redshift-over-Postgres backend, and
+// ARN as its path: the type reads region, account and resource off it. A service may instead resolve the ARN into a
+// path its type serves (ArnService::resolve): the redshift ARNs that name their target by ID become the target's
+// redshift:// endpoint. An explicit TYPE bypasses this and names the type directly, so `(TYPE redshift_postgres)` is
+// this extension's own Redshift-over-Postgres backend, and
 // `(TYPE redshift)` the redshift extension published at aws.amazon.com, which is also the default for the service.
 // To add a service, add a row to ArnServices().
 //===--------------------------------------------------------------------===//
 
 struct ArnService {
-	//! Storage type the ATTACH is handed to, with the ARN as its path
+	//! Storage type the ATTACH is handed to, with the ARN as its path, or the path `resolve` made of it
 	string type;
 	//! Autoload the extension of that name when the type is not registered (core extensions only); the types this
 	//! extension registers itself are always there
 	bool autoload = false;
 	//! Options the type expects on top of the ARN, injected into the ATTACH; setting one explicitly is an error
 	case_insensitive_map_t<Value> options;
+	//! Optional. For an ARN the type cannot serve as given, rewrites the ATTACH's path and options into a form it
+	//! serves. ArnAttach calls it after loading the type and before handing the ATTACH on; it leaves any ARN the
+	//! type serves itself untouched
+	void (*resolve)(ClientContext &context, const ParsedArn &arn, AttachInfo &info, AttachOptions &options) = nullptr;
 };
 
 static const case_insensitive_map_t<ArnService> &ArnServices() {
@@ -42,8 +49,11 @@ static const case_insensitive_map_t<ArnService> &ArnServices() {
 	    // The iceberg extension takes the full ARN as its warehouse, and reads endpoint_type
 	    {"s3tables", ArnService {"iceberg", true, {{"endpoint_type", Value("s3_tables")}}}},
 	    {"rds", ArnService {"rds", false, {}}},
-	    {"redshift", ArnService {"redshift", false, {}}},
-	    {"redshift-serverless", ArnService {"redshift", false, {}}},
+	    // The redshift extension makes no AWS call of its own, so it cannot turn a namespace or workgroup ID into
+	    // the endpoint it names: for those ARNs, ResolveArnById looks the target up and hands the extension a
+	    // redshift:// path to it instead (see redshift_storage.cpp)
+	    {"redshift", ArnService {"redshift", false, {}, Redshift::ResolveArnById}},
+	    {"redshift-serverless", ArnService {"redshift", false, {}, Redshift::ResolveArnById}},
 	};
 	return services;
 }
@@ -98,6 +108,10 @@ static void ApplyServiceOptions(AttachInfo &info, AttachOptions &options, const 
 	}
 }
 
+//! Loads the extension behind a stand-in type; defined below, after the stand-in (HostExtensionInfo)
+static optional_ptr<StorageExtension> LoadHostExtension(ClientContext &context, StorageExtension &backend,
+                                                        const string &path);
+
 static unique_ptr<Catalog> ArnAttach(optional_ptr<StorageExtensionInfo> storage_info, ClientContext &context,
                                      AttachedDatabase &db, const string &name, AttachInfo &info,
                                      AttachOptions &options) {
@@ -108,6 +122,12 @@ static unique_ptr<Catalog> ArnAttach(optional_ptr<StorageExtensionInfo> storage_
 	info.path = arn.raw;
 
 	auto backend = GetBackend(db, service, arn.raw);
+	if (service.resolve) {
+		// Load the extension that serves the type before resolving: without it, the ATTACH fails on the missing
+		// extension, as it does for every other ARN, before any AWS call is made
+		backend = LoadHostExtension(context, *backend, arn.raw);
+		service.resolve(context, arn, info, options);
+	}
 	if (!backend->attach) {
 		throw InvalidConfigurationException("the '%s' storage type does not support ATTACH", service.type);
 	}
@@ -176,6 +196,20 @@ struct HostExtensionInfo : public StorageExtensionInfo {
 		return registered;
 	}
 };
+
+//! Returns the type that will really serve the ATTACH, loading its extension first if needed.
+//!
+//! While the redshift extension is not loaded, `TYPE redshift` is the stand-in above: it loads the extension only
+//! when HostAttach is handed the ATTACH. ArnAttach needs it loaded earlier, before a resolve function makes its AWS
+//! calls: otherwise a user without the extension would pay for the lookup and could see a credentials error instead
+//! of the one that says to install the extension. So for the stand-in this loads the extension now (or throws that
+//! error) and returns the type the extension registered. Any other backend, including the redshift type once its
+//! extension is loaded, is returned as it is.
+static optional_ptr<StorageExtension> LoadHostExtension(ClientContext &context, StorageExtension &backend,
+                                                        const string &path) {
+	auto host = dynamic_cast<HostExtensionInfo *>(backend.storage_info.get());
+	return host ? host->Resolve(context, path) : &backend;
+}
 
 static unique_ptr<Catalog> HostAttach(optional_ptr<StorageExtensionInfo> storage_info, ClientContext &context,
                                       AttachedDatabase &db, const string &name, AttachInfo &info,
