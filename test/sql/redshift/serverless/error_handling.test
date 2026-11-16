@@ -17,60 +17,60 @@ require-env NAMESPACE_ID
 
 require-env WORKGROUP_ID
 
-# A user option cannot redirect a provisioned namespace ARN through the Serverless path.
+# The dispatcher's former internal options are refused however the target is named.
 statement error
-ATTACH 'arn:aws:redshift:{AWS_REGION}:{ACCOUNT_ID}:namespace:{NAMESPACE_ID}' AS db (RESOURCE_TYPE 'namespace');
+ATTACH 'arn:aws:redshift:{AWS_REGION}:{ACCOUNT_ID}:namespace:{NAMESPACE_ID}' AS db (TYPE redshift_postgres, RESOURCE_TYPE 'namespace');
 ----
-Invalid Input Error: Conflicting Redshift ARN options
+Invalid Input Error: Redshift ARN options cannot be set directly
 
-# Redshift Serverless dispatch accepts only workgroup and namespace ARNs with slash-separated IDs.
+# The Redshift-over-Postgres attach accepts only workgroup and namespace ARNs with slash-separated IDs.
 statement error
-ATTACH 'arn:aws:redshift-serverless:{AWS_REGION}:{ACCOUNT_ID}:workgroup:{WORKGROUP_ID}' AS db;
+ATTACH 'arn:aws:redshift-serverless:{AWS_REGION}:{ACCOUNT_ID}:workgroup:{WORKGROUP_ID}' AS db (TYPE redshift_postgres);
 ----
 <REGEX>:.*Expected a Redshift Serverless ARN.*workgroup:.*
 
 statement error
-ATTACH 'arn:aws:redshift-serverless:{AWS_REGION}:{ACCOUNT_ID}:namespace/' AS db;
+ATTACH 'arn:aws:redshift-serverless:{AWS_REGION}:{ACCOUNT_ID}:namespace/' AS db (TYPE redshift_postgres);
 ----
 <REGEX>:.*Expected a Redshift Serverless ARN.*namespace/.*
 
 statement error
-ATTACH 'arn:aws:redshift-serverless:{AWS_REGION}:{ACCOUNT_ID}:/{NAMESPACE_ID}' AS db;
+ATTACH 'arn:aws:redshift-serverless:{AWS_REGION}:{ACCOUNT_ID}:/{NAMESPACE_ID}' AS db (TYPE redshift_postgres);
 ----
 <REGEX>:.*Expected a Redshift Serverless ARN.*/.*
 
 statement error
-ATTACH 'arn:aws:redshift-serverless:{AWS_REGION}:{ACCOUNT_ID}:namespace/{NAMESPACE_ID}/extra' AS db;
+ATTACH 'arn:aws:redshift-serverless:{AWS_REGION}:{ACCOUNT_ID}:namespace/{NAMESPACE_ID}/extra' AS db (TYPE redshift_postgres);
 ----
 <REGEX>:.*Expected a Redshift Serverless ARN.*namespace/.*/extra.*
 
 statement error
-ATTACH 'arn:aws:redshift-serverless:{AWS_REGION}:{ACCOUNT_ID}:cluster/{WORKGROUP_ID}' AS db;
+ATTACH 'arn:aws:redshift-serverless:{AWS_REGION}:{ACCOUNT_ID}:cluster/{WORKGROUP_ID}' AS db (TYPE redshift_postgres);
 ----
 <REGEX>:.*Expected a Redshift Serverless ARN.*cluster/.*
 
 statement error
-ATTACH 'arn:aws:redshift-serverless::{ACCOUNT_ID}:workgroup/{WORKGROUP_ID}' AS db;
+ATTACH 'arn:aws:redshift-serverless::{ACCOUNT_ID}:workgroup/{WORKGROUP_ID}' AS db (TYPE redshift_postgres);
 ----
 <REGEX>:.*Redshift Serverless ARN.*does not specify a region.*
 
 statement error
-ATTACH 'arn:aws:redshift-serverless:{AWS_REGION}::namespace/{NAMESPACE_ID}' AS db;
+ATTACH 'arn:aws:redshift-serverless:{AWS_REGION}::namespace/{NAMESPACE_ID}' AS db (TYPE redshift_postgres);
 ----
 <REGEX>:.*Redshift Serverless ARN.*does not specify an account ID.*
 
 statement error
-ATTACH 'arn:aws:redshift-serverless:{AWS_REGION}:{ACCOUNT_ID}:workgroup/{WORKGROUP_ID}' AS db (REGION 'us-east-1');
+ATTACH 'arn:aws:redshift-serverless:{AWS_REGION}:{ACCOUNT_ID}:workgroup/{WORKGROUP_ID}' AS db (TYPE redshift_postgres, REGION 'us-east-1');
 ----
 Invalid Input Error: ATTACH option 'region' is derived from the ARN and cannot be set explicitly
 
 statement error
-ATTACH 'arn:aws:redshift-serverless:{AWS_REGION}:{ACCOUNT_ID}:workgroup/{WORKGROUP_ID}' AS db (RESOURCE 'workgroup/other');
+ATTACH 'arn:aws:redshift-serverless:{AWS_REGION}:{ACCOUNT_ID}:workgroup/{WORKGROUP_ID}' AS db (TYPE redshift_postgres, RESOURCE 'workgroup/other');
 ----
-Invalid Input Error: Conflicting Redshift ARN options
+Invalid Input Error: Redshift ARN options cannot be set directly
 
-# Direct TYPE redshift attaches cannot set the ARN dispatcher's internal options.
+# Direct attaches cannot set them either.
 statement error
-ATTACH '{WORKGROUP_ID}' AS db (TYPE redshift, RESOURCE_TYPE 'namespace');
+ATTACH '{WORKGROUP_ID}' AS db (TYPE redshift_postgres, RESOURCE_TYPE 'namespace');
 ----
 Invalid Input Error: Redshift ARN options cannot be set directly
