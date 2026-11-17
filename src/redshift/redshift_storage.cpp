@@ -305,7 +305,77 @@ public:
 	}
 };
 
+//! Whether the ARN names its target by ID, the forms the redshift extension cannot serve without a lookup:
+//! `namespace:<id>` for redshift, `workgroup/<id>` or `namespace/<id>` for redshift-serverless. Only the shape is
+//! read here; GetRedshiftTarget checks the rest (region, account, an empty ID). Any other ARN, such as the long-form
+//! workgroup ARN `workgroup/<label>/<workgroup-name>`, is left for the redshift extension to serve or refuse.
+bool NamesTargetById(const ParsedArn &arn) {
+	if (arn.service == "redshift") {
+		return StringUtil::StartsWith(arn.resource, "namespace:");
+	}
+	auto separator = arn.resource.find('/');
+	return arn.service == "redshift-serverless" && separator != string::npos &&
+	       arn.resource.find('/', separator + 1) == string::npos &&
+	       (StringUtil::StartsWith(arn.resource, "workgroup/") || StringUtil::StartsWith(arn.resource, "namespace/"));
+}
+
 } // namespace
+
+void Redshift::ResolveArnById(ClientContext &context, const ParsedArn &arn, AttachInfo &info, AttachOptions &options) {
+	if (!NamesTargetById(arn)) {
+		return;
+	}
+	// The lookup is an AWS call, which external access governs, as it does for TYPE redshift_postgres
+	if (!Settings::Get<EnableExternalAccessSetting>(context)) {
+		throw PermissionException("Attaching Redshift databases is disabled through configuration");
+	}
+	AwsInstanceBinding aws_binding(DatabaseInstance::GetDatabase(context));
+
+	// Only the ARN is read, for its region, account and ID: no ATTACH option is checked here, so every option goes
+	// on to the redshift extension as given, and it decides what it takes beside a redshift:// path
+	auto target = GetRedshiftTarget(RedshiftAttachOptions(), arn.raw);
+
+	// The AWS identity for the lookup: the secret SECRET names, else the one FindAwsSecret picks, as for
+	// TYPE redshift_postgres. SECRET is only read, not removed
+	auto secret_option = options.options.find("secret");
+	auto secret_name = secret_option == options.options.end() ? string() : secret_option->second.ToString();
+	auto secret_entry = FindAwsSecret(context, secret_name);
+	const auto &secret = dynamic_cast<const KeyValueSecret &>(*secret_entry->secret);
+	auto provider = CredentialsProviderFromSecret(secret, "Redshift");
+
+	// The lookups TYPE redshift_postgres makes, in the ARN's region; no credential call, since the redshift
+	// extension's driver gets the database credentials itself. A target that is not found is refused here, with
+	// those lookups' messages
+	RedshiftTargetInfo resolved;
+	if (target.type == RedshiftTargetType::PROVISIONED_NAMESPACE) {
+		// DescribeClusters, unfiltered, finds the cluster whose namespace ARN matches; then DescribeClusters for that
+		// cluster gives its endpoint, port and database
+		auto cluster_id =
+		    Redshift::ClusterIdentifierFromNamespace(provider, target.account_id, target.resource_id, target.region);
+		resolved = Redshift::DescribeCluster(provider, cluster_id, target.region);
+	} else {
+		// ListWorkgroups and GetNamespace for a workgroup; ListNamespaces then ListWorkgroups for a namespace
+		resolved = RedshiftServerless::ResolveTarget(provider, target.account_id, target.type, target.resource_id,
+		                                             target.region);
+	}
+
+	// The redshift:// URI the redshift extension takes, pinned to the endpoint found, with the target's own port. It
+	// names no database: the database goes on as an option, below or as the user gave it
+	info.path = "redshift://" + resolved.endpoint_address + ":" + to_string(resolved.endpoint_port);
+	// Without DATABASE or DBNAME, add the target's default database as DATABASE: the redshift extension's driver would
+	// otherwise connect to `dev`, which need not be the target's default. A DATABASE or DBNAME the user gave is their
+	// choice and wins over the default, as it does for TYPE redshift_postgres (FillMissingConnectionOptions), so it is
+	// left as it is
+	const bool database_given = options.options.count("database") || options.options.count("dbname");
+	if (!database_given && !resolved.db_name.empty()) {
+		options.options["database"] = Value(resolved.db_name);
+	}
+	// Without SECRET, name the secret the lookup used (`__aws_default` included): the redshift extension cannot know
+	// which one FindAwsSecret picked, and this way the lookup and the connection use the same AWS identity
+	if (secret_name.empty()) {
+		options.options["secret"] = Value(secret.GetName().GetIdentifierName());
+	}
+}
 
 void Redshift::RegisterStorageExtension(ExtensionLoader &loader) {
 	auto &config = DBConfig::GetConfig(loader.GetDatabaseInstance());
