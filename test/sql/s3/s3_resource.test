@@ -51,3 +51,78 @@ REGISTER EXTERNAL RESOURCE 'aws:s3:bucket' AS bucket_y
 FROM MAP {'name': 'duckdb-no-such-bucket-0000', 'region': 'eu-central-1'};
 ----
 <REGEX>:.*__aws__s3__bucket__status.*
+
+# Persistent substitutes are visible to the adapters' internal connections. The delete errors on
+# cascade=true even for an empty bucket, so a teardown that cascades cannot pass by luck; the tags
+# substitute reports a matching tag, so a teardown that cascades on the tag errors the same way.
+statement ok
+CREATE TABLE bucket_contents (name VARCHAR);
+INSERT INTO bucket_contents VALUES ('owned'), ('adopted');
+
+statement ok
+CREATE MACRO s3_create_bucket(bucket_name, region := NULL, tags := NULL) AS TABLE
+SELECT MAP {'name': bucket_name, 'region': region} AS handle;
+
+statement ok
+CREATE MACRO s3_get_bucket(handle) AS TABLE
+SELECT handle['name'] AS name, 'arn:aws:s3:::' || handle['name'] AS arn, handle['region'] AS region;
+
+statement ok
+CREATE MACRO s3_bucket_tags(handle) AS TABLE
+SELECT 'duckdb-external-resource-type' AS key, 'aws:s3:bucket' AS value;
+
+statement ok
+CREATE MACRO s3_delete_bucket(handle, cascade := false) AS TABLE
+SELECT CASE
+    WHEN cascade THEN error('implicit cascade requested')
+    WHEN EXISTS (SELECT 1 FROM bucket_contents WHERE name = handle['name']) THEN error('BucketNotEmpty')
+    ELSE 'deleted'
+END AS status;
+
+statement ok
+CREATE EXTERNAL RESOURCE 'aws:s3:bucket' AS owned (NAME 'owned', REGION 'eu-central-1');
+
+statement ok
+REGISTER EXTERNAL RESOURCE 'aws:s3:bucket' AS adopted
+FROM MAP {'name': 'adopted', 'region': 'eu-central-1'};
+
+statement error
+DESTROY EXTERNAL RESOURCE owned;
+----
+BucketNotEmpty
+
+statement error
+DESTROY EXTERNAL RESOURCE adopted;
+----
+BucketNotEmpty
+
+query I
+SELECT count(*) FROM duckdb_external_resources() WHERE name IN ('owned', 'adopted');
+----
+2
+
+statement ok
+REGISTER EXTERNAL RESOURCE 'aws:s3:bucket' AS empty_adopted
+FROM MAP {'name': 'empty', 'region': 'eu-central-1'};
+
+statement ok
+DESTROY EXTERNAL RESOURCE empty_adopted;
+
+query I
+SELECT count(*) FROM duckdb_external_resources() WHERE name = 'empty_adopted';
+----
+0
+
+statement ok
+DELETE FROM bucket_contents;
+
+statement ok
+DESTROY EXTERNAL RESOURCE owned;
+
+statement ok
+DESTROY EXTERNAL RESOURCE adopted;
+
+query I
+SELECT count(*) FROM duckdb_external_resources() WHERE name IN ('owned', 'adopted');
+----
+0

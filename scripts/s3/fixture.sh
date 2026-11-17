@@ -90,7 +90,9 @@ assert_managed_bucket() {
 		echo "Bucket region does not match AWS_REGION" >&2
 		return 1
 	fi
+	# A never-versioned bucket yields an empty body, which the CLI prints as nothing rather than {}.
 	versioning=$(s3api get-bucket-versioning --bucket "$BUCKET" --expected-bucket-owner "$AWS_ACCOUNT_ID" --output json)
+	[[ -n "$versioning" ]] || versioning='{}'
 	if ! jq -e '.Status == null' >/dev/null <<<"$versioning"; then
 		echo "Versioned or suspended buckets require manual cleanup; refusing to modify one" >&2
 		return 1
