@@ -14,7 +14,6 @@
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/main/os_util.hpp"
-#include "duckdb/main/settings.hpp"
 
 #include <aws/core/Aws.h>
 #include <aws/core/auth/AWSCredentialsProviderChain.h>
@@ -391,11 +390,6 @@ CreateRDSSecretWithProvider(std::shared_ptr<DuckDBCustomAWSCredentialsProviderCh
 
 //! This is the actual callback function
 unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &context, CreateSecretInput &input) {
-	// the credential providers read files and make requests through the AWS SDK, outside of the file systems of DuckDB
-	if (!Settings::Get<EnableExternalAccessSetting>(context)) {
-		throw PermissionException(
-		    "The credential_chain provider cannot be used when external access is disabled (enable_external_access)");
-	}
 	AwsInstanceBinding aws_binding(DatabaseInstance::GetDatabase(context));
 	Aws::Auth::AWSCredentials credentials;
 
