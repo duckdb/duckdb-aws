@@ -35,6 +35,8 @@ region	VARCHAR	YES	NULL	NULL	NULL
 arn	VARCHAR	YES	NULL	NULL	NULL
 versioning	VARCHAR	YES	NULL	NULL	NULL
 block_public_access	BOOLEAN	YES	NULL	NULL	NULL
+public	BOOLEAN	YES	NULL	NULL	NULL
+cors_origins	VARCHAR[]	YES	NULL	NULL	NULL
 
 # Explicit NULL or empty options are refused by name, at bind time.
 statement error
@@ -89,6 +91,80 @@ statement error
 SELECT * FROM s3_update_bucket('x', tags := MAP {}::MAP(VARCHAR, VARCHAR));
 ----
 no change requested
+
+# Permission validation must fail at bind, before any AWS request.
+statement error
+SELECT * FROM s3_create_bucket('x', public_read := true, block_public_access := true);
+----
+contradict each other
+
+statement error
+SELECT * FROM s3_update_bucket('x', public_read := NULL);
+----
+public_read must not be NULL
+
+statement error
+SELECT * FROM s3_create_bucket('x', cors_origins := ['https://app.example/path']);
+----
+is not an origin
+
+statement error
+SELECT * FROM s3_create_bucket('x', cors_origins := ['ftp://app.example']);
+----
+is not an origin
+
+statement error
+SELECT * FROM s3_create_bucket('x', cors_origins := ['https://*.*.example']);
+----
+is not an origin
+
+foreach origin https://:443 https://user@host https://host:abc https://host:65536 https://host: https://[::gg] https://[::1 https://[::1]suffix https://::1 https://999.999.999.999 https://127.0.0.999
+
+statement error
+SELECT * FROM s3_create_bucket('x', cors_origins := ['{origin}'], dry_run := true);
+----
+is not an origin
+
+endloop
+
+foreach code 0 10 13 31 127
+
+statement error
+SELECT * FROM s3_create_bucket('x', cors_origins := ['https://app.example' || chr({code})], dry_run := true);
+----
+is not an origin
+
+endloop
+
+statement error
+SELECT * FROM s3_create_bucket('x', cors_origins := ['https://app.example', NULL]);
+----
+cors_origins must not contain NULL
+
+statement error
+SELECT * FROM s3_create_bucket('x', cors_origins := ['https://app.example'], cors_methods := ['PATCH']);
+----
+is not one of GET, HEAD, PUT, POST, DELETE
+
+statement error
+SELECT * FROM s3_create_bucket('x', cors_methods := ['GET']);
+----
+cors_methods needs a non-empty cors_origins
+
+statement error
+SELECT * FROM s3_update_bucket('x', cors_origins := [], cors_methods := ['GET']);
+----
+cors_methods needs a non-empty cors_origins
+
+query II
+SELECT handle, region
+FROM s3_create_bucket('duckdb-test-bucket', region := 'eu-central-1', public_read := true,
+                      cors_origins := ['*', 'https://*.example', 'http://localhost:8080', 'http://localhost:*',
+                                       'https://[::1]', 'http://[2001:db8::1]:65535', 'http://[::ffff:192.0.2.1]',
+                                       'http://127.0.0.1:*', 'http://127.0.0.*', 'https://999.999.999.999.example'],
+                      cors_methods := ['get', 'head'], dry_run := true);
+----
+NULL	eu-central-1
 
 # dry_run stops before the mutation: no bucket exists, so the handle and ARN stay NULL while the
 # name and the resolved region are echoed back.

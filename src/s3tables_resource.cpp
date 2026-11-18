@@ -12,6 +12,8 @@
 #include "duckdb/main/external_resource_type_registry.hpp"
 #include "duckdb/main/query_result.hpp"
 
+#include <algorithm>
+
 namespace duckdb {
 
 //! The external-resource type name, also stamped as a tag on every bucket this recipe creates, so
@@ -90,7 +92,25 @@ string ShortRandHex() {
 //
 // CreateTableBucket is synchronous, so this returns the handle of a bucket that already exists.
 // Params: `name` (defaults to duckdb-<rand>), `region` (defaults to the usual resolution order).
+// Any other key is refused: table buckets cannot be made public (S3 Tables rejects public
+// policies), so the aws.s3.bucket permission options in particular must not pass silently.
 //===--------------------------------------------------------------------===//
+
+const vector<string> CREATE_PARAMS = {"name", "region"};
+
+void CheckKnownParams(const Value &params, const char *callback) {
+	if (params.IsNull()) {
+		return;
+	}
+	for (auto &entry : MapValue::GetChildren(params)) {
+		auto &kv = StructValue::GetChildren(entry);
+		auto key = kv[0].IsNull() ? string() : StringValue::Get(kv[0]);
+		if (std::find(CREATE_PARAMS.begin(), CREATE_PARAMS.end(), key) == CREATE_PARAMS.end()) {
+			throw InvalidInputException("%s: unknown option '%s'; the options are %s", callback, key,
+			                            StringUtil::Join(CREATE_PARAMS, ", "));
+		}
+	}
+}
 
 unique_ptr<FunctionData> CreateBind(ClientContext &, TableFunctionBindInput &input, vector<LogicalType> &return_types,
                                     vector<Identifier> &names) {
@@ -107,6 +127,7 @@ void CreateFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &ou
 		return;
 	}
 	auto &bind = data_p.bind_data->Cast<AdapterBindData>();
+	CheckKnownParams(bind.input, "s3tables create");
 
 	auto name = MapLookup(bind.input, "name");
 	if (name.empty()) {

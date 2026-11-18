@@ -3,9 +3,10 @@
 # group: [s3]
 
 # Needs the fixture environment: `source test/sql/s3/s3.env`. The test creates
-# `{AWS_S3_BUCKET}-res`, `{AWS_S3_BUCKET}-adopt` and `{AWS_S3_BUCKET}-empty` and deletes them.
+# `{AWS_S3_BUCKET}-res`, `{AWS_S3_BUCKET}-pub`, `{AWS_S3_BUCKET}-adopt` and `{AWS_S3_BUCKET}-empty`.
 # If a run stops early, inspect these exact buckets and explicitly clean up the leftovers:
 #   FROM s3_delete_bucket('<AWS_S3_BUCKET>-res', cascade := true);
+#   FROM s3_delete_bucket('<AWS_S3_BUCKET>-pub', cascade := true);
 #   FROM s3_delete_bucket('<AWS_S3_BUCKET>-adopt', cascade := true);
 #   FROM s3_delete_bucket('<AWS_S3_BUCKET>-empty', cascade := true);
 
@@ -99,6 +100,43 @@ SELECT * FROM deregister_external_resource('scratch');
 
 query I
 SELECT count(*) FROM duckdb_external_resources() WHERE name = 'scratch';
+----
+0
+
+# Account/organization restrictions can reject the policy write or block the anonymous read.
+# Failed CREATE attempts bucket cleanup; use the manual cleanup above if deletion also fails.
+statement ok
+CREATE EXTERNAL RESOURCE 'aws.s3.bucket' AS pub
+    (REGION '{AWS_REGION}', NAME '{AWS_S3_BUCKET}-pub', PUBLIC_READ, CORS_ORIGINS ['https://app.example']);
+
+query III
+SELECT block_public_access, public, cors_origins FROM s3_get_bucket('{AWS_S3_BUCKET}-pub');
+----
+false	true	[https://app.example]
+
+statement ok
+COPY (SELECT 1 AS i) TO 's3://{AWS_S3_BUCKET}-pub/one.parquet';
+
+query I
+SELECT i FROM read_parquet('https://{AWS_S3_BUCKET}-pub.s3.{AWS_REGION}.amazonaws.com/one.parquet');
+----
+1
+
+statement error
+DESTROY EXTERNAL RESOURCE pub;
+----
+BucketNotEmpty
+
+query I
+SELECT status FROM s3_delete_bucket('{AWS_S3_BUCKET}-pub', cascade := true);
+----
+deleted
+
+statement ok
+SELECT * FROM deregister_external_resource('pub');
+
+query I
+SELECT count(*) FROM duckdb_external_resources() WHERE name = 'pub';
 ----
 0
 

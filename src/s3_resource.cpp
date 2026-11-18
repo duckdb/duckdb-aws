@@ -1,6 +1,8 @@
 #include "s3_resource.hpp"
 
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/optional.hpp"
+#include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/uuid.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/main/connection.hpp"
@@ -8,6 +10,8 @@
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/main/external_resource_type_registry.hpp"
 #include "duckdb/main/query_result.hpp"
+
+#include <algorithm>
 
 namespace duckdb {
 
@@ -86,8 +90,79 @@ string ShortRandHex() {
 // create(params MAP) -> TABLE(handle MAP)
 //
 // CreateBucket is synchronous, so this returns the handle of a bucket that already exists.
-// Params: `name` (defaults to duckdb-<rand>), `region` (defaults to the usual resolution order).
+// Params: `name` (defaults to duckdb-<rand>), `region` (defaults to the usual resolution order),
+// `versioning`, `public_read`, `cors_origins`, `cors_methods`, forwarded to s3_create_bucket.
+// The framework stringifies values and omits NULL-valued expressions before this callback.
+// Reject unknown keys that reach it so misspelt permissions cannot silently create a private bucket.
 //===--------------------------------------------------------------------===//
+
+const vector<string> CREATE_PARAMS = {"name", "region", "versioning", "public_read", "cors_origins", "cors_methods"};
+
+void CheckKnownParams(const Value &params, const vector<string> &known, const char *callback) {
+	if (params.IsNull()) {
+		return;
+	}
+	for (auto &entry : MapValue::GetChildren(params)) {
+		auto &kv = StructValue::GetChildren(entry);
+		auto key = kv[0].IsNull() ? string() : StringValue::Get(kv[0]);
+		if (std::find(known.begin(), known.end(), key) == known.end()) {
+			throw InvalidInputException("%s: unknown option '%s'; the options are %s", callback, key,
+			                            StringUtil::Join(known, ", "));
+		}
+	}
+}
+
+optional<string> StringParam(const Value &params, const char *key, const char *callback) {
+	if (params.IsNull()) {
+		return {};
+	}
+	for (auto &entry : MapValue::GetChildren(params)) {
+		auto &kv = StructValue::GetChildren(entry);
+		if (kv[0].IsNull() || StringValue::Get(kv[0]) != key) {
+			continue;
+		}
+		if (kv[1].IsNull()) {
+			throw InvalidInputException("%s: %s must not be NULL", callback, key);
+		}
+		auto text = StringValue::Get(kv[1]);
+		if (text.empty()) {
+			throw InvalidInputException("%s: %s must not be empty", callback, key);
+		}
+		return text;
+	}
+	return {};
+}
+
+//! A BOOLEAN that went through the framework's stringification; absent is nullopt.
+optional<bool> BoolParam(const Value &params, const char *key, const char *callback) {
+	auto text = StringParam(params, key, callback);
+	if (!text) {
+		return {};
+	}
+	auto lower = StringUtil::Lower(*text);
+	if (lower == "true") {
+		return true;
+	}
+	if (lower == "false") {
+		return false;
+	}
+	throw InvalidInputException("%s: %s must be true or false, got '%s'", callback, key, *text);
+}
+
+//! A VARCHAR[] that went through the framework's stringification: `['a', 'b']` casts back to a
+//! list, while a bare `'a'` does not and is taken as a list of one. Absent is nullopt.
+optional<Value> ListParam(const Value &params, const char *key, const char *callback) {
+	auto text = StringParam(params, key, callback);
+	if (!text) {
+		return {};
+	}
+	auto list_type = LogicalType::LIST(LogicalType::VARCHAR);
+	auto parsed = Value(*text).DefaultTryCastAs(list_type);
+	if (parsed && !parsed->IsNull()) {
+		return *parsed;
+	}
+	return Value::LIST(LogicalType::VARCHAR, {Value(*text)});
+}
 
 unique_ptr<FunctionData> CreateBind(ClientContext &, TableFunctionBindInput &input, vector<LogicalType> &return_types,
                                     vector<Identifier> &names) {
@@ -104,12 +179,17 @@ void CreateFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &ou
 		return;
 	}
 	auto &bind = data_p.bind_data->Cast<AdapterBindData>();
+	CheckKnownParams(bind.input, CREATE_PARAMS, "s3 create");
 
 	auto name = MapLookup(bind.input, "name");
 	if (name.empty()) {
 		name = "duckdb-" + ShortRandHex();
 	}
 	auto region = MapLookup(bind.input, "region");
+	auto versioning = BoolParam(bind.input, "versioning", "s3 create");
+	auto public_read = BoolParam(bind.input, "public_read", "s3 create");
+	auto cors_origins = ListParam(bind.input, "cors_origins", "s3 create");
+	auto cors_methods = ListParam(bind.input, "cors_methods", "s3 create");
 
 	vector<Value> tag_keys {Value(string(RESOURCE_TYPE_TAG))};
 	vector<Value> tag_values {Value(string(S3_BUCKET_TYPE))};
@@ -119,7 +199,20 @@ void CreateFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &ou
 	if (!region.empty()) {
 		sql += ", region := " + Value(region).ToSQLString();
 	}
-	sql += ", tags := " + tags.ToSQLString() + ")";
+	sql += ", tags := " + tags.ToSQLString();
+	if (versioning) {
+		sql += ", versioning := " + Value::BOOLEAN(*versioning).ToSQLString();
+	}
+	if (public_read) {
+		sql += ", public_read := " + Value::BOOLEAN(*public_read).ToSQLString();
+	}
+	if (cors_origins) {
+		sql += ", cors_origins := " + cors_origins->ToSQLString();
+	}
+	if (cors_methods) {
+		sql += ", cors_methods := " + cors_methods->ToSQLString();
+	}
+	sql += ")";
 
 	auto res = RunSQL(context, sql, "s3 create");
 	output.data[0].Append(res->Collection().GetRows().GetValue(0, 0));
