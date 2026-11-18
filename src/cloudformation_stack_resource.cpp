@@ -1,4 +1,4 @@
-#include "quack_on_ec2_resource.hpp"
+#include "cloudformation_stack_resource.hpp"
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/operator/cast_operators.hpp"
@@ -16,24 +16,33 @@
 
 namespace duckdb {
 
-// There is no built-in CloudFormation template: the 'template' create param is required, and is passed
-// through to cloudformation_create_stack (a URL or an inline template body). Its Outputs must expose the
-// keys read by the status callback below (Endpoint, Token).
+// aws.cloudformation.stack: any CloudFormation stack as an external resource. There is no built-in template: the
+// 'template' create param is required and is passed through to cloudformation_create_stack (a URL or an inline
+// template body), 'region' names the region, and every other create param is a parameter of the template.
+//
+// A stack is attachable when its template exposes the connection in Outputs named with a DuckDB prefix: DuckDBUri
+// (the ATTACH path), DuckDBAttachedDbType (the TYPE) and any further DuckDB<Option> (an ATTACH option, snake-cased:
+// DuckDBToken is 'token'). The status callback reports those and nothing else, since DuckDB hands every key of
+// the status result but uri and attached_db_type to ATTACH as an option. A stack whose template exposes no such
+// output is created, listed, resolved and destroyed like any other, but cannot be attached.
 
 // The external-resource type name, also stamped as a stack tag at create time so the list callback can
-// discover quack-on-ec2 stacks by filtering DescribeStacks output on it.
-static constexpr const char *QUACK_ON_EC2_TYPE = "aws.cloudformation.quack-on-ec2";
+// discover this type's stacks by filtering DescribeStacks output on it.
+static constexpr const char *STACK_TYPE = "aws.cloudformation.stack";
 static constexpr const char *RESOURCE_TYPE_TAG = "duckdb-external-resource-type";
+//! Outputs with this prefix are the connection: see above
+static constexpr const char *CONNECTION_OUTPUT_PREFIX = "DuckDB";
 
-// Lifetime. The template's MaxDurationHours parameter (whole hours, 0 = unbounded) arms the box's self-shutdown;
-// the optional 'max_duration' create param sets it. Its effective value is stamped on the stack as an absolute
-// UTC deadline; when left to the template, the default is read through a dry run of cloudformation_create_stack.
-// The box terminates itself at that point but its stack lingers, so listing reaps stacks past the deadline (see
-// QuackListFun). Start is not tagged: CloudFormation records it as the stack's CreationTime.
+// Lifetime, for a template that declares a MaxDurationHours parameter (whole hours, 0 = unbounded) and arms a
+// self-shutdown with it, as the quack template does. The optional 'max_duration' create param sets it. Its effective
+// value is stamped on the stack as an absolute UTC deadline; when left to the template, the default is read through a
+// dry run of cloudformation_create_stack. The resource terminates itself at that point but its stack lingers, so
+// listing reaps stacks past the deadline (see StackListFun). Start is not tagged: CloudFormation records it as the
+// stack's CreationTime. A template without the parameter is unbounded.
 static constexpr const char *EXPIRES_AT_TAG = "duckdb-expires-at";
 static constexpr const char *MAX_DURATION_TEMPLATE_PARAM = "MaxDurationHours";
 // Covers the gap between stack creation and the boot that arms the shutdown timer, so a stack is only reaped
-// once its box has certainly gone.
+// once its resource has certainly gone.
 static constexpr int64_t EXPIRY_MARGIN_SECONDS = 600;
 
 namespace {
@@ -43,16 +52,16 @@ namespace {
 // The adaptation itself lives in the SQL each callback runs against the cloudformation_* functions on an
 // internal connection (same pattern as create_external_resource) — so no user-authored SQL macros.
 
-struct QuackAdapterBindData : public TableFunctionData {
+struct StackAdapterBindData : public TableFunctionData {
 	Value input; // params (create) or handle (status/destroy)
 };
 
-struct QuackAdapterState : public GlobalTableFunctionState {
+struct StackAdapterState : public GlobalTableFunctionState {
 	bool done = false;
 };
 
-static unique_ptr<GlobalTableFunctionState> QuackAdapterInit(ClientContext &, TableFunctionInitInput &) {
-	return make_uniq<QuackAdapterState>();
+static unique_ptr<GlobalTableFunctionState> StackAdapterInit(ClientContext &, TableFunctionInitInput &) {
+	return make_uniq<StackAdapterState>();
 }
 
 // create(params MAP) -> TABLE(handle MAP). cloudformation_create_stack takes only the template positionally;
@@ -60,21 +69,21 @@ static unique_ptr<GlobalTableFunctionState> QuackAdapterInit(ClientContext &, Ta
 // and `max_duration` are pulled out here in C++ and everything else becomes template_parameters — built as a literal
 // MAP so it is NOT assembled inline in the table-function argument (where `e.key`-style identifiers get silently
 // coerced to strings by the identifier-conversion rule, which would defeat the filter and leak `region`).
-static unique_ptr<FunctionData> QuackCreateBind(ClientContext &, TableFunctionBindInput &input,
+static unique_ptr<FunctionData> StackCreateBind(ClientContext &, TableFunctionBindInput &input,
                                                 vector<LogicalType> &return_types, vector<Identifier> &names) {
-	auto result = make_uniq<QuackAdapterBindData>();
+	auto result = make_uniq<StackAdapterBindData>();
 	result->input = input.inputs[0];
 	names.emplace_back("handle");
 	return_types.emplace_back(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
 	return std::move(result);
 }
 
-static void QuackCreateFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
-	auto &state = data_p.global_state->Cast<QuackAdapterState>();
+static void StackCreateFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	auto &state = data_p.global_state->Cast<StackAdapterState>();
 	if (state.done) {
 		return;
 	}
-	auto &bind = data_p.bind_data->Cast<QuackAdapterBindData>();
+	auto &bind = data_p.bind_data->Cast<StackAdapterBindData>();
 
 	// Split the params MAP in C++: required `template` and `region`, optional `max_duration`, rest ->
 	// template_parameters.
@@ -105,19 +114,21 @@ static void QuackCreateFun(ClientContext &context, TableFunctionInput &data_p, D
 		}
 	}
 	if (template_url.empty()) {
-		throw InvalidInputException("quack-on-ec2 create: the 'template' param is required (URL or body of a "
-		                            "CloudFormation template whose Outputs expose Endpoint and Token)");
+		throw InvalidInputException(
+		    "aws.cloudformation.stack create: the 'template' param is required (URL or body of a "
+		    "CloudFormation template)");
 	}
 	if (region.empty()) {
-		throw InvalidInputException("quack-on-ec2 create: the 'region' param is required");
+		throw InvalidInputException("aws.cloudformation.stack create: the 'region' param is required");
 	}
 	// Whole hours, as the template parameter takes them. -1 = not given, left to the template's default.
 	int64_t hours = -1;
 	if (!max_duration.empty()) {
 		if (!TryCast::Operation<string_t, int64_t>(string_t(max_duration), hours, false) || hours < 0) {
-			throw InvalidInputException("quack-on-ec2 create: 'max_duration' must be a whole, non-negative number of "
-			                            "hours (0 = unbounded), got '%s'",
-			                            max_duration);
+			throw InvalidInputException(
+			    "aws.cloudformation.stack create: 'max_duration' must be a whole, non-negative number of "
+			    "hours (0 = unbounded), got '%s'",
+			    max_duration);
 		}
 		tp_keys.emplace_back(string(MAX_DURATION_TEMPLATE_PARAM));
 		tp_values.emplace_back(max_duration);
@@ -139,7 +150,7 @@ static void QuackCreateFun(ClientContext &context, TableFunctionInput &data_p, D
 		auto dry = con.Query("SELECT parameters[" + Value(string(MAX_DURATION_TEMPLATE_PARAM)).ToSQLString() +
 		                     "] FROM cloudformation_create_stack(" + args + ", dry_run := true)");
 		if (dry->HasError()) {
-			throw IOException("quack-on-ec2 create failed: %s", dry->GetError());
+			throw IOException("aws.cloudformation.stack create failed: %s", dry->GetError());
 		}
 		auto effective = dry->Collection().GetValue(0, 0);
 		if (effective.IsNull() ||
@@ -156,7 +167,7 @@ static void QuackCreateFun(ClientContext &context, TableFunctionInput &data_p, D
 	// Provenance tag so the list callback can discover these stacks by filtering on it (added to, not
 	// replacing, cloudformation_create_stack's own auto-tags like created-by), plus the deadline when bounded.
 	vector<Value> tag_keys {Value(string(RESOURCE_TYPE_TAG))};
-	vector<Value> tag_values {Value(string(QUACK_ON_EC2_TYPE))};
+	vector<Value> tag_values {Value(string(STACK_TYPE))};
 	if (!expires_at.empty()) {
 		tag_keys.emplace_back(string(EXPIRES_AT_TAG));
 		tag_values.emplace_back(expires_at);
@@ -167,18 +178,38 @@ static void QuackCreateFun(ClientContext &context, TableFunctionInput &data_p, D
 
 	auto res = con.Query(sql);
 	if (res->HasError()) {
-		throw IOException("quack-on-ec2 create failed: %s", res->GetError());
+		throw IOException("aws.cloudformation.stack create failed: %s", res->GetError());
 	}
 	output.data[0].Append(res->Collection().GetValue(0, 0));
 	state.done = true;
 }
 
-// status(handle MAP) -> TABLE(state VARCHAR, result MAP). Maps the CloudFormation stack status onto the
-// terminal 'ready'/'failed' states the poll loop expects, and projects the stack Outputs into the connect
-// endpoint (uri + attached_db_type + token). cloudformation_describe_stack is unchanged by 0002.
-static unique_ptr<FunctionData> QuackStatusBind(ClientContext &, TableFunctionBindInput &input,
+// DuckDBAttachedDbType -> attached_db_type, DuckDBToken -> token, DuckDBURI -> uri: the key after the prefix, with an
+// underscore before each upper-case letter that follows a lower-case letter or a digit, lower-cased.
+static string ConnectionKey(const string &output_key) {
+	string key;
+	auto rest = output_key.substr(strlen(CONNECTION_OUTPUT_PREFIX));
+	for (idx_t i = 0; i < rest.size(); i++) {
+		auto c = rest[i];
+		auto is_upper = c >= 'A' && c <= 'Z';
+		if (i > 0 && is_upper) {
+			auto previous = rest[i - 1];
+			if ((previous >= 'a' && previous <= 'z') || StringUtil::CharacterIsDigit(previous)) {
+				key += '_';
+			}
+		}
+		key += StringUtil::CharacterToLower(c);
+	}
+	return key;
+}
+
+// status(handle MAP) -> TABLE(state VARCHAR, result MAP). Maps the CloudFormation stack status onto the terminal
+// 'ready'/'failed' states the poll loop expects, and projects the DuckDB-prefixed stack Outputs into the connection
+// (uri, attached_db_type and the ATTACH options; see the top of this file). Other outputs are not reported: DuckDB
+// would hand them to ATTACH as options.
+static unique_ptr<FunctionData> StackStatusBind(ClientContext &, TableFunctionBindInput &input,
                                                 vector<LogicalType> &return_types, vector<Identifier> &names) {
-	auto result = make_uniq<QuackAdapterBindData>();
+	auto result = make_uniq<StackAdapterBindData>();
 	result->input = input.inputs[0];
 	names.emplace_back("state");
 	return_types.emplace_back(LogicalType::VARCHAR);
@@ -187,52 +218,68 @@ static unique_ptr<FunctionData> QuackStatusBind(ClientContext &, TableFunctionBi
 	return std::move(result);
 }
 
-static void QuackStatusFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
-	auto &state = data_p.global_state->Cast<QuackAdapterState>();
+static void StackStatusFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	auto &state = data_p.global_state->Cast<StackAdapterState>();
 	if (state.done) {
 		return;
 	}
-	auto &bind = data_p.bind_data->Cast<QuackAdapterBindData>();
+	auto &bind = data_p.bind_data->Cast<StackAdapterBindData>();
 	Connection con(DatabaseInstance::GetDatabase(context));
 	auto sql = "SELECT CASE WHEN status IN ('CREATE_COMPLETE', 'UPDATE_COMPLETE') THEN 'ready' "
 	           "            WHEN status LIKE '%ROLLBACK%' OR status LIKE '%FAILED%' OR status LIKE 'DELETE_%' "
 	           "                 THEN 'failed' "
 	           "            ELSE 'pending' END AS state, "
-	           "       MAP {'uri': outputs['QuackURI'], 'attached_db_type': 'quack', "
-	           "            'token': split_part(split_part(outputs['Token'], '{\"1\":\"', 2), '\"}', 1)} AS result "
+	           "       outputs "
 	           "FROM cloudformation_describe_stack(" +
 	           bind.input.ToSQLString() + ")";
 	auto res = con.Query(sql);
 	if (res->HasError()) {
-		throw IOException("quack-on-ec2 status failed: %s", res->GetError());
+		throw IOException("aws.cloudformation.stack status failed: %s", res->GetError());
 	}
 	auto rows = res->Collection().GetRows();
+	auto outputs = rows.GetValue(1, 0);
+	vector<Value> keys, values;
+	if (!outputs.IsNull()) {
+		for (auto &entry : MapValue::GetChildren(outputs)) {
+			auto &kv = StructValue::GetChildren(entry);
+			if (kv[0].IsNull() || kv[1].IsNull()) {
+				continue;
+			}
+			auto output_key = StringValue::Get(kv[0]);
+			if (!StringUtil::StartsWith(output_key, CONNECTION_OUTPUT_PREFIX) ||
+			    output_key.size() == strlen(CONNECTION_OUTPUT_PREFIX)) {
+				continue;
+			}
+			keys.emplace_back(ConnectionKey(output_key));
+			values.push_back(kv[1]);
+		}
+	}
 	output.data[0].Append(rows.GetValue(0, 0));
-	output.data[1].Append(rows.GetValue(1, 0));
+	output.data[1].Append(Value::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR, keys, values));
 	state.done = true;
 }
 
 // destroy(handle MAP) -> TABLE(status VARCHAR)
-static unique_ptr<FunctionData> QuackDestroyBind(ClientContext &, TableFunctionBindInput &input,
+static unique_ptr<FunctionData> StackDestroyBind(ClientContext &, TableFunctionBindInput &input,
                                                  vector<LogicalType> &return_types, vector<Identifier> &names) {
-	auto result = make_uniq<QuackAdapterBindData>();
+	auto result = make_uniq<StackAdapterBindData>();
 	result->input = input.inputs[0];
 	names.emplace_back("status");
 	return_types.emplace_back(LogicalType::VARCHAR);
 	return std::move(result);
 }
 
-static void QuackDestroyFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
-	auto &state = data_p.global_state->Cast<QuackAdapterState>();
+static void StackDestroyFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	auto &state = data_p.global_state->Cast<StackAdapterState>();
 	if (state.done) {
 		return;
 	}
-	auto &bind = data_p.bind_data->Cast<QuackAdapterBindData>();
+	auto &bind = data_p.bind_data->Cast<StackAdapterBindData>();
 	Connection con(DatabaseInstance::GetDatabase(context));
 	auto sql = "SELECT 'deleting' AS status FROM cloudformation_delete_stack(" + bind.input.ToSQLString() + ")";
 	auto res = con.Query(sql);
 	if (res->HasError()) {
-		throw IOException("quack-on-ec2 destroy failed: %s", res->GetError());
+		throw IOException("aws.cloudformation.stack destroy failed: %s", res->GetError());
 	}
 	output.data[0].Append(Value("deleting"));
 	state.done = true;
@@ -252,9 +299,8 @@ static string StackRowSQL() {
 }
 
 // Only stacks carrying the provenance tag stamped at create are this type's.
-static string IsQuackOnEc2SQL() {
-	return "tags[" + Value(string(RESOURCE_TYPE_TAG)).ToSQLString() +
-	       "] = " + Value(string(QUACK_ON_EC2_TYPE)).ToSQLString();
+static string IsStackTypeSQL() {
+	return "tags[" + Value(string(RESOURCE_TYPE_TAG)).ToSQLString() + "] = " + Value(string(STACK_TYPE)).ToSQLString();
 }
 
 // __aws__expired(deadline VARCHAR) -> BOOLEAN: whether the duckdb-expires-at deadline create wrote (UTC, with its
@@ -275,24 +321,24 @@ static void ExpiredFun(DataChunk &args, ExpressionState &, Vector &result) {
 }
 
 // list(params MAP) -> TABLE(handle MAP, name VARCHAR, reference VARCHAR, state VARCHAR, metadata MAP). Discovers
-// existing quack-on-ec2 stacks (identified by the provenance tag stamped at create). The connect blob (uri/token)
-// is deliberately NOT surfaced here — list is discovery; status produces that.
+// existing stacks of this type (identified by the provenance tag stamped at create). The connection (uri/token) is
+// deliberately NOT surfaced here — list is discovery; status produces that.
 // Listing also reaps stacks past their duckdb-expires-at tag (plus EXPIRY_MARGIN_SECONDS) and reports them as
 // 'deleting'.
-struct QuackListState : public GlobalTableFunctionState {
+struct StackListState : public GlobalTableFunctionState {
 	unique_ptr<QueryResult> result;
 	vector<Value> states; // per-row state, overriding the query's for stacks reaped during this listing
 	idx_t cursor = 0;
 	bool ran = false;
 };
 
-static unique_ptr<GlobalTableFunctionState> QuackListInit(ClientContext &, TableFunctionInitInput &) {
-	return make_uniq<QuackListState>();
+static unique_ptr<GlobalTableFunctionState> StackListInit(ClientContext &, TableFunctionInitInput &) {
+	return make_uniq<StackListState>();
 }
 
-static unique_ptr<FunctionData> QuackListBind(ClientContext &, TableFunctionBindInput &input,
+static unique_ptr<FunctionData> StackListBind(ClientContext &, TableFunctionBindInput &input,
                                               vector<LogicalType> &return_types, vector<Identifier> &names) {
-	auto result = make_uniq<QuackAdapterBindData>();
+	auto result = make_uniq<StackAdapterBindData>();
 	result->input = input.inputs[0];
 	names.emplace_back("handle");
 	return_types.emplace_back(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
@@ -307,9 +353,9 @@ static unique_ptr<FunctionData> QuackListBind(ClientContext &, TableFunctionBind
 	return std::move(result);
 }
 
-static void QuackListFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
-	auto &state = data_p.global_state->Cast<QuackListState>();
-	auto &bind = data_p.bind_data->Cast<QuackAdapterBindData>();
+static void StackListFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	auto &state = data_p.global_state->Cast<StackListState>();
+	auto &bind = data_p.bind_data->Cast<StackAdapterBindData>();
 
 	if (!state.ran) {
 		// Optional 'region' param: if given, list just that region; otherwise sweep all regions — the parallel
@@ -339,12 +385,12 @@ static void QuackListFun(ClientContext &context, TableFunctionInput &data_p, Dat
 		           Value(string(EXPIRES_AT_TAG)).ToSQLString() +
 		           "]) AS expired "
 		           "FROM " +
-		           source + " WHERE error IS NULL AND " + IsQuackOnEc2SQL();
+		           source + " WHERE error IS NULL AND " + IsStackTypeSQL();
 
 		Connection con(DatabaseInstance::GetDatabase(context));
 		state.result = con.Query(sql);
 		if (state.result->HasError()) {
-			throw IOException("quack-on-ec2 list failed: %s", state.result->GetError());
+			throw IOException("aws.cloudformation.stack list failed: %s", state.result->GetError());
 		}
 		auto rows = state.result->Collection().GetRows();
 		for (idx_t row = 0; row < state.result->RowCount(); row++) {
@@ -379,23 +425,23 @@ static void QuackListFun(ClientContext &context, TableFunctionInput &data_p, Dat
 	state.cursor += to_emit;
 }
 
-// resolve(name VARCHAR) -> TABLE(handle MAP, name VARCHAR, reference VARCHAR, state VARCHAR). The quack-on-ec2
+// resolve(name VARCHAR) -> TABLE(handle MAP, name VARCHAR, reference VARCHAR, state VARCHAR). This type's
 // stacks called `name`, so a resource seen in SHOW ALL EXTERNAL RESOURCES can be registered by name. A stack
 // name is only unique within a region, so a bare name sweeps the regions and can match several; a stack id (ARN)
 // names its region and is described directly. Stacks without the provenance tag are not this type's.
-struct QuackResolveState : public GlobalTableFunctionState {
+struct StackResolveState : public GlobalTableFunctionState {
 	unique_ptr<QueryResult> result;
 	idx_t cursor = 0;
 	bool ran = false;
 };
 
-static unique_ptr<GlobalTableFunctionState> QuackResolveInit(ClientContext &, TableFunctionInitInput &) {
-	return make_uniq<QuackResolveState>();
+static unique_ptr<GlobalTableFunctionState> StackResolveInit(ClientContext &, TableFunctionInitInput &) {
+	return make_uniq<StackResolveState>();
 }
 
-static unique_ptr<FunctionData> QuackResolveBind(ClientContext &, TableFunctionBindInput &input,
+static unique_ptr<FunctionData> StackResolveBind(ClientContext &, TableFunctionBindInput &input,
                                                  vector<LogicalType> &return_types, vector<Identifier> &names) {
-	auto result = make_uniq<QuackAdapterBindData>();
+	auto result = make_uniq<StackAdapterBindData>();
 	result->input = input.inputs[0];
 	names.emplace_back("handle");
 	return_types.emplace_back(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
@@ -408,13 +454,13 @@ static unique_ptr<FunctionData> QuackResolveBind(ClientContext &, TableFunctionB
 	return std::move(result);
 }
 
-static void QuackResolveFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
-	auto &state = data_p.global_state->Cast<QuackResolveState>();
-	auto &bind = data_p.bind_data->Cast<QuackAdapterBindData>();
+static void StackResolveFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	auto &state = data_p.global_state->Cast<StackResolveState>();
+	auto &bind = data_p.bind_data->Cast<StackAdapterBindData>();
 
 	if (!state.ran) {
 		if (bind.input.IsNull()) {
-			throw InvalidInputException("quack-on-ec2 resolve: the name must not be NULL");
+			throw InvalidInputException("aws.cloudformation.stack resolve: the name must not be NULL");
 		}
 		auto name = StringValue::Get(bind.input);
 		auto name_sql = Value(name).ToSQLString();
@@ -423,15 +469,15 @@ static void QuackResolveFun(ClientContext &context, TableFunctionInput &data_p, 
 		string source;
 		if (arn_parts.size() > 5 && arn_parts[0] == "arn" && arn_parts[2] == "cloudformation") {
 			source = "cloudformation_describe_stack(MAP {'stack_id': " + name_sql +
-			         ", 'region': " + Value(arn_parts[3]).ToSQLString() + "}) WHERE " + IsQuackOnEc2SQL();
+			         ", 'region': " + Value(arn_parts[3]).ToSQLString() + "}) WHERE " + IsStackTypeSQL();
 		} else {
 			source = "cloudformation_describe_stacks() WHERE error IS NULL AND stack_name = " + name_sql + " AND " +
-			         IsQuackOnEc2SQL();
+			         IsStackTypeSQL();
 		}
 		Connection con(DatabaseInstance::GetDatabase(context));
 		state.result = con.Query("SELECT " + StackRowSQL() + " FROM " + source);
 		if (state.result->HasError()) {
-			throw IOException("quack-on-ec2 resolve failed: %s", state.result->GetError());
+			throw IOException("aws.cloudformation.stack resolve failed: %s", state.result->GetError());
 		}
 		state.ran = true;
 	}
@@ -452,46 +498,46 @@ static void QuackResolveFun(ClientContext &context, TableFunctionInput &data_p, 
 
 } // namespace
 
-void QuackOnEc2Resource::Register(ExtensionLoader &loader) {
+void CloudFormationStackResource::Register(ExtensionLoader &loader) {
 	auto map_vv = LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR);
 
 	ScalarFunction expired_fn("__aws__expired", {LogicalType::VARCHAR}, LogicalType::BOOLEAN, ExpiredFun);
 	loader.RegisterFunction(expired_fn);
 
 	// Native callbacks (no SQL macros): thin adapters over cloudformation_*.
-	TableFunction create_fn("__aws__cloudformation__quack_on_ec2__create",
-	                        FunctionSignature().AddPositionalOnly("input", map_vv), QuackCreateFun, QuackCreateBind,
-	                        QuackAdapterInit);
+	TableFunction create_fn("__aws__cloudformation__stack__create",
+	                        FunctionSignature().AddPositionalOnly("input", map_vv), StackCreateFun, StackCreateBind,
+	                        StackAdapterInit);
 	loader.RegisterFunction(create_fn);
-	TableFunction status_fn("__aws__cloudformation__quack_on_ec2__status",
-	                        FunctionSignature().AddPositionalOnly("input", map_vv), QuackStatusFun, QuackStatusBind,
-	                        QuackAdapterInit);
+	TableFunction status_fn("__aws__cloudformation__stack__status",
+	                        FunctionSignature().AddPositionalOnly("input", map_vv), StackStatusFun, StackStatusBind,
+	                        StackAdapterInit);
 	loader.RegisterFunction(status_fn);
-	TableFunction destroy_fn("__aws__cloudformation__quack_on_ec2__destroy",
-	                         FunctionSignature().AddPositionalOnly("input", map_vv), QuackDestroyFun, QuackDestroyBind,
-	                         QuackAdapterInit);
+	TableFunction destroy_fn("__aws__cloudformation__stack__destroy",
+	                         FunctionSignature().AddPositionalOnly("input", map_vv), StackDestroyFun, StackDestroyBind,
+	                         StackAdapterInit);
 	loader.RegisterFunction(destroy_fn);
 	// Also wired into the resource-type registry below (as this type's `list_function`), so
 	// `SHOW ALL EXTERNAL RESOURCES` can discover existing stacks that are not locally managed.
-	TableFunction list_fn("__aws__cloudformation__quack_on_ec2__list",
-	                      FunctionSignature().AddPositionalOnly("input", map_vv), QuackListFun, QuackListBind,
-	                      QuackListInit);
+	TableFunction list_fn("__aws__cloudformation__stack__list", FunctionSignature().AddPositionalOnly("input", map_vv),
+	                      StackListFun, StackListBind, StackListInit);
 	loader.RegisterFunction(list_fn);
 	// The type's `resolve_function`: a discovered stack's name (or stack id) back to its handle.
-	TableFunction resolve_fn("__aws__cloudformation__quack_on_ec2__resolve",
-	                         FunctionSignature().AddPositionalOnly("name", LogicalType::VARCHAR), QuackResolveFun,
-	                         QuackResolveBind, QuackResolveInit);
+	TableFunction resolve_fn("__aws__cloudformation__stack__resolve",
+	                         FunctionSignature().AddPositionalOnly("name", LogicalType::VARCHAR), StackResolveFun,
+	                         StackResolveBind, StackResolveInit);
 	loader.RegisterFunction(resolve_fn);
 
-	// Register the resource type on the C++ side (origin = "extension"), so `LOAD aws;` is all a user needs.
+	// Register the resource type on the C++ side (origin = "extension"), so `LOAD aws;` is all a user needs. Kind
+	// 'storage': a stack need not be attachable, so DuckDB must not require uri and attached_db_type of its status.
 	ExternalResourceType type;
-	type.name = "aws.cloudformation.quack-on-ec2";
-	type.kind = "catalog";
-	type.create_function = "__aws__cloudformation__quack_on_ec2__create";
-	type.status_function = "__aws__cloudformation__quack_on_ec2__status";
-	type.destroy_function = "__aws__cloudformation__quack_on_ec2__destroy";
-	type.resolve_function = "__aws__cloudformation__quack_on_ec2__resolve";
-	type.list_function = "__aws__cloudformation__quack_on_ec2__list";
+	type.name = STACK_TYPE;
+	type.kind = "storage";
+	type.create_function = "__aws__cloudformation__stack__create";
+	type.status_function = "__aws__cloudformation__stack__status";
+	type.destroy_function = "__aws__cloudformation__stack__destroy";
+	type.resolve_function = "__aws__cloudformation__stack__resolve";
+	type.list_function = "__aws__cloudformation__stack__list";
 	type.origin = "extension";
 	ExternalResourceTypeRegistry::Get(loader.GetDatabaseInstance()).Add(std::move(type));
 }
