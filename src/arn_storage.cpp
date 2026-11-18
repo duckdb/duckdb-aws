@@ -2,6 +2,7 @@
 
 #include "arn.hpp"
 #include "redshift/redshift_utils.hpp"
+#include "duckdb/planner/extension_callback.hpp"
 #include "utils/host_extension.hpp"
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/common/case_insensitive_map.hpp"
@@ -243,6 +244,21 @@ public:
 	}
 };
 
+//! Keeps the stand-in alive for as long as the database instance.
+//!
+//! Core holds the stand-in by raw pointer during an attach, and the type registry is its only owner. The stand-in's
+//! attach loads the extension, which registers the real type under the same name and so frees the stand-in while
+//! core still has to call create_transaction_manager on it. Holding a second reference here, in the callback
+//! registry that lives with the database instance, keeps it valid.
+class HostExtensionKeepAlive : public ExtensionCallback {
+public:
+	explicit HostExtensionKeepAlive(shared_ptr<StorageExtension> stand_in_p) : stand_in(std::move(stand_in_p)) {
+	}
+
+private:
+	shared_ptr<StorageExtension> stand_in;
+};
+
 void ArnStorage::RegisterStorageExtension(ExtensionLoader &loader) {
 	auto &config = DBConfig::GetConfig(loader.GetDatabaseInstance());
 	// Core derives the db type from the 'arn:' path prefix, so a bare
@@ -253,7 +269,9 @@ void ArnStorage::RegisterStorageExtension(ExtensionLoader &loader) {
 	// type replaces what is there, so the stand-in only goes in while nothing serves the type yet: when that extension
 	// was loaded before this one, its registration stays
 	if (!StorageExtension::Find(config, "redshift")) {
-		auto redshift = make_shared_ptr<HostExtensionStorageExtension>("redshift", "redshift", "aws.amazon.com");
+		shared_ptr<StorageExtension> redshift =
+		    make_shared_ptr<HostExtensionStorageExtension>("redshift", "redshift", "aws.amazon.com");
+		ExtensionCallback::Register(config, make_shared_ptr<HostExtensionKeepAlive>(redshift));
 		StorageExtension::Register(config, "redshift", std::move(redshift));
 	}
 }
