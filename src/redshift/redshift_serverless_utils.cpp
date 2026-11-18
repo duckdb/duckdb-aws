@@ -1,5 +1,6 @@
 #include "redshift/redshift_utils.hpp"
 
+#include "arn.hpp"
 #include "aws_client.hpp"
 
 #include "duckdb/common/exception.hpp"
@@ -25,6 +26,25 @@ RedshiftServerlessClient MakeClient(const std::shared_ptr<Aws::Auth::AWSCredenti
 	return RedshiftServerlessClient(provider, config);
 }
 
+//! The account that owns a workgroup or namespace, read off the ARN the service reports for it
+string AccountOf(const Aws::String &resource_arn) {
+	string arn(resource_arn.c_str());
+	return ParsedArn::IsArn(arn) ? ParsedArn::Parse(arn).account_id : string();
+}
+
+//! ListNamespaces and ListWorkgroups list the caller's own resources, so matching by ID alone would attach the
+//! caller's resource with that ID even when the ARN names another account. The ARN's account has to match too.
+void RequireOwnedBy(const string &account_id, const Aws::String &resource_arn, const char *kind,
+                    const string &resource_id, const string &region) {
+	auto owner = AccountOf(resource_arn);
+	if (owner != account_id) {
+		throw InvalidConfigurationException(
+		    "Redshift Serverless %s '%s' in region '%s' belongs to account '%s', not to "
+		    "account '%s' that the ARN names",
+		    kind, resource_id, region, owner, account_id);
+	}
+}
+
 Namespace FindNamespaceById(RedshiftServerlessClient &client, const string &account_id, const string &resource_id,
                             const string &region) {
 	Aws::RedshiftServerless::Model::ListNamespacesRequest request;
@@ -38,6 +58,7 @@ Namespace FindNamespaceById(RedshiftServerlessClient &client, const string &acco
 		}
 		for (const auto &namespace_info : outcome.GetResult().GetNamespaces()) {
 			if (namespace_info.GetNamespaceId() == resource_id.c_str()) {
+				RequireOwnedBy(account_id, namespace_info.GetNamespaceArn(), "namespace", resource_id, region);
 				return namespace_info;
 			}
 		}
@@ -76,6 +97,7 @@ Workgroup FindWorkgroupById(RedshiftServerlessClient &client, const string &acco
 		}
 		for (const auto &workgroup : outcome.GetResult().GetWorkgroups()) {
 			if (workgroup.GetWorkgroupId() == resource_id.c_str()) {
+				RequireOwnedBy(account_id, workgroup.GetWorkgroupArn(), "workgroup", resource_id, region);
 				return workgroup;
 			}
 		}
