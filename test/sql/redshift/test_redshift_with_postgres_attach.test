@@ -47,7 +47,7 @@ true
 # Only GetClusterCredentialsWithIAM runs.
 statement ok
 ATTACH '{AWS_REDSHIFT_CLUSTER_NAME}' AS redshift_db (
-    TYPE redshift,
+    TYPE redshift_postgres,
     SECRET redshift_creds,
     HOST '{AWS_REDSHIFT_HOST}',
     PORT '5439',

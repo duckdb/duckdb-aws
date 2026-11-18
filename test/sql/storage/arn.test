@@ -44,18 +44,73 @@ ATTACH 'arn:aws:rds:eu-central-1:840140254803:db:instance' AS db (REGION 'us-eas
 ----
 Invalid Input Error: ATTACH option 'region' is derived from the ARN and cannot be set explicitly
 
-# Redshift dispatch only accepts namespace ARNs with a region and account ID.
+# A redshift ARN goes to the redshift extension from aws.amazon.com, which is not installed here: the error says how
 statement error
-ATTACH 'arn:aws:redshift:eu-central-1:840140254803:cluster:not-a-namespace' AS db;
+ATTACH 'arn:aws:redshift:eu-central-1:840140254803:namespace:e542f89f-b604-4110-a337-f7ba8c7ce156' AS db;
+----
+<REGEX>:Missing Extension Error.*requires the 'redshift' extension from aws.amazon.com.*INSTALL redshift FROM aws.amazon.com.*TYPE redshift_postgres.*
+
+statement error
+ATTACH 'arn:aws:redshift-serverless:eu-central-1:840140254803:workgroup/wg' AS db;
+----
+<REGEX>:Missing Extension Error.*requires the 'redshift' extension from aws.amazon.com.*
+
+# A repository that only carries the host's name, added with a prefix, is not the host's: the extension is not loaded
+# from it, whether or not something is installed there
+statement ok
+SET allow_extension_repositories='allowed'
+
+statement ok
+CREATE EXTENSION REPOSITORY 'aws.amazon.com' WITH PREFIX 'http://not.the.host.example/repo' USING PUBLIC KEY 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAt9+KeDkWJa7SiBb7AMdXAPV2qpRunztoC2c7DtRmN9+Lq2YQm4rMQmmAQcwyxTxcK8vwPKOiE4mLMwmQMvTty9tL+buREfvg5KJ+FY3Bv05cZYsf7VuYgUDcw41zSEE5W1thh5PiafcrMn7CPF0jN0oFfVvAHB/fAM0yaZGPKs3WYqnHAHa6v/cVMeiWZ/lQORCBqqL2hii1fEiuIqw6AOEoZVsN0/lqm7GfnD899zrzLOPRuP4YFg46drL1UyNdg+4TquJ2OV9kR4CAfdGRexqHFWLmoxkTfnUxJ4yL+gkV57K1H+smEdKrDhDX68pEFM/34E2eVKZoRU/0paxDZQIDAQAB'
+
+statement error
+ATTACH 'arn:aws:redshift:eu-central-1:840140254803:namespace:e542f89f-b604-4110-a337-f7ba8c7ce156' AS db;
+----
+<REGEX>:Permission Error.*repository named 'aws.amazon.com' was added with a prefix.*not resolved from the host.*CREATE EXTENSION REPOSITORY aws.amazon.com.*
+
+statement ok
+DROP EXTENSION REPOSITORY 'aws.amazon.com'
+
+# Naming the type is the same as the default
+statement error
+ATTACH 'arn:aws:redshift:eu-central-1:840140254803:namespace:e542f89f-b604-4110-a337-f7ba8c7ce156' AS db (TYPE redshift);
+----
+<REGEX>:Missing Extension Error.*requires the 'redshift' extension from aws.amazon.com.*
+
+# TYPE redshift_postgres is this extension's own attach; it reads region, account and resource off the ARN itself,
+# and only accepts namespace ARNs with a region and account ID.
+statement error
+ATTACH 'arn:aws:redshift:eu-central-1:840140254803:cluster:not-a-namespace' AS db (TYPE redshift_postgres);
 ----
 Invalid Input Error: Expected a Redshift namespace ARN with a resource of the form 'namespace:<namespace-id>', got 'arn:aws:redshift:eu-central-1:840140254803:cluster:not-a-namespace'
 
 statement error
-ATTACH 'arn:aws:redshift:eu-central-1::namespace:e542f89f-b604-4110-a337-f7ba8c7ce156' AS db;
+ATTACH 'arn:aws:redshift:eu-central-1::namespace:e542f89f-b604-4110-a337-f7ba8c7ce156' AS db (TYPE redshift_postgres);
 ----
 Invalid Input Error: Redshift namespace ARN 'arn:aws:redshift:eu-central-1::namespace:e542f89f-b604-4110-a337-f7ba8c7ce156' does not specify an account ID
 
 statement error
-ATTACH 'arn:aws:redshift:eu-central-1:840140254803:namespace:e542f89f-b604-4110-a337-f7ba8c7ce156' AS db (ACCOUNT_ID '123456789012');
+ATTACH 'arn:aws:redshift:eu-central-1:840140254803:namespace:e542f89f-b604-4110-a337-f7ba8c7ce156' AS db (TYPE redshift_postgres, REGION 'us-east-1');
 ----
-Invalid Input Error: ATTACH option 'account_id' is derived from the ARN and cannot be set explicitly
+Invalid Input Error: ATTACH option 'region' is derived from the ARN and cannot be set explicitly
+
+statement error
+ATTACH 'arn:aws:redshift:eu-central-1:840140254803:namespace:e542f89f-b604-4110-a337-f7ba8c7ce156' AS db (TYPE redshift_postgres, ACCOUNT_ID '123456789012');
+----
+Invalid Input Error: Redshift ARN options cannot be set directly
+
+statement error
+ATTACH 'arn:aws:rds:eu-central-1:840140254803:db:instance' AS db (TYPE redshift_postgres);
+----
+Invalid Input Error: Expected a Redshift ARN (service 'redshift' or 'redshift-serverless'), got 'arn:aws:rds:eu-central-1:840140254803:db:instance'
+
+# The same shape checks through TYPE rds
+statement error
+ATTACH 'arn:aws:redshift:eu-central-1:840140254803:namespace:x' AS db (TYPE rds);
+----
+Invalid Input Error: Expected an RDS DB instance ARN with a resource of the form 'db:<instance-id>', got 'arn:aws:redshift:eu-central-1:840140254803:namespace:x'
+
+statement error
+ATTACH 'arn:aws:rds::840140254803:db:instance' AS db (TYPE rds);
+----
+Invalid Input Error: RDS DB instance ARN 'arn:aws:rds::840140254803:db:instance' does not specify a region

@@ -1,4 +1,5 @@
 #include "aws_http_client.hpp"
+#include "arn.hpp"
 #include "rds/rds_utils.hpp"
 
 #include "aws_client.hpp"
@@ -80,19 +81,44 @@ unique_ptr<Catalog> RdsAttach(optional_ptr<StorageExtensionInfo> storage_info, C
 	}
 	AwsInstanceBinding aws_binding(DatabaseInstance::GetDatabase(context));
 
+	auto attach_options = ParseAttachOptions(options);
+
+	// The path is a DB instance identifier, or an RDS DB instance ARN (arn:aws:rds:<region>:<account>:db:<id>),
+	// which also settles the region
 	auto instance_id = info.path;
+	string arn_region;
+	if (ParsedArn::IsArn(info.path)) {
+		auto arn = ParsedArn::Parse(info.path);
+		static const string prefix = "db:";
+		if (arn.service != "rds" || !StringUtil::StartsWith(arn.resource, prefix) ||
+		    arn.resource.size() == prefix.size()) {
+			throw InvalidInputException("Expected an RDS DB instance ARN with a resource of the form "
+			                            "'db:<instance-id>', got '%s'",
+			                            arn.raw);
+		}
+		if (arn.region.empty()) {
+			throw InvalidInputException("RDS DB instance ARN '%s' does not specify a region", arn.raw);
+		}
+		if (!attach_options.region.empty()) {
+			throw InvalidInputException("ATTACH option 'region' is derived from the ARN and cannot be set explicitly");
+		}
+		instance_id = arn.resource.substr(prefix.size());
+		arn_region = arn.region;
+	}
 	if (instance_id.empty()) {
 		throw BinderException("No RDS DB instance identifier given. Pass it as the ATTACH path, e.g. "
 		                      "ATTACH '<db-instance-id>' AS db (TYPE rds)");
 	}
 
-	auto attach_options = ParseAttachOptions(options);
 	auto secret_entry = FindAwsSecret(context, attach_options.secret_name);
 	const auto &secret = dynamic_cast<const KeyValueSecret &>(*secret_entry->secret);
 
-	// An s3 secret's region is the bucket region, which need not be the instance's, so an explicit
-	// ATTACH region wins over it. Past those two, fall back to the sources CREATE SECRET uses.
-	auto explicit_region = attach_options.region.empty() ? GetSecretString(secret, "region") : attach_options.region;
+	// The ARN's region is final. Otherwise an s3 secret's region is the bucket region, which need not be the
+	// instance's, so an explicit ATTACH region wins over it. Past those two, fall back to the sources CREATE SECRET
+	// uses.
+	auto explicit_region = !arn_region.empty()             ? arn_region
+	                       : attach_options.region.empty() ? GetSecretString(secret, "region")
+	                                                       : attach_options.region;
 	auto region = ResolveAwsRegion(context, explicit_region, "");
 	if (region.empty()) {
 		throw InvalidConfigurationException("No AWS region found for the RDS instance. Pass it to ATTACH, e.g. "

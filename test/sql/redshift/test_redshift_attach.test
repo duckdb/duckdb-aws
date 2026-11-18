@@ -46,11 +46,11 @@ true
 # In this ATTACH call, two API calls should be made to AWS redshift services.
 # 1 DescribeClusters with the generated cluster identifier.
 # 2 GetClusterCredentialsWithIAM, to mint a short-lived db username and password.
-# `TYPE redshift` is handled by the aws extension, which resolves the cluster and then hands
+# `TYPE redshift_postgres` is handled by the aws extension, which resolves the cluster and then hands
 # the resulting connection string to the postgres extension.
 statement ok
 ATTACH '{AWS_REDSHIFT_CLUSTER_NAME}' AS redshift_db (
-    TYPE redshift,
+    TYPE redshift_postgres,
     DATABASE '{AWS_REDSHIFT_DATABASE}'
 );
 

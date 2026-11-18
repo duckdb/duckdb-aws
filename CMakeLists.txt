@@ -21,6 +21,7 @@ endif()
 add_compile_definitions(DUCKDB_AWS_GIT_SHA="${DUCKDB_AWS_GIT_SHA}")
 
 set(EXTENSION_SOURCES
+    src/arn.cpp
     src/arn_storage.cpp
     src/aws_default_secret_storage.cpp
     src/aws_extension.cpp
@@ -41,6 +42,7 @@ set(EXTENSION_SOURCES
     src/redshift/redshift_storage.cpp
     src/s3_functions.cpp
     src/s3_resource.cpp
+    src/utils/host_extension.cpp
     src/utils/utils.cpp)
 add_library(${EXTENSION_NAME} STATIC ${EXTENSION_SOURCES})
 

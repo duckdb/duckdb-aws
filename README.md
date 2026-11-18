@@ -439,6 +439,33 @@ Options:
 - `dry_run := BOOLEAN`
 <!-- /generated -->
 
+## Attaching AWS resources by ARN
+
+`ATTACH 'arn:aws:<service>:<region>:<account>:<resource>'` goes to the storage type that serves the ARN's service, with
+the ARN as its path; the type reads region, account and resource off it, so none of those can be set as ATTACH
+options. The Redshift ARNs below are the exception: see the note after the table. An explicit `TYPE` names the storage
+type directly instead.
+
+| ARN | default type | also |
+|---|---|---|
+| `arn:aws:s3tables:<region>:<account>:bucket/<name>` | `iceberg` (core, autoloaded) | |
+| `arn:aws:rds:<region>:<account>:db:<instance-id>` | `rds`, this extension's RDS-over-Postgres attach | |
+| `arn:aws:redshift:<region>:<account>:namespace:<id>` | `redshift`, the redshift extension from aws.amazon.com | `TYPE redshift_postgres` |
+| `arn:aws:redshift-serverless:<region>:<account>:workgroup/<id>` or `namespace/<id>` | `redshift` | `TYPE redshift_postgres` |
+
+`TYPE redshift` is served by the extension that `aws.amazon.com` publishes: it has to be installed from there first
+(`CREATE EXTENSION REPOSITORY aws.amazon.com; INSTALL redshift FROM aws.amazon.com;`), and is loaded on first use; an
+ATTACH without it fails saying so. `TYPE redshift_postgres` is this extension's own attach, which resolves the cluster,
+workgroup or namespace through the Redshift APIs and hands a connection string to the postgres extension. Both take a
+bare identifier as well: `ATTACH '<cluster-id>' AS db (TYPE redshift_postgres, REGION '<region>')`.
+
+The redshift extension makes no AWS call of its own, so it cannot turn the namespace or workgroup ID in these Redshift
+ARNs into the endpoint it names. For an ARN without `TYPE`, this extension first looks the target up, in the ARN's
+region with the secret `SECRET` names (or, without `SECRET`, the AWS secret it would pick itself), and hands the
+`redshift` type the path `redshift://<endpoint>:<port>`, adding `SECRET` naming that secret when none was given, and
+`DATABASE` naming the target's default database when neither `DATABASE` nor `DBNAME` was given, so that a database
+given there wins. The other ATTACH options are passed on as given; the redshift extension decides which it takes.
+
 ## AWS system tables
 
 AWS services publish inventories and logs as Apache Iceberg tables in AWS-managed S3 table buckets, one bucket per

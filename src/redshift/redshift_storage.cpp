@@ -1,5 +1,6 @@
 #include "aws_http_client.hpp"
 #include "redshift/redshift_utils.hpp"
+#include "arn.hpp"
 
 #include "aws_client.hpp"
 #include "utils/utils.hpp"
@@ -83,35 +84,66 @@ struct RedshiftAttachTarget {
 	string region;
 };
 
-RedshiftAttachTarget GetRedshiftTarget(AttachedDatabase &db, const RedshiftAttachOptions &attach_options,
-                                       const string &target_name) {
-	const auto &original_path = db.GetOriginalPath();
-	auto delegated_from_arn = original_path.has_value() && *original_path != target_name;
-
+//! What to attach: a bare cluster identifier, or an ARN that names a provisioned namespace
+//! (arn:aws:redshift:<region>:<account>:namespace:<id>) or a Serverless workgroup or namespace
+//! (arn:aws:redshift-serverless:<region>:<account>:workgroup/<id> | namespace/<id>). The ARN carries the region and the
+//! account, so ATTACH may not set them.
+RedshiftAttachTarget GetRedshiftTarget(const RedshiftAttachOptions &attach_options, const string &path) {
+	if (!attach_options.account_id.empty() || !attach_options.resource.empty() ||
+	    !attach_options.resource_type.empty()) {
+		throw InvalidInputException("Redshift ARN options cannot be set directly");
+	}
 	RedshiftAttachTarget target;
-	target.resource_id = target_name;
-	target.region = attach_options.region;
-	if (!delegated_from_arn) {
-		if (!attach_options.account_id.empty() || !attach_options.resource.empty() ||
-		    !attach_options.resource_type.empty()) {
-			throw InvalidInputException("Redshift ARN options cannot be set directly");
+	if (!ParsedArn::IsArn(path)) {
+		target.resource_id = path;
+		target.region = attach_options.region;
+		return target;
+	}
+
+	auto arn = ParsedArn::Parse(path);
+	if (!attach_options.region.empty()) {
+		throw InvalidInputException("ATTACH option 'region' is derived from the ARN and cannot be set explicitly");
+	}
+	if (arn.service == "redshift") {
+		if (arn.region.empty()) {
+			throw InvalidInputException("Redshift namespace ARN '%s' does not specify a region", arn.raw);
 		}
-		return target;
-	}
-
-	if (!attach_options.resource.empty() && !attach_options.resource_type.empty()) {
-		throw InvalidInputException("Conflicting Redshift ARN options");
-	}
-
-	target.account_id = attach_options.account_id;
-	if (!attach_options.resource.empty()) {
+		if (arn.account_id.empty()) {
+			throw InvalidInputException("Redshift namespace ARN '%s' does not specify an account ID", arn.raw);
+		}
+		static const string prefix = "namespace:";
+		if (!StringUtil::StartsWith(arn.resource, prefix) || arn.resource.size() == prefix.size()) {
+			throw InvalidInputException(
+			    "Expected a Redshift namespace ARN with a resource of the form 'namespace:<namespace-id>', got '%s'",
+			    arn.raw);
+		}
 		target.type = RedshiftTargetType::PROVISIONED_NAMESPACE;
-		target.resource_id = attach_options.resource;
-		return target;
+		target.resource_id = arn.resource;
+	} else if (arn.service == "redshift-serverless") {
+		if (arn.region.empty()) {
+			throw InvalidInputException("Redshift Serverless ARN '%s' does not specify a region", arn.raw);
+		}
+		if (arn.account_id.empty()) {
+			throw InvalidInputException("Redshift Serverless ARN '%s' does not specify an account ID", arn.raw);
+		}
+		auto separator = arn.resource.find('/');
+		auto resource_type = separator == string::npos ? string() : arn.resource.substr(0, separator);
+		if (separator == string::npos || separator == 0 || separator == arn.resource.size() - 1 ||
+		    arn.resource.find('/', separator + 1) != string::npos ||
+		    (resource_type != "workgroup" && resource_type != "namespace")) {
+			throw InvalidInputException("Expected a Redshift Serverless ARN with a resource of the form "
+			                            "'workgroup/<workgroup-id>' or 'namespace/<namespace-id>', got '%s'",
+			                            arn.raw);
+		}
+		target.type = resource_type == "namespace" ? RedshiftTargetType::SERVERLESS_NAMESPACE
+		                                           : RedshiftTargetType::SERVERLESS_WORKGROUP;
+		target.resource_id = arn.resource.substr(separator + 1);
+	} else {
+		throw InvalidInputException("Expected a Redshift ARN (service 'redshift' or 'redshift-serverless'), got '%s'",
+		                            arn.raw);
 	}
-
-	target.type = attach_options.resource_type == "namespace" ? RedshiftTargetType::SERVERLESS_NAMESPACE
-	                                                          : RedshiftTargetType::SERVERLESS_WORKGROUP;
+	target.account_id = arn.account_id;
+	target.region = arn.region;
 	return target;
 }
 
@@ -172,7 +204,8 @@ RedshiftResolvedConnection ResolveConnection(const std::shared_ptr<Aws::Auth::AW
 	return connection;
 }
 
-//! `ATTACH '<cluster-id>' AS db (TYPE redshift, SECRET <aws-or-s3-secret>)`.
+//! `ATTACH '<cluster-id>' AS db (TYPE redshift_postgres, SECRET <aws-or-s3-secret>)`, or with a Redshift ARN as the
+//! path. `TYPE redshift` is the redshift extension from aws.amazon.com, see arn_storage.cpp.
 //!
 //! The cluster identifier is all the user gives us, so we ask Redshift for the rest:
 //! DescribeClusters supplies the endpoint host/port and the default database name, and
@@ -188,10 +221,10 @@ unique_ptr<Catalog> RedshiftAttach(optional_ptr<StorageExtensionInfo> storage_in
 	AwsInstanceBinding aws_binding(DatabaseInstance::GetDatabase(context));
 
 	auto attach_options = ParseAttachOptions(options);
-	auto target = GetRedshiftTarget(db, attach_options, info.path);
+	auto target = GetRedshiftTarget(attach_options, info.path);
 	if (target.resource_id.empty()) {
 		throw BinderException("No Redshift cluster identifier given. Pass it as the ATTACH path, e.g. "
-		                      "ATTACH '<cluster-id>' AS db (TYPE redshift)");
+		                      "ATTACH '<cluster-id>' AS db (TYPE redshift_postgres)");
 	}
 
 	auto secret_entry = FindAwsSecret(context, attach_options.secret_name);
@@ -206,7 +239,7 @@ unique_ptr<Catalog> RedshiftAttach(optional_ptr<StorageExtensionInfo> storage_in
 		if (target.region.empty()) {
 			throw InvalidConfigurationException(
 			    "No AWS region found for the Redshift cluster. Pass it to ATTACH, e.g. "
-			    "ATTACH '<cluster-id>' AS db (TYPE redshift, REGION '<region>'), set it on the secret, "
+			    "ATTACH '<cluster-id>' AS db (TYPE redshift_postgres, REGION '<region>'), set it on the secret, "
 			    "or configure the AWS_REGION environment variable");
 		}
 	}
@@ -272,11 +305,81 @@ public:
 	}
 };
 
+//! Whether the ARN names its target by ID, the forms the redshift extension cannot serve without a lookup:
+//! `namespace:<id>` for redshift, `workgroup/<id>` or `namespace/<id>` for redshift-serverless. Only the shape is
+//! read here; GetRedshiftTarget checks the rest (region, account, an empty ID). Any other ARN, such as the long-form
+//! workgroup ARN `workgroup/<label>/<workgroup-name>`, is left for the redshift extension to serve or refuse.
+bool NamesTargetById(const ParsedArn &arn) {
+	if (arn.service == "redshift") {
+		return StringUtil::StartsWith(arn.resource, "namespace:");
+	}
+	auto separator = arn.resource.find('/');
+	return arn.service == "redshift-serverless" && separator != string::npos &&
+	       arn.resource.find('/', separator + 1) == string::npos &&
+	       (StringUtil::StartsWith(arn.resource, "workgroup/") || StringUtil::StartsWith(arn.resource, "namespace/"));
+}
+
 } // namespace
+
+void Redshift::ResolveArnById(ClientContext &context, const ParsedArn &arn, AttachInfo &info, AttachOptions &options) {
+	if (!NamesTargetById(arn)) {
+		return;
+	}
+	// The lookup is an AWS call, which external access governs, as it does for TYPE redshift_postgres
+	if (!Settings::Get<EnableExternalAccessSetting>(context)) {
+		throw PermissionException("Attaching Redshift databases is disabled through configuration");
+	}
+	AwsInstanceBinding aws_binding(DatabaseInstance::GetDatabase(context));
+
+	// Only the ARN is read, for its region, account and ID: no ATTACH option is checked here, so every option goes
+	// on to the redshift extension as given, and it decides what it takes beside a redshift:// path
+	auto target = GetRedshiftTarget(RedshiftAttachOptions(), arn.raw);
+
+	// The AWS identity for the lookup: the secret SECRET names, else the one FindAwsSecret picks, as for
+	// TYPE redshift_postgres. SECRET is only read, not removed
+	auto secret_option = options.options.find("secret");
+	auto secret_name = secret_option == options.options.end() ? string() : secret_option->second.ToString();
+	auto secret_entry = FindAwsSecret(context, secret_name);
+	const auto &secret = dynamic_cast<const KeyValueSecret &>(*secret_entry->secret);
+	auto provider = CredentialsProviderFromSecret(secret, "Redshift");
+
+	// The lookups TYPE redshift_postgres makes, in the ARN's region; no credential call, since the redshift
+	// extension's driver gets the database credentials itself. A target that is not found is refused here, with
+	// those lookups' messages
+	RedshiftTargetInfo resolved;
+	if (target.type == RedshiftTargetType::PROVISIONED_NAMESPACE) {
+		// DescribeClusters, unfiltered, finds the cluster whose namespace ARN matches; then DescribeClusters for that
+		// cluster gives its endpoint, port and database
+		auto cluster_id =
+		    Redshift::ClusterIdentifierFromNamespace(provider, target.account_id, target.resource_id, target.region);
+		resolved = Redshift::DescribeCluster(provider, cluster_id, target.region);
+	} else {
+		// ListWorkgroups and GetNamespace for a workgroup; ListNamespaces then ListWorkgroups for a namespace
+		resolved = RedshiftServerless::ResolveTarget(provider, target.account_id, target.type, target.resource_id,
+		                                             target.region);
+	}
+
+	// The redshift:// URI the redshift extension takes, pinned to the endpoint found, with the target's own port. It
+	// names no database: the database goes on as an option, below or as the user gave it
+	info.path = "redshift://" + resolved.endpoint_address + ":" + to_string(resolved.endpoint_port);
+	// Without DATABASE or DBNAME, add the target's default database as DATABASE: the redshift extension's driver would
+	// otherwise connect to `dev`, which need not be the target's default. A DATABASE or DBNAME the user gave is their
+	// choice and wins over the default, as it does for TYPE redshift_postgres (FillMissingConnectionOptions), so it is
+	// left as it is
+	const bool database_given = options.options.count("database") || options.options.count("dbname");
+	if (!database_given && !resolved.db_name.empty()) {
+		options.options["database"] = Value(resolved.db_name);
+	}
+	// Without SECRET, name the secret the lookup used (`__aws_default` included): the redshift extension cannot know
+	// which one FindAwsSecret picked, and this way the lookup and the connection use the same AWS identity
+	if (secret_name.empty()) {
+		options.options["secret"] = Value(secret.GetName().GetIdentifierName());
+	}
+}
 
 void Redshift::RegisterStorageExtension(ExtensionLoader &loader) {
 	auto &config = DBConfig::GetConfig(loader.GetDatabaseInstance());
-	StorageExtension::Register(config, "redshift", make_shared_ptr<RedshiftStorageExtension>());
+	StorageExtension::Register(config, "redshift_postgres", make_shared_ptr<RedshiftStorageExtension>());
 }
 
 } // namespace duckdb

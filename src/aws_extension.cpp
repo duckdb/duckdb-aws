@@ -61,13 +61,14 @@ static void LoadInternal(ExtensionLoader &loader) {
 	CreateAwsSecretFunctions::Register(loader);
 	AwsDefaultSecretStorage::Register(loader);
 
-	// Makes `ATTACH '<cluster-id>' (TYPE redshift, ...)` resolve to the redshift storage extension.
+	// `TYPE redshift_postgres`: this extension's Redshift-over-Postgres attach, by cluster id or ARN.
 	Redshift::RegisterStorageExtension(loader);
 
-	// RDS is both a direct storage type and an internal ARN delegation target.
+	// `TYPE rds`: by instance id or ARN; also where RDS ARNs are dispatched to.
 	Rds::RegisterStorageExtension(loader);
 
-	// Makes `ATTACH 'arn:aws:...'` dispatch to the backend serving the ARN's service.
+	// `ATTACH 'arn:aws:...'` dispatches to the type serving the ARN's service; `TYPE redshift` is the redshift
+	// extension from aws.amazon.com, loaded on first use.
 	ArnStorage::RegisterStorageExtension(loader);
 
 	CloudFormationFunctions::Register(loader);
