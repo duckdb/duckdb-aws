@@ -223,6 +223,8 @@ unique_ptr<FunctionData> ListBind(ClientContext &, TableFunctionBindInput &input
 	result->input = input.inputs[0];
 	names.emplace_back("handle");
 	return_types.emplace_back(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
+	names.emplace_back("name");
+	return_types.emplace_back(LogicalType::VARCHAR);
 	names.emplace_back("reference");
 	return_types.emplace_back(LogicalType::VARCHAR);
 	names.emplace_back("state");
@@ -239,7 +241,7 @@ void ListFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &outp
 	if (!state.ran) {
 		auto region = MapLookup(bind.input, "region");
 		string source = region.empty() ? "s3_buckets()" : "s3_buckets(region := " + Value(region).ToSQLString() + ")";
-		auto sql = "SELECT MAP {'name': name, 'region': region} AS handle, 's3://' || name || '/' AS reference, "
+		auto sql = "SELECT MAP {'name': name, 'region': region} AS handle, name, 's3://' || name || '/' AS reference, "
 		           "       'ready' AS state, "
 		           "       MAP {'region': region, 'created_at': created_at::VARCHAR} AS metadata "
 		           "FROM " +
@@ -254,10 +256,9 @@ void ListFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &outp
 	auto rows = state.result->Collection().GetRows();
 	for (idx_t i = 0; i < to_emit; i++) {
 		idx_t row = state.cursor + i;
-		output.data[0].Append(rows.GetValue(0, row));
-		output.data[1].Append(rows.GetValue(1, row));
-		output.data[2].Append(rows.GetValue(2, row));
-		output.data[3].Append(rows.GetValue(3, row));
+		for (idx_t col = 0; col < 5; col++) {
+			output.data[col].Append(rows.GetValue(col, row));
+		}
 	}
 	output.CheckCardinality(to_emit);
 	state.cursor += to_emit;
