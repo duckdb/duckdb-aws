@@ -31,7 +31,7 @@ set(EXTENSION_SOURCES
     src/create_aws_legacy_function_stubs.cpp
     src/rds/rds_utils.cpp
     src/rds/rds_storage.cpp
-    src/quack_on_ec2_resource.cpp
+    src/cloudformation_stack_resource.cpp
     src/s3tables_functions.cpp
     src/s3_metadata_functions.cpp
     src/s3tables_resource.cpp

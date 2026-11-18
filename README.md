@@ -130,7 +130,7 @@ only after loading `aws`, with SQL logging disabled.
 This creates another billable EC2 instance, unlike the generated test's `REGISTER` command. Run it in a separate DuckDB session with an AWS secret and the `aws` and `quack` extensions loaded:
 
 ```sql
-CREATE EXTERNAL RESOURCE 'aws.cloudformation.quack-on-ec2' AS remote (REGION 'eu-central-1', TEMPLATE 'https://quack-on-ec2-259911478022.s3.amazonaws.com/quack.yaml');
+CREATE EXTERNAL RESOURCE 'aws.cloudformation.stack' AS remote (REGION 'eu-central-1', TEMPLATE 'https://quack-on-ec2-259911478022.s3.amazonaws.com/quack.yaml');
 ATTACH TO EXTERNAL RESOURCE remote AS quack;
 ```
 
@@ -156,12 +156,34 @@ Configuration is through environment variables:
 | `DUCKDB_BUILD_DIR` | `build/release` under this repository |
 | `QUACK_MACHINE_TYPE` | `t4g.small` |
 | `QUACK_MAX_DURATION_HOURS` | `0` disables shutdown; otherwise 1-144 hours. Redshift and the stack still need cleanup |
-| `QUACK_TEMPLATE_URL` | [Public Quack template](https://quack-on-ec2-259911478022.s3.amazonaws.com/quack.yaml); an override must accept `machinetype`/`maxduration` and expose `InstanceId`/`QuackURI`/`Token`, with the instance's group named `QuackSG` in the template |
+| `QUACK_TEMPLATE_URL` | [Public Quack template](https://quack-on-ec2-259911478022.s3.amazonaws.com/quack.yaml); an override must accept `machinetype`/`maxduration`, expose `InstanceId`/`QuackURI` for this script and the `DuckDBUri`/`DuckDBAttachedDbType`/`DuckDBToken` outputs the `aws.cloudformation.stack` type attaches through, with the instance's group named `QuackSG` in the template |
 | `MANUAL_TEST_WITH_SECRETS_FILE` | `manual_test_with_secrets.sql` under this repository; private generated manual-test SQL with temporary credentials |
 | `QUACK_REDSHIFT_STATE_DIR` | `.quack-redshift` under this repository; state is separated by account, region, and prefix |
 | `QUACK_REDSHIFT_WAIT_SECONDS` | `1800` for Redshift creation and each stack wait; individual DuckDB calls time out after 120 seconds |
 
 The script can also be called directly as `python3 scripts/quack_redshift.py <action> [--force]`, where the action is `setup`, `check`, `cleanup`, or `manual-test`.
+
+## CloudFormation stacks
+
+Any CloudFormation stack is an external resource of type `aws.cloudformation.stack`:
+
+```sql
+CREATE EXTERNAL RESOURCE 'aws.cloudformation.stack' AS box
+    (REGION 'eu-central-1', TEMPLATE 'https://example.com/template.yaml', MachineType 't4g.small');
+SHOW ALL EXTERNAL RESOURCES WITH TYPE 'aws.cloudformation.stack';
+DESTROY EXTERNAL RESOURCE box;
+```
+
+`TEMPLATE` (a URL or the template body) and `REGION` are required; every other create param is a parameter of the
+template. `MAX_DURATION`, in whole hours, sets a `MaxDurationHours` template parameter when the template declares one
+and tags the stack with the deadline; listing deletes stacks past it. The stack is tagged
+`duckdb-external-resource-type`, which is how discovery and `REGISTER EXTERNAL RESOURCE ... FROM '<stack name or
+id>'` tell this type's stacks from others.
+
+A stack is attachable when its template exposes the connection as Outputs named with a `DuckDB` prefix: `DuckDBUri`
+is the ATTACH path, `DuckDBAttachedDbType` its `TYPE`, and any other `DuckDB<Option>` an ATTACH option, snake-cased
+(`DuckDBToken` is `token`, `DuckDBReadOnly` is `read_only`). Other outputs are the stack's own business. A stack without
+such outputs is created, listed and destroyed like any other, but `ATTACH TO EXTERNAL RESOURCE` has no path to attach.
 
 ## S3 buckets and S3 Tables
 

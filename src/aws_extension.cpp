@@ -7,7 +7,7 @@
 #include "s3_functions.hpp"
 #include "s3_resource.hpp"
 #include "rds/rds_utils.hpp"
-#include "quack_on_ec2_resource.hpp"
+#include "cloudformation_stack_resource.hpp"
 #include "redshift/redshift_utils.hpp"
 #include "s3_metadata_functions.hpp"
 #include "s3tables_functions.hpp"
@@ -75,7 +75,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	S3Functions::Register(loader);
 	// The aws.s3.bucket external-resource type, built on those functions.
 	S3Resource::Register(loader);
-	QuackOnEc2Resource::Register(loader);
+	CloudFormationStackResource::Register(loader);
 
 	// Listing + lifecycle over the S3 Tables control plane.
 	S3TablesFunctions::Register(loader);

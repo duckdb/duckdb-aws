@@ -22,7 +22,7 @@ static constexpr const char *RESOURCE_TYPE_TAG = "duckdb-external-resource-type"
 namespace {
 
 //! Thin native adapters over the public s3tables_* functions, run as SQL on an internal connection
-//! — the same shape as src/quack_on_ec2_resource.cpp, so a recipe stays readable as the sequence of
+//! — the same shape as src/cloudformation_stack_resource.cpp, so a recipe stays readable as the sequence of
 //! calls it is. Nothing here is a SQL macro: the type is registered from C++, so `LOAD aws` is all
 //! a user needs.
 
@@ -221,7 +221,7 @@ void DestroyFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &o
 // list(params MAP) -> TABLE(handle MAP, name VARCHAR, reference VARCHAR, state VARCHAR, metadata MAP)
 //
 // Every table bucket in the account, not just the ones DuckDB made — that asymmetry with
-// quack-on-ec2 (which filters its stacks by provenance tag) is the point: for S3 Tables the
+// aws.cloudformation.stack (which filters its stacks by provenance tag) is the point: for S3 Tables the
 // pre-existing buckets are the interesting ones, and this is what makes them show up in
 // SHOW ALL EXTERNAL RESOURCES as unmanaged rows ready to be REGISTERed.
 //

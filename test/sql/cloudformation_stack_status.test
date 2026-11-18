@@ -1,0 +1,55 @@
+# name: test/sql/cloudformation_stack_status.test
+# description: Map CloudFormation states through the native stack status callback, and the DuckDB-prefixed outputs onto the connection
+# group: [sql]
+
+require aws
+
+# The callback uses a separate connection, so the offline AWS substitute must not be temporary. The outputs with the
+# DuckDB prefix are the connection, snake-cased; the others are the stack's own business.
+statement ok
+CREATE MACRO cloudformation_describe_stack(h) AS TABLE
+SELECT h['stack_name'] AS status,
+       MAP {'DuckDBUri': 'quack:example.com:443', 'DuckDBAttachedDbType': 'quack', 'DuckDBToken': 'test-token',
+            'DuckDBReadOnly': 'true', 'InstanceId': 'i-123', 'DuckDB': 'not a key'} AS outputs;
+
+foreach stack_status CREATE_COMPLETE UPDATE_COMPLETE
+
+query TTTTTI
+SELECT state, result['uri'], result['attached_db_type'], result['token'], result['read_only'], len(map_keys(result))
+FROM __aws__cloudformation__stack__status(MAP {'stack_name': '{stack_status}', 'region': 'eu-central-1'});
+----
+ready	quack:example.com:443	quack	test-token	true	4
+
+endloop
+
+foreach stack_status DELETE_COMPLETE DELETE_IN_PROGRESS DELETE_FAILED CREATE_FAILED ROLLBACK_IN_PROGRESS ROLLBACK_COMPLETE UPDATE_ROLLBACK_COMPLETE
+
+query T
+SELECT state
+FROM __aws__cloudformation__stack__status(MAP {'stack_name': '{stack_status}', 'region': 'eu-central-1'});
+----
+failed
+
+endloop
+
+foreach stack_status CREATE_IN_PROGRESS UPDATE_IN_PROGRESS UPDATE_COMPLETE_CLEANUP_IN_PROGRESS
+
+query T
+SELECT state
+FROM __aws__cloudformation__stack__status(MAP {'stack_name': '{stack_status}', 'region': 'eu-central-1'});
+----
+pending
+
+endloop
+
+# A stack whose template exposes no DuckDB-prefixed output has an empty connection: it can be created and
+# destroyed, but not attached
+statement ok
+CREATE OR REPLACE MACRO cloudformation_describe_stack(h) AS TABLE
+SELECT 'CREATE_COMPLETE' AS status, MAP {'InstanceId': 'i-123'} AS outputs;
+
+query TT
+SELECT state, result
+FROM __aws__cloudformation__stack__status(MAP {'stack_name': 'plain', 'region': 'eu-central-1'});
+----
+ready	{}

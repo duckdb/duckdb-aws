@@ -22,7 +22,7 @@ import time
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_TEMPLATE = "https://quack-on-ec2-259911478022.s3.amazonaws.com/quack.yaml"
 TEMPLATE_REGIONS = {"us-east-1", "us-east-2", "us-west-1", "us-west-2", "eu-central-1"}
-RESOURCE_TYPE = "aws.cloudformation.quack-on-ec2"
+RESOURCE_TYPE = "aws.cloudformation.stack"
 MANAGED_BY = "duckdb-quack-redshift-test"
 CREDENTIAL_FIELDS = {
     "AccessKeyId": "AWS_ACCESS_KEY_ID",
