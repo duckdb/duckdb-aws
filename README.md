@@ -130,7 +130,7 @@ only after loading `aws`, with SQL logging disabled.
 This creates another billable EC2 instance, unlike the generated test's `REGISTER` command. Run it in a separate DuckDB session with an AWS secret and the `aws` and `quack` extensions loaded:
 
 ```sql
-CREATE EXTERNAL RESOURCE 'aws.cloudformation.stack' AS remote (REGION 'eu-central-1', TEMPLATE 'https://quack-on-ec2-259911478022.s3.amazonaws.com/quack.yaml');
+CREATE EXTERNAL RESOURCE 'aws.cloudformation.stack' AS remote (REGION 'eu-central-1', TEMPLATE 'https://quack-on-ec2-259911478022.s3.amazonaws.com/quack-stack.yaml');
 ATTACH TO EXTERNAL RESOURCE remote AS quack;
 ```
 
@@ -156,7 +156,7 @@ Configuration is through environment variables:
 | `DUCKDB_BUILD_DIR` | `build/release` under this repository |
 | `QUACK_MACHINE_TYPE` | `t4g.small` |
 | `QUACK_MAX_DURATION_HOURS` | `0` disables shutdown; otherwise 1-144 hours. Redshift and the stack still need cleanup |
-| `QUACK_TEMPLATE_URL` | [Public Quack template](https://quack-on-ec2-259911478022.s3.amazonaws.com/quack.yaml); an override must accept `machinetype`/`maxduration`, expose `InstanceId`/`QuackURI` for this script and the `DuckDBUri`/`DuckDBAttachedDbType`/`DuckDBToken` outputs the `aws.cloudformation.stack` type attaches through, with the instance's group named `QuackSG` in the template |
+| `QUACK_TEMPLATE_URL` | [Public Quack template](https://quack-on-ec2-259911478022.s3.amazonaws.com/quack-stack.yaml); an override must accept `MachineType`/`MaxDurationHours`, expose `InstanceId` for this script and the `DuckDBUri`/`DuckDBAttachedDbType`/`DuckDBToken` outputs the `aws.cloudformation.stack` type attaches through, with the instance's group named `QuackSG` in the template |
 | `MANUAL_TEST_WITH_SECRETS_FILE` | `manual_test_with_secrets.sql` under this repository; private generated manual-test SQL with temporary credentials |
 | `QUACK_REDSHIFT_STATE_DIR` | `.quack-redshift` under this repository; state is separated by account, region, and prefix |
 | `QUACK_REDSHIFT_WAIT_SECONDS` | `1800` for Redshift creation and each stack wait; individual DuckDB calls time out after 120 seconds |
