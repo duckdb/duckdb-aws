@@ -113,6 +113,15 @@ void CreateFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &ou
 		name = "duckdb-" + ShortRandHex();
 	}
 	auto region = MapLookup(bind.input, "region");
+	// The namespace the attached catalog uses as its default schema (created on attach if missing), so that
+	// `CREATE TABLE db.t ...` works on a fresh bucket; NAMESPACE '' attaches with no default schema.
+	string default_namespace = "default";
+	for (auto &entry : MapValue::GetChildren(bind.input)) {
+		auto &kv = StructValue::GetChildren(entry);
+		if (!kv[0].IsNull() && StringUtil::Lower(StringValue::Get(kv[0])) == "namespace") {
+			default_namespace = kv[1].IsNull() ? string() : StringValue::Get(kv[1]);
+		}
+	}
 
 	vector<Value> tag_keys {Value(string(RESOURCE_TYPE_TAG))};
 	vector<Value> tag_values {Value(string(S3TABLES_TYPE))};
@@ -136,6 +145,11 @@ void CreateFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &ou
 		    "EXTERNAL RESOURCE",
 		    name);
 	}
+	if (!default_namespace.empty()) {
+		vector<Value> keys {Value("arn"), Value("namespace")};
+		vector<Value> values {Value(MapLookup(handle, "arn")), Value(default_namespace)};
+		handle = Value::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR, std::move(keys), std::move(values));
+	}
 	output.data[0].Append(handle);
 	output.CheckCardinality(1);
 	state.done = true;
@@ -151,7 +165,11 @@ void CreateFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &ou
 //
 // `uri` is the ARN and `attached_db_type` is 'arn': this extension registers the "arn" storage
 // extension, so one front door decides how an S3 Tables ARN attaches (iceberg with
-// endpoint_type=s3_tables) instead of that knowledge being duplicated here.
+// endpoint_type=s3_tables) instead of that knowledge being duplicated here. The other keys are
+// ATTACH options for the iceberg extension: a fresh table bucket has no namespace, so without them
+// `CREATE TABLE db.t ...` on the attached catalog fails for lack of a schema. The handle's `namespace`
+// (set at create, NAMESPACE param) becomes the default schema, created on attach if missing, and
+// identifiers are lowercased so DuckDB's case-insensitive names match what S3 Tables stores.
 //===--------------------------------------------------------------------===//
 
 unique_ptr<FunctionData> StatusBind(ClientContext &, TableFunctionBindInput &input, vector<LogicalType> &return_types,
@@ -172,10 +190,15 @@ void StatusFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &ou
 	}
 	auto &bind = data_p.bind_data->Cast<AdapterBindData>();
 	auto arn = HandleArn(bind.input, "s3tables status");
+	auto default_namespace = MapLookup(bind.input, "namespace");
 
-	auto sql = "SELECT 'ready' AS state, MAP {'uri': arn, 'attached_db_type': 'arn'} AS result "
-	           "FROM s3tables_get_table_bucket(" +
-	           Value(arn).ToSQLString() + ")";
+	string attach_options = "'identifier_case': 'lowercase'";
+	if (!default_namespace.empty()) {
+		attach_options +=
+		    ", 'default_schema': " + Value(default_namespace).ToSQLString() + ", 'default_schema_policy': 'create'";
+	}
+	auto sql = "SELECT 'ready' AS state, MAP {'uri': arn, 'attached_db_type': 'arn', " + attach_options +
+	           "} AS result FROM s3tables_get_table_bucket(" + Value(arn).ToSQLString() + ")";
 	auto res = RunSQL(context, sql, "s3tables status");
 	auto rows = res->Collection().GetRows();
 	output.data[0].Append(rows.GetValue(0, 0));

@@ -104,6 +104,35 @@ END AS status;
 statement ok
 CREATE EXTERNAL RESOURCE 'aws.s3tables.bucket' AS owned (NAME 'owned', REGION 'eu-central-1');
 
+# The handle records the default namespace (default unless NAMESPACE says otherwise), and status turns it into the
+# iceberg ATTACH options that make `CREATE TABLE db.t` work on a fresh bucket: the schema is created if missing,
+# identifiers are lowercased.
+query T
+SELECT handle FROM duckdb_external_resources() WHERE name = 'owned';
+----
+{arn='arn:aws:s3tables:eu-central-1:123456789012:bucket/owned', namespace=default}
+
+query T
+SELECT result FROM __aws__s3tables__bucket__status(MAP {'arn': 'arn:aws:s3tables:eu-central-1:123456789012:bucket/owned', 'namespace': 'default'});
+----
+{uri='arn:aws:s3tables:eu-central-1:123456789012:bucket/owned', attached_db_type=arn, identifier_case=lowercase, default_schema=default, default_schema_policy=create}
+
+# NAMESPACE '' attaches without a default schema; an adopted handle without a namespace does the same
+query T
+SELECT result FROM __aws__s3tables__bucket__status(MAP {'arn': 'arn:aws:s3tables:eu-central-1:123456789012:bucket/owned'});
+----
+{uri='arn:aws:s3tables:eu-central-1:123456789012:bucket/owned', attached_db_type=arn, identifier_case=lowercase}
+
+query T
+SELECT handle FROM __aws__s3tables__bucket__create(MAP {'name': 'bare', 'region': 'eu-central-1', 'namespace': ''});
+----
+{arn='arn:aws:s3tables:eu-central-1:123456789012:bucket/bare'}
+
+query T
+SELECT handle FROM __aws__s3tables__bucket__create(MAP {'name': 'named', 'region': 'eu-central-1', 'namespace': 'analytics'});
+----
+{arn='arn:aws:s3tables:eu-central-1:123456789012:bucket/named', namespace=analytics}
+
 statement ok
 REGISTER EXTERNAL RESOURCE 'aws.s3tables.bucket' AS adopted
 FROM MAP {'arn': 'arn:aws:s3tables:eu-central-1:123456789012:bucket/adopted'};
