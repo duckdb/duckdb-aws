@@ -1,7 +1,7 @@
 # S3 buckets
 
 `s3_buckets`, `s3_create_bucket`, `s3_get_bucket`, `s3_bucket_tags`, `s3_update_bucket` and
-`s3_delete_bucket` manage general-purpose S3 buckets from SQL; `aws:s3:bucket` is the matching
+`s3_delete_bucket` manage general-purpose S3 buckets from SQL; `aws.s3.bucket` is the matching
 external-resource type, for a bucket DuckDB provisions and tears down itself. The rest of this
 file covers the tests and the private fixture bucket they run against. The generated function
 reference is in the [repository README](../../../README.md#s3-buckets-and-s3-tables).
@@ -30,9 +30,9 @@ FROM s3_delete_bucket('my-duckdb-bucket', cascade := true);
 The first call lists the account's buckets; the create returns one row with a `handle` MAP, the
 tags call shows `created-by = duckdb` next to `team`, and the delete returns `status = deleted`.
 
-The external-resource type uses the same functions: `CREATE EXTERNAL RESOURCE 'aws:s3:bucket' AS
+The external-resource type uses the same functions: `CREATE EXTERNAL RESOURCE 'aws.s3.bucket' AS
 scratch (REGION 'eu-central-1', NAME 'my-duckdb-bucket')` creates a bucket tagged
-`duckdb-external-resource-type = aws:s3:bucket`, and `REGISTER EXTERNAL RESOURCE ... FROM MAP
+`duckdb-external-resource-type = aws.s3.bucket`, and `REGISTER EXTERNAL RESOURCE ... FROM MAP
 {'name': ..., 'region': ...}` registers an existing one. `DESTROY EXTERNAL RESOURCE scratch`
 deletes an empty bucket, including an adopted bucket. For a non-empty bucket it fails without
 deleting objects or versions and leaves the resource registered. The resource-type tag records
@@ -62,7 +62,7 @@ Non-empty buckets that survive cleanup continue incurring storage charges.
 ```
 
 Without the fixture environment, `s3_functions.test` (argument handling, the external-access
-guard) and `s3_resource.test` (the `aws:s3:bucket` type and its callbacks) run. The resource tests
+guard) and `s3_resource.test` (the `aws.s3.bucket` type and its callbacks) run. The resource tests
 use persistent SQL substitutes to reject implicit cascade and check registration after failed
 deletes; other AWS calls use AWS's documented example key pair and are expected to fail. After
 `source test/sql/s3/s3.env` (see [Setup](#setup)), three more run against the account:

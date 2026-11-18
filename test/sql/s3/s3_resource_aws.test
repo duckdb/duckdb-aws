@@ -1,5 +1,5 @@
 # name: test/sql/s3/s3_resource_aws.test
-# description: the aws:s3:bucket external-resource type against AWS: provision, inspect, adopt, destroy
+# description: the aws.s3.bucket external-resource type against AWS: provision, inspect, adopt, destroy
 # group: [s3]
 
 # Needs the fixture environment: `source test/sql/s3/s3.env`. The test creates
@@ -45,19 +45,19 @@ s3://{AWS_S3_BUCKET}/	ready
 
 # Provisioning creates the bucket and stamps the resource-type tag.
 statement ok
-CREATE EXTERNAL RESOURCE 'aws:s3:bucket' AS scratch (REGION '{AWS_REGION}', NAME '{AWS_S3_BUCKET}-res');
+CREATE EXTERNAL RESOURCE 'aws.s3.bucket' AS scratch (REGION '{AWS_REGION}', NAME '{AWS_S3_BUCKET}-res');
 
 query IIII
 SELECT type, managed, uri, handle FROM duckdb_external_resources() WHERE name = 'scratch';
 ----
-aws:s3:bucket	true	s3://{AWS_S3_BUCKET}-res/	{name={AWS_S3_BUCKET}-res, region={AWS_REGION}}
+aws.s3.bucket	true	s3://{AWS_S3_BUCKET}-res/	{name={AWS_S3_BUCKET}-res, region={AWS_REGION}}
 
 query II
 SELECT key, value FROM s3_bucket_tags('{AWS_S3_BUCKET}-res')
 WHERE key IN ('created-by', 'duckdb-external-resource-type') ORDER BY key;
 ----
 created-by	duckdb
-duckdb-external-resource-type	aws:s3:bucket
+duckdb-external-resource-type	aws.s3.bucket
 
 # Tagged buckets still require explicit cascade. Preserve both object versions on failed DESTROY.
 statement ok
@@ -107,13 +107,13 @@ statement ok
 SELECT * FROM s3_create_bucket('{AWS_S3_BUCKET}-adopt', region := '{AWS_REGION}');
 
 statement ok
-REGISTER EXTERNAL RESOURCE 'aws:s3:bucket' AS adopted
+REGISTER EXTERNAL RESOURCE 'aws.s3.bucket' AS adopted
 FROM MAP {'name': '{AWS_S3_BUCKET}-adopt', 'region': '{AWS_REGION}'};
 
 query III
 SELECT type, managed, uri FROM duckdb_external_resources() WHERE name = 'adopted';
 ----
-aws:s3:bucket	true	s3://{AWS_S3_BUCKET}-adopt/
+aws.s3.bucket	true	s3://{AWS_S3_BUCKET}-adopt/
 
 # A non-empty adopted bucket survives, and stays registered so deletion can be retried.
 statement ok
@@ -132,7 +132,7 @@ SELECT (SELECT count(*) FROM duckdb_external_resources() WHERE name = 'adopted')
 
 # Adding the shared resource-type tag must not change the deletion policy.
 statement ok
-SELECT * FROM s3_update_bucket('{AWS_S3_BUCKET}-adopt', tags := MAP {'duckdb-external-resource-type': 'aws:s3:bucket'});
+SELECT * FROM s3_update_bucket('{AWS_S3_BUCKET}-adopt', tags := MAP {'duckdb-external-resource-type': 'aws.s3.bucket'});
 
 statement error
 DESTROY EXTERNAL RESOURCE adopted;
@@ -166,7 +166,7 @@ statement ok
 SELECT * FROM s3_create_bucket('{AWS_S3_BUCKET}-empty', region := '{AWS_REGION}');
 
 statement ok
-REGISTER EXTERNAL RESOURCE 'aws:s3:bucket' AS empty_adopted
+REGISTER EXTERNAL RESOURCE 'aws.s3.bucket' AS empty_adopted
 FROM MAP {'name': '{AWS_S3_BUCKET}-empty', 'region': '{AWS_REGION}'};
 
 statement ok

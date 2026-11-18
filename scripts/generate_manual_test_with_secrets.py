@@ -139,9 +139,9 @@ def render_manual_test(config, cluster, stack, credentials):
         secret_sql("quack_auth", credentials, config.region),
         "",
         "-- Optional: creates another billable EC2 instance; configure its Redshift ingress separately.\n"
-        "-- CREATE EXTERNAL RESOURCE 'aws:cloudformation:quack-on-ec2' AS remote "
+        "-- CREATE EXTERNAL RESOURCE 'aws.cloudformation.quack-on-ec2' AS remote "
         f"(REGION {sql_quote(config.region)}, TEMPLATE {sql_quote(config.template)});",
-        "REGISTER EXTERNAL RESOURCE 'aws:cloudformation:quack-on-ec2' AS existing_quack\n"
+        "REGISTER EXTERNAL RESOURCE 'aws.cloudformation.quack-on-ec2' AS existing_quack\n"
         f"FROM MAP {{'stack_id': {sql_quote(stack['id'])}, 'region': {sql_quote(config.region)}}};",
         "ATTACH TO EXTERNAL RESOURCE existing_quack AS quack;",
         "",

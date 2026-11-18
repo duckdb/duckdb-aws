@@ -218,7 +218,7 @@ unique_ptr<TableRef> SystemTableBindReplace(ClientContext &context, TableFunctio
 //
 // The known families of system tables: which service writes them, where they land, and which
 // external resource type they are the inventory of. The enable callbacks are what a
-// `CREATE EXTERNAL RESOURCE 'aws:system-table'` will run; none is filled in yet.
+// `CREATE EXTERNAL RESOURCE 'aws.system-table'` will run; none is filled in yet.
 //===--------------------------------------------------------------------===//
 
 struct FamilyRow {
@@ -231,15 +231,15 @@ struct FamilyRow {
 };
 
 const FamilyRow FAMILIES[] = {
-    {"glue-catalog-export", "aws-catalog", "glue", "%", "aws:glue", "glue PutDataCatalogExportConfiguration"},
-    {"glue-catalog-export", "aws-catalog", "catalog_metadata", "%", "aws:glue",
+    {"glue-catalog-export", "aws-catalog", "glue", "%", "aws.glue", "glue PutDataCatalogExportConfiguration"},
+    {"glue-catalog-export", "aws-catalog", "catalog_metadata", "%", "aws.glue",
      "glue PutDataCatalogExportConfiguration"},
-    {"s3-metadata", "aws-s3", "b\\_%", "journal", "aws:s3:bucket", "s3 CreateBucketMetadataConfiguration"},
-    {"s3-metadata", "aws-s3", "b\\_%", "inventory", "aws:s3:bucket", "s3 CreateBucketMetadataConfiguration"},
-    {"s3-metadata", "aws-s3", "b\\_%", "annotation", "aws:s3:bucket", "s3 CreateBucketMetadataConfiguration"},
-    {"athena-system-tables", "aws-athena", "metadata", "%", "aws:athena", "athena CreateSystemTableConfiguration"},
-    {"redshift-system-tables", "aws-redshift", "%", "sys\\_%", "aws:redshift", "redshift EnableLogging s3table"},
-    {"cloudwatch-logs", "aws-cloudwatch", "logs", "%", "aws:cloudwatch", "observabilityadmin CreateS3TableIntegration"},
+    {"s3-metadata", "aws-s3", "b\\_%", "journal", "aws.s3.bucket", "s3 CreateBucketMetadataConfiguration"},
+    {"s3-metadata", "aws-s3", "b\\_%", "inventory", "aws.s3.bucket", "s3 CreateBucketMetadataConfiguration"},
+    {"s3-metadata", "aws-s3", "b\\_%", "annotation", "aws.s3.bucket", "s3 CreateBucketMetadataConfiguration"},
+    {"athena-system-tables", "aws-athena", "metadata", "%", "aws.athena", "athena CreateSystemTableConfiguration"},
+    {"redshift-system-tables", "aws-redshift", "%", "sys\\_%", "aws.redshift", "redshift EnableLogging s3table"},
+    {"cloudwatch-logs", "aws-cloudwatch", "logs", "%", "aws.cloudwatch", "observabilityadmin CreateS3TableIntegration"},
 };
 
 struct FamiliesState : public GlobalTableFunctionState {
