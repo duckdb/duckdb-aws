@@ -20,7 +20,7 @@ import time
 
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_TEMPLATE = "https://quack-on-ec2-259911478022.s3.amazonaws.com/quack.yaml"
+DEFAULT_TEMPLATE = "https://quack-on-ec2-259911478022.s3.amazonaws.com/quack-stack.yaml"
 TEMPLATE_REGIONS = {"us-east-1", "us-east-2", "us-west-1", "us-west-2", "eu-central-1"}
 RESOURCE_TYPE = "aws.cloudformation.stack"
 MANAGED_BY = "duckdb-quack-redshift-test"
@@ -36,7 +36,7 @@ ENV_FIELDS = {
 STACK_QUERY = (
     "Stacks[0].{id:StackId,name:StackName,status:StackStatus,tags:Tags,"
     "instance:Outputs[?OutputKey==`InstanceId`].OutputValue|[0],"
-    "uri:Outputs[?OutputKey==`QuackURI`].OutputValue|[0]}"
+    "uri:Outputs[?OutputKey==`DuckDBUri`].OutputValue|[0]}"
 )
 CLUSTER_QUERY = (
     "Clusters[0].{name:ClusterIdentifier,arn:ClusterNamespaceArn,status:ClusterStatus,"
@@ -282,7 +282,7 @@ def duckdb(config, setup_sql, result_sql, environment, phase, timeout=120):
 
 
 def template_parameters(config):
-    return {"maxduration": str(config.max_hours), "machinetype": config.machine_type}
+    return {"MaxDurationHours": str(config.max_hours), "MachineType": config.machine_type}
 
 
 def validate_build(config):
@@ -413,7 +413,7 @@ def wait_stack(config, state):
         require(stack is not None, "Quack stack disappeared while waiting")
         status = stack["status"]
         if status in ("CREATE_COMPLETE", "UPDATE_COMPLETE"):
-            require(stack["instance"] and stack["uri"], "Quack stack is missing InstanceId or QuackURI output")
+            require(stack["instance"] and stack["uri"], "Quack stack is missing InstanceId or DuckDBUri output")
             return stack
         require(not any(word in status for word in ("FAILED", "ROLLBACK", "DELETE")),
                 f"Quack stack is {status}; inspect CloudFormation events. It will not be recreated automatically")
