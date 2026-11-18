@@ -13,7 +13,7 @@ namespace duckdb {
 
 //! The external-resource type name, also stamped as a tag on every bucket this recipe creates, so
 //! s3_bucket_tags shows which buckets DuckDB made after the process that made them is gone.
-static constexpr const char *S3_BUCKET_TYPE = "aws:s3:bucket";
+static constexpr const char *S3_BUCKET_TYPE = "aws.s3.bucket";
 static constexpr const char *RESOURCE_TYPE_TAG = "duckdb-external-resource-type";
 
 namespace {

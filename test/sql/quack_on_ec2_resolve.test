@@ -15,13 +15,13 @@ CREATE MACRO cloudformation_describe_stacks() AS TABLE
 SELECT t.*, NULL::VARCHAR AS creation_time, NULL::VARCHAR AS last_updated_time, NULL::VARCHAR AS description
 FROM (VALUES
     ('eu-central-1', 'box', 'arn:aws:cloudformation:eu-central-1:123456789012:stack/box/1111', 'CREATE_COMPLETE',
-     MAP {'duckdb-external-resource-type': 'aws:cloudformation:quack-on-ec2'}, NULL),
+     MAP {'duckdb-external-resource-type': 'aws.cloudformation.quack-on-ec2'}, NULL),
     ('us-east-1', 'box', 'arn:aws:cloudformation:us-east-1:123456789012:stack/box/2222', 'DELETE_IN_PROGRESS',
-     MAP {'duckdb-external-resource-type': 'aws:cloudformation:quack-on-ec2'}, NULL),
+     MAP {'duckdb-external-resource-type': 'aws.cloudformation.quack-on-ec2'}, NULL),
     ('eu-central-1', 'old', 'arn:aws:cloudformation:eu-central-1:123456789012:stack/old/3333', 'CREATE_COMPLETE',
-     MAP {'duckdb-external-resource-type': 'aws:cloudformation:quack-on-ec2', 'duckdb-expires-at': '2020-01-01 00:00:00+00'}, NULL),
+     MAP {'duckdb-external-resource-type': 'aws.cloudformation.quack-on-ec2', 'duckdb-expires-at': '2020-01-01 00:00:00+00'}, NULL),
     ('eu-central-1', 'fresh', 'arn:aws:cloudformation:eu-central-1:123456789012:stack/fresh/4444', 'CREATE_COMPLETE',
-     MAP {'duckdb-external-resource-type': 'aws:cloudformation:quack-on-ec2', 'duckdb-expires-at': '2999-01-01 00:00:00+00'}, NULL),
+     MAP {'duckdb-external-resource-type': 'aws.cloudformation.quack-on-ec2', 'duckdb-expires-at': '2999-01-01 00:00:00+00'}, NULL),
     ('eu-central-1', 'other', 'arn:aws:cloudformation:eu-central-1:123456789012:stack/other/5555', 'CREATE_COMPLETE',
      MAP {'created-by': 'someone-else'}, NULL),
     ('ap-south-1', NULL, NULL, NULL, NULL, 'opted out')
@@ -30,7 +30,7 @@ FROM (VALUES
 statement ok
 CREATE MACRO cloudformation_describe_stack(h) AS TABLE
 SELECT h['region'] AS region, 'box' AS stack_name, h['stack_id'] AS stack_id, 'CREATE_COMPLETE' AS status,
-       MAP {'duckdb-external-resource-type': 'aws:cloudformation:quack-on-ec2'} AS tags;
+       MAP {'duckdb-external-resource-type': 'aws.cloudformation.quack-on-ec2'} AS tags;
 
 statement ok
 CREATE MACRO cloudformation_delete_stack(h) AS TABLE SELECT 'deleting' AS status;
@@ -54,7 +54,7 @@ SELECT handle, name, state FROM __aws__cloudformation__quack_on_ec2__list(MAP {}
 
 # The type registers the resolve callback.
 query I
-SELECT resolve_function FROM duckdb_external_resource_types() WHERE name = 'aws:cloudformation:quack-on-ec2';
+SELECT resolve_function FROM duckdb_external_resource_types() WHERE name = 'aws.cloudformation.quack-on-ec2';
 ----
 __aws__cloudformation__quack_on_ec2__resolve
 

@@ -39,7 +39,7 @@ CREATE TEMPORARY SECRET s3tables_resource_credentials (
 );
 
 statement ok
-CREATE EXTERNAL RESOURCE 'aws:s3tables:bucket' AS owned
+CREATE EXTERNAL RESOURCE 'aws.s3tables.bucket' AS owned
 (NAME '{AWS_S3TABLES_RESOURCE_BUCKET_NAME}', REGION '{AWS_S3TABLES_REGION}');
 
 statement ok
@@ -49,7 +49,7 @@ query II
 SELECT key, value FROM s3tables_table_bucket_tags(getvariable('bucket_arn'))
 WHERE key = 'duckdb-external-resource-type';
 ----
-duckdb-external-resource-type	aws:s3tables:bucket
+duckdb-external-resource-type	aws.s3tables.bucket
 
 statement ok
 ATTACH TO EXTERNAL RESOURCE owned AS preservation_db;
@@ -95,7 +95,7 @@ statement ok
 SELECT * FROM deregister_external_resource('owned');
 
 statement ok
-REGISTER EXTERNAL RESOURCE 'aws:s3tables:bucket' AS adopted
+REGISTER EXTERNAL RESOURCE 'aws.s3tables.bucket' AS adopted
 FROM MAP {'arn': getvariable('bucket_arn')};
 
 statement ok
@@ -143,7 +143,7 @@ SET VARIABLE empty_arn = (
 );
 
 statement ok
-REGISTER EXTERNAL RESOURCE 'aws:s3tables:bucket' AS empty_adopted
+REGISTER EXTERNAL RESOURCE 'aws.s3tables.bucket' AS empty_adopted
 FROM MAP {'arn': getvariable('empty_arn')};
 
 statement ok

@@ -22,7 +22,7 @@ namespace duckdb {
 
 // The external-resource type name, also stamped as a stack tag at create time so the list callback can
 // discover quack-on-ec2 stacks by filtering DescribeStacks output on it.
-static constexpr const char *QUACK_ON_EC2_TYPE = "aws:cloudformation:quack-on-ec2";
+static constexpr const char *QUACK_ON_EC2_TYPE = "aws.cloudformation.quack-on-ec2";
 static constexpr const char *RESOURCE_TYPE_TAG = "duckdb-external-resource-type";
 
 // Lifetime. The template's MaxDurationHours parameter (whole hours, 0 = unbounded) arms the box's self-shutdown;
@@ -485,7 +485,7 @@ void QuackOnEc2Resource::Register(ExtensionLoader &loader) {
 
 	// Register the resource type on the C++ side (origin = "extension"), so `LOAD aws;` is all a user needs.
 	ExternalResourceType type;
-	type.name = "aws:cloudformation:quack-on-ec2";
+	type.name = "aws.cloudformation.quack-on-ec2";
 	type.kind = "catalog";
 	type.create_function = "__aws__cloudformation__quack_on_ec2__create";
 	type.status_function = "__aws__cloudformation__quack_on_ec2__status";

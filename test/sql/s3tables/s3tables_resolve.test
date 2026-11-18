@@ -33,7 +33,7 @@ SELECT handle, name, reference, state FROM __aws__s3tables__bucket__list(MAP {})
 
 # The type registers the resolve callback.
 query I
-SELECT resolve_function FROM duckdb_external_resource_types() WHERE name = 'aws:s3tables:bucket';
+SELECT resolve_function FROM duckdb_external_resource_types() WHERE name = 'aws.s3tables.bucket';
 ----
 __aws__s3tables__bucket__resolve
 

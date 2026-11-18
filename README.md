@@ -130,7 +130,7 @@ only after loading `aws`, with SQL logging disabled.
 This creates another billable EC2 instance, unlike the generated test's `REGISTER` command. Run it in a separate DuckDB session with an AWS secret and the `aws` and `quack` extensions loaded:
 
 ```sql
-CREATE EXTERNAL RESOURCE 'aws:cloudformation:quack-on-ec2' AS remote (REGION 'eu-central-1', TEMPLATE 'https://quack-on-ec2-259911478022.s3.amazonaws.com/quack.yaml');
+CREATE EXTERNAL RESOURCE 'aws.cloudformation.quack-on-ec2' AS remote (REGION 'eu-central-1', TEMPLATE 'https://quack-on-ec2-259911478022.s3.amazonaws.com/quack.yaml');
 ATTACH TO EXTERNAL RESOURCE remote AS quack;
 ```
 
@@ -165,10 +165,10 @@ The script can also be called directly as `python3 scripts/quack_redshift.py <ac
 
 ## S3 buckets and S3 Tables
 
-- [S3 buckets](test/sql/s3/README.md): the `s3_*` table functions, the `aws:s3:bucket`
+- [S3 buckets](test/sql/s3/README.md): the `s3_*` table functions, the `aws.s3.bucket`
   external-resource type, their tests and the private fixture bucket.
 - [S3 Tables](test/sql/s3tables/README.md): the `s3tables_*` table functions, the
-  `aws:s3tables:bucket` external-resource type, their tests and the table bucket fixture.
+  `aws.s3tables.bucket` external-resource type, their tests and the table bucket fixture.
 
 The function references below, here and under [AWS system tables](#aws-system-tables), are
 generated from the description, example and category each function registers through
@@ -490,7 +490,7 @@ scans one table by bucket name (in `region`, or the region the usual resolution 
 the table's current metadata location and reads it with `iceberg_scan`, so the `iceberg` extension is loaded on
 demand and the data files are read with the ordinary S3 secret.
 
-The same tables are the external resource type `aws:system-table`, named by path:
+The same tables are the external resource type `aws.system-table`, named by path:
 
 ```sql
 SHOW ALL EXTERNAL RESOURCES;                           -- aws-catalog/glue/tables, aws-s3/b_my-bucket/inventory, ... alongside the table buckets
@@ -507,14 +507,14 @@ is the inventory of; `DESTROY` turns it off again, which for S3 Metadata deletes
 tables (never the bucket's objects):
 
 ```sql
-CREATE EXTERNAL RESOURCE 'aws:system-table' AS meta (TYPE 'aws:s3:bucket', BUCKET 'my-bucket', REGION 'us-east-1');
+CREATE EXTERNAL RESOURCE 'aws.system-table' AS meta (TYPE 'aws.s3.bucket', BUCKET 'my-bucket', REGION 'us-east-1');
 ATTACH TO EXTERNAL RESOURCE meta AS m;             -- the aws-s3 bucket, default schema b_my-bucket
 SELECT count(*) FROM m.inventory;
 DESTROY EXTERNAL RESOURCE meta;
 ```
 
-Only the S3 Metadata family (`TYPE 'aws:s3:bucket'`) can be enabled with the AWS SDK version this extension links;
-`TYPE 'aws:glue'` and `'aws:athena'` are refused until the vcpkg port moves to aws-sdk-cpp 1.11.924 or later, which
+Only the S3 Metadata family (`TYPE 'aws.s3.bucket'`) can be enabled with the AWS SDK version this extension links;
+`TYPE 'aws.glue'` and `'aws.athena'` are refused until the vcpkg port moves to aws-sdk-cpp 1.11.924 or later, which
 has `PutDataCatalogExportConfiguration` and `CreateSystemTableConfiguration`. The configuration calls are also
 available directly as the `s3_*_metadata_configuration` functions below.
 

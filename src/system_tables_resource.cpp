@@ -11,7 +11,7 @@
 
 namespace duckdb {
 
-static constexpr const char *SYSTEM_TABLE_TYPE = "aws:system-table";
+static constexpr const char *SYSTEM_TABLE_TYPE = "aws.system-table";
 
 namespace {
 
@@ -150,7 +150,7 @@ void ListFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &outp
 		state.result = RunSQL(context,
 		                      "SELECT " + string(ROW_SQL) + ", " + METADATA_SQL + " FROM " + source +
 		                          " WHERE error IS NULL ORDER BY region, bucket, namespace, name",
-		                      "aws:system-table list");
+		                      "aws.system-table list");
 		state.ran = true;
 	}
 	EmitRows(state, output);
@@ -168,7 +168,7 @@ void ListFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &outp
 //===--------------------------------------------------------------------===//
 
 const char *S3_METADATA_FAMILY = "s3-metadata";
-const char *S3_BUCKET_TYPE = "aws:s3:bucket";
+const char *S3_BUCKET_TYPE = "aws.s3.bucket";
 
 unique_ptr<FunctionData> CreateBind(ClientContext &, TableFunctionBindInput &input, vector<LogicalType> &return_types,
                                     vector<Identifier> &names) {
@@ -206,37 +206,37 @@ void CreateFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &ou
 	auto bucket = MapLookup(bind.input, "bucket");
 	auto secret = MapLookup(bind.input, "secret");
 	if (type.empty()) {
-		throw InvalidInputException("aws:system-table create: TYPE is required, the resource type whose system tables "
+		throw InvalidInputException("aws.system-table create: TYPE is required, the resource type whose system tables "
 		                            "to enable (see aws_system_table_families())");
 	}
 	if (region.empty()) {
 		throw InvalidInputException(
-		    "aws:system-table create: REGION is required, system tables are enabled per region");
+		    "aws.system-table create: REGION is required, system tables are enabled per region");
 	}
 	if (type != S3_BUCKET_TYPE) {
 		auto known = RunSQL(context,
 		                    "SELECT count(*) FROM aws_system_table_families() WHERE resource_type = " +
 		                        Value(type).ToSQLString(),
-		                    "aws:system-table create");
+		                    "aws.system-table create");
 		if (known->Collection().GetRows().GetValue(0, 0).GetValue<int64_t>() == 0) {
-			throw InvalidInputException("aws:system-table create: no system tables are known for type '%s'; "
+			throw InvalidInputException("aws.system-table create: no system tables are known for type '%s'; "
 			                            "aws_system_table_families() lists the known ones",
 			                            type);
 		}
-		throw NotImplementedException("aws:system-table create: enabling the system tables of '%s' needs an AWS SDK "
+		throw NotImplementedException("aws.system-table create: enabling the system tables of '%s' needs an AWS SDK "
 		                              "newer than the one this extension was built with; enable them in the owning "
 		                              "service (see aws_system_table_families()) and they are listed by "
 		                              "SHOW ALL EXTERNAL RESOURCES",
 		                              type);
 	}
 	if (bucket.empty()) {
-		throw InvalidInputException("aws:system-table create: BUCKET is required for '%s', the general purpose bucket "
+		throw InvalidInputException("aws.system-table create: BUCKET is required for '%s', the general purpose bucket "
 		                            "whose objects the journal and inventory tables describe",
 		                            type);
 	}
 	string sql = "SELECT table_bucket_arn FROM s3_create_bucket_metadata_configuration(" + Value(bucket).ToSQLString() +
 	             ", region := " + Value(region).ToSQLString() + SecretKwarg(secret, true) + ")";
-	RunSQL(context, sql, "aws:system-table create");
+	RunSQL(context, sql, "aws.system-table create");
 	output.data[0].SetValue(0, FamilyHandle(S3_METADATA_FAMILY, type, region, bucket, secret));
 	output.SetCardinality(1);
 }
@@ -271,7 +271,7 @@ void StatusFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &ou
 		auto secret = MapLookup(bind.input, "secret");
 		if (arn_string.empty()) {
 			if (MapLookup(bind.input, "family") != S3_METADATA_FAMILY) {
-				throw InvalidInputException("aws:system-table status: handle has neither 'arn' nor a known 'family'");
+				throw InvalidInputException("aws.system-table status: handle has neither 'arn' nor a known 'family'");
 			}
 			auto bucket = MapLookup(bind.input, "bucket");
 			auto region = MapLookup(bind.input, "region");
@@ -283,9 +283,9 @@ void StatusFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &ou
 			           "AS result FROM s3_bucket_metadata_configuration(" +
 			           Value(bucket).ToSQLString() + ", region := " + Value(region).ToSQLString() +
 			           SecretKwarg(secret, true) + ")";
-			state.result = RunSQL(context, sql, "aws:system-table status");
+			state.result = RunSQL(context, sql, "aws.system-table status");
 			if (state.result->RowCount() == 0) {
-				throw IOException("aws:system-table status: bucket '%s' in '%s' has no S3 Metadata configuration "
+				throw IOException("aws.system-table status: bucket '%s' in '%s' has no S3 Metadata configuration "
 				                  "(destroyed outside DuckDB?)",
 				                  bucket, region);
 			}
@@ -293,14 +293,14 @@ void StatusFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &ou
 			EmitRows(state, output);
 			return;
 		}
-		auto arn = ParseTableArn(arn_string, "aws:system-table status");
+		auto arn = ParseTableArn(arn_string, "aws.system-table status");
 		auto sql = "SELECT 'ready' AS state, MAP {'uri': " + Value(arn.bucket_arn).ToSQLString() +
 		           ", 'attached_db_type': 'arn', 'default_schema': namespace} AS result FROM s3tables_tables(" +
 		           Value(arn.bucket_arn).ToSQLString() + SecretKwarg(secret, true) +
 		           ") WHERE table_arn = " + Value(arn.raw).ToSQLString();
-		state.result = RunSQL(context, sql, "aws:system-table status");
+		state.result = RunSQL(context, sql, "aws.system-table status");
 		if (state.result->RowCount() == 0) {
-			throw IOException("aws:system-table status: no table with ARN '%s' in bucket '%s'", arn.raw, arn.bucket);
+			throw IOException("aws.system-table status: no table with ARN '%s' in bucket '%s'", arn.raw, arn.bucket);
 		}
 		state.ran = true;
 	}
@@ -334,17 +334,17 @@ void DestroyFun(ClientContext &context, TableFunctionInput &data_p, DataChunk &o
 	}
 	state.ran = true;
 	if (!MapLookup(bind.input, "arn").empty()) {
-		throw InvalidInputException("aws:system-table destroy: a system table is not deleted on its own; destroy the "
+		throw InvalidInputException("aws.system-table destroy: a system table is not deleted on its own; destroy the "
 		                            "resource that enabled its family, or disable the family in the owning service");
 	}
 	if (MapLookup(bind.input, "family") != S3_METADATA_FAMILY) {
-		throw InvalidInputException("aws:system-table destroy: handle has no known 'family'");
+		throw InvalidInputException("aws.system-table destroy: handle has no known 'family'");
 	}
 	auto sql = "SELECT status FROM s3_delete_bucket_metadata_configuration(" +
 	           Value(MapLookup(bind.input, "bucket")).ToSQLString() +
 	           ", region := " + Value(MapLookup(bind.input, "region")).ToSQLString() +
 	           SecretKwarg(MapLookup(bind.input, "secret"), true) + ")";
-	auto res = RunSQL(context, sql, "aws:system-table destroy");
+	auto res = RunSQL(context, sql, "aws.system-table destroy");
 	output.data[0].SetValue(0, res->Collection().GetRows().GetValue(0, 0));
 	output.SetCardinality(1);
 }

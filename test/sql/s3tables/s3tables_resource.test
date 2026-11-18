@@ -1,5 +1,5 @@
 # name: test/sql/s3tables/s3tables_resource.test
-# description: the aws:s3tables:bucket external-resource type and its callbacks
+# description: the aws.s3tables.bucket external-resource type and its callbacks
 # group: [s3tables]
 
 require no_extension_autoloading "EXPECTED: Test relies on explicit INSTALL and LOAD"
@@ -17,12 +17,12 @@ CREATE SECRET bogus (TYPE s3, KEY_ID 'AKIAIOSFODNN7EXAMPLE', SECRET 'wJalrXUtnFE
 # The type is registered from C++ (origin 'extension'), so LOAD aws is all a user needs.
 query IIIIII
 SELECT name, kind, origin, create_function, status_function, list_function
-FROM duckdb_external_resource_types() WHERE name = 'aws:s3tables:bucket';
+FROM duckdb_external_resource_types() WHERE name = 'aws.s3tables.bucket';
 ----
-aws:s3tables:bucket	catalog	extension	__aws__s3tables__bucket__create	__aws__s3tables__bucket__status	__aws__s3tables__bucket__list
+aws.s3tables.bucket	catalog	extension	__aws__s3tables__bucket__create	__aws__s3tables__bucket__status	__aws__s3tables__bucket__list
 
 query I
-SELECT destroy_function FROM duckdb_external_resource_types() WHERE name = 'aws:s3tables:bucket';
+SELECT destroy_function FROM duckdb_external_resource_types() WHERE name = 'aws.s3tables.bucket';
 ----
 __aws__s3tables__bucket__destroy
 
@@ -49,13 +49,13 @@ expected a table bucket ARN
 # Provisioning through the framework reaches the create callback and, from there, the AWS call,
 # which the bogus key fails: the error names the callback rather than anything earlier in the chain.
 statement error
-CREATE EXTERNAL RESOURCE 'aws:s3tables:bucket' AS bucket_x (REGION 'eu-central-1');
+CREATE EXTERNAL RESOURCE 'aws.s3tables.bucket' AS bucket_x (REGION 'eu-central-1');
 ----
 <REGEX>:.*__aws__s3tables__bucket__create.*
 
 # Adoption of an existing bucket goes through status, not create.
 statement error
-REGISTER EXTERNAL RESOURCE 'aws:s3tables:bucket' AS bucket_y
+REGISTER EXTERNAL RESOURCE 'aws.s3tables.bucket' AS bucket_y
 FROM MAP {'arn': 'arn:aws:s3tables:eu-central-1:123456789012:bucket/nope'};
 ----
 <REGEX>:.*__aws__s3tables__bucket__status.*
@@ -91,7 +91,7 @@ SELECT bucket_arn AS arn;
 
 statement ok
 CREATE MACRO s3tables_table_bucket_tags(bucket_arn) AS TABLE
-SELECT 'duckdb-external-resource-type' AS key, 'aws:s3tables:bucket' AS value;
+SELECT 'duckdb-external-resource-type' AS key, 'aws.s3tables.bucket' AS value;
 
 statement ok
 CREATE MACRO s3tables_delete_table_bucket(handle, cascade := false) AS TABLE
@@ -102,10 +102,10 @@ SELECT CASE
 END AS status;
 
 statement ok
-CREATE EXTERNAL RESOURCE 'aws:s3tables:bucket' AS owned (NAME 'owned', REGION 'eu-central-1');
+CREATE EXTERNAL RESOURCE 'aws.s3tables.bucket' AS owned (NAME 'owned', REGION 'eu-central-1');
 
 statement ok
-REGISTER EXTERNAL RESOURCE 'aws:s3tables:bucket' AS adopted
+REGISTER EXTERNAL RESOURCE 'aws.s3tables.bucket' AS adopted
 FROM MAP {'arn': 'arn:aws:s3tables:eu-central-1:123456789012:bucket/adopted'};
 
 statement error
@@ -124,7 +124,7 @@ SELECT count(*) FROM duckdb_external_resources() WHERE name IN ('owned', 'adopte
 2
 
 statement ok
-REGISTER EXTERNAL RESOURCE 'aws:s3tables:bucket' AS empty_adopted
+REGISTER EXTERNAL RESOURCE 'aws.s3tables.bucket' AS empty_adopted
 FROM MAP {'arn': 'arn:aws:s3tables:eu-central-1:123456789012:bucket/empty'};
 
 statement ok
