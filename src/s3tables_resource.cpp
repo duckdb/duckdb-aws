@@ -91,12 +91,13 @@ string ShortRandHex() {
 // create(params MAP) -> TABLE(handle MAP)
 //
 // CreateTableBucket is synchronous, so this returns the handle of a bucket that already exists.
-// Params: `name` (defaults to duckdb-<rand>), `region` (defaults to the usual resolution order).
+// Params: `name` (defaults to duckdb-<rand>), `region` (defaults to the usual resolution order),
+// `namespace` (defaults to "default"; empty omits the default schema).
 // Any other key is refused: table buckets cannot be made public (S3 Tables rejects public
 // policies), so the aws.s3.bucket permission options in particular must not pass silently.
 //===--------------------------------------------------------------------===//
 
-const vector<string> CREATE_PARAMS = {"name", "region"};
+const vector<string> CREATE_PARAMS = {"name", "region", "namespace"};
 
 void CheckKnownParams(const Value &params, const char *callback) {
 	if (params.IsNull()) {
