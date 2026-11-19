@@ -1,0 +1,44 @@
+# name: test/sql/redshift/serverless/resource_aws.test
+# description: redshift_serverless_workgroups and the aws.redshift-serverless.workgroup type against the test workgroup; read-only
+# group: [serverless]
+
+# Needs `source test/sql/redshift/serverless/redshift-serverless.env` (see README.md).
+
+require aws
+
+require httpfs
+
+require-env AWS_ACCESS_KEY_ID
+
+require-env AWS_SECRET_ACCESS_KEY
+
+require-env AWS_REGION
+
+require-env AWS_REDSHIFT_SERVERLESS_WORKGROUP_ARN
+
+statement ok
+CREATE SECRET redshift_serverless_resource_credentials (TYPE aws, PROVIDER credential_chain, CHAIN 'env', REGION '{AWS_REGION}');
+
+query III
+SELECT status, endpoint_port IS NOT NULL, error
+FROM redshift_serverless_workgroups(region := '{AWS_REGION}') WHERE arn = '{AWS_REDSHIFT_SERVERLESS_WORKGROUP_ARN}';
+----
+AVAILABLE	true	NULL
+
+query I
+SELECT state FROM (SHOW ALL EXTERNAL RESOURCES WITH TYPE 'aws.redshift-serverless.workgroup')
+WHERE reference = '{AWS_REDSHIFT_SERVERLESS_WORKGROUP_ARN}';
+----
+ready
+
+statement ok
+REGISTER EXTERNAL RESOURCE 'aws.redshift-serverless.workgroup' AS test_workgroup
+FROM MAP {'arn': '{AWS_REDSHIFT_SERVERLESS_WORKGROUP_ARN}'};
+
+query II
+SELECT uri, attached_db_type FROM duckdb_external_resources() WHERE name = 'test_workgroup';
+----
+{AWS_REDSHIFT_SERVERLESS_WORKGROUP_ARN}	arn
+
+statement ok
+DESTROY EXTERNAL RESOURCE test_workgroup;
