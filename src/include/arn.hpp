@@ -16,7 +16,8 @@ struct ParsedArn {
 
 	//! Whether a path is spelled as an ARN (so that a backend reads region, account and resource from it)
 	static bool IsArn(const string &path);
-	//! Parse an ARN, lowercasing the service; throws when the shape is not an ARN
+	//! Parse an ARN, lowercasing the service; throws when the shape is not an ARN. Sections after the service may be
+	//! left out and are then empty
 	static ParsedArn Parse(const string &arn);
 };
 

@@ -28,10 +28,26 @@ ATTACH 'arn::s3tables:::' as db;
 ----
 Invalid Input Error: Invalid PARTITION Section of ARN: ''
 
+# A short ARN stops after the service
+statement error
+ATTACH 'arn:aws' as db;
+----
+Invalid Input Error: Expected an AWS ARN of the form 'arn:<partition>:<service>:<region>:<account>:<resource>', got 'arn:aws'
+
+statement error
+ATTACH 'arn:aws:' as db;
+----
+Not implemented Error: ATTACH of AWS ARN service '' is not supported. Supported options are: athena, rds, redshift, redshift-serverless, s3tables
+
+statement error
+ATTACH 'arn:aws:rds' AS db;
+----
+Invalid Input Error: Expected an RDS DB instance ARN with a resource of the form 'db:<instance-id>', got 'arn:aws:rds'
+
 statement error
 ATTACH 'arn:aws::::' as db;
 ----
-Not implemented Error: ATTACH of AWS ARN service '' is not supported. Supported options are: rds, redshift, redshift-serverless, s3tables
+Not implemented Error: ATTACH of AWS ARN service '' is not supported. Supported options are: athena, rds, redshift, redshift-serverless, s3tables
 
 # RDS dispatch only accepts DB instance ARNs, and the ARN owns its region.
 statement error
@@ -55,6 +71,33 @@ ATTACH 'arn:aws:redshift-serverless:eu-central-1:840140254803:workgroup/wg' AS d
 ----
 <REGEX>:Missing Extension Error.*requires the 'redshift' extension from aws.amazon.com.*
 
+# An athena ARN goes to the athena extension from aws.amazon.com
+statement error
+ATTACH 'arn:aws:athena:eu-central-1:840140254803:workgroup/primary' AS db;
+----
+<REGEX>:Missing Extension Error.*Attaching 'arn:aws:athena:eu-central-1:840140254803:workgroup/primary' requires the 'athena' extension from aws.amazon.com.*INSTALL athena FROM aws.amazon.com.*
+
+statement error
+ATTACH 'arn:aws:athena:eu-central-1:840140254803:workgroup/primary' AS db;
+----
+<!REGEX>:.*TYPE .*_postgres.*
+
+statement error
+ATTACH 'arn:aws:athena:eu-central-1:840140254803:workgroup/primary' AS db (TYPE athena);
+----
+<REGEX>:Missing Extension Error.*requires the 'athena' extension from aws.amazon.com.*
+
+# The short form too
+statement error
+ATTACH 'arn:aws:athena' AS db;
+----
+<REGEX>:Missing Extension Error.*Attaching 'arn:aws:athena' requires the 'athena' extension from aws.amazon.com.*
+
+statement error
+ATTACH 'arn:aws:athena:' AS db;
+----
+<REGEX>:Missing Extension Error.*Attaching 'arn:aws:athena:' requires the 'athena' extension from aws.amazon.com.*
+
 # A repository that only carries the host's name, added with a prefix, is not the host's: the extension is not loaded
 # from it, whether or not something is installed there
 statement ok
@@ -67,6 +110,11 @@ statement error
 ATTACH 'arn:aws:redshift:eu-central-1:840140254803:namespace:e542f89f-b604-4110-a337-f7ba8c7ce156' AS db;
 ----
 <REGEX>:Permission Error.*repository named 'aws.amazon.com' was added with a prefix.*not resolved from the host.*CREATE EXTENSION REPOSITORY aws.amazon.com.*
+
+statement error
+ATTACH 'arn:aws:athena:eu-central-1:840140254803:workgroup/primary' AS db;
+----
+<REGEX>:Permission Error.*through the 'athena' extension from aws.amazon.com is refused.*repository named 'aws.amazon.com' was added with a prefix.*
 
 statement ok
 DROP EXTENSION REPOSITORY 'aws.amazon.com'
