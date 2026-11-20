@@ -55,6 +55,37 @@ Deregister only after successful deletion: `s3_delete_bucket` does not remove th
 registration. Ordinary resource cleanup, including provisioning rollback, never cascades.
 Non-empty buckets that survive cleanup continue incurring storage charges.
 
+A bucket starts private: Block Public Access on, ACLs disabled, no policy, no CORS. Two options
+on `s3_create_bucket` and `s3_update_bucket` open it up for a browser:
+
+```sql
+FROM s3_create_bucket('my-duckdb-browser-bucket');
+FROM s3_update_bucket('my-duckdb-browser-bucket', cors_origins := ['https://app.example'], public_read := true);
+FROM s3_get_bucket('my-duckdb-browser-bucket');
+FROM s3_update_bucket('my-duckdb-browser-bucket', cors_origins := [], public_read := false);
+FROM s3_delete_bucket('my-duckdb-browser-bucket', cascade := true);
+```
+
+`cors_origins` installs one CORS rule (`ID duckdb-browser`, `GET` and `HEAD` unless `cors_methods`
+says otherwise, any request header, the range and request-id response headers exposed) and leaves
+other rules alone; an empty list removes it. `public_read := true` lifts the two policy blocks and
+adds a bucket-policy statement (`Sid duckdb-public-read`) granting anonymous `s3:GetObject` only,
+not bucket listing. Other policy statements remain unchanged and can allow listing or deny reads.
+For callers without `s3:ListBucket`, a missing key returns 403 rather than 404. `false` removes the
+managed statement and, when nothing public remains, restores the blocks.
+`s3_get_bucket` reports both as `public` (S3's own verdict on the policy) and `cors_origins`.
+An update with `dry_run := true` returns NULL for `public`: S3 cannot classify the proposed
+policy without a write. Policy and CORS updates preserve unrelated entries from the read snapshot;
+serialize configuration writers because concurrent edits can be overwritten. Account- and
+organization-level Block Public Access still wins; the extension cannot change it. S3 Tables
+reject public policies, so neither option exists for table buckets.
+
+`CREATE EXTERNAL RESOURCE 'aws.s3.bucket'` also takes `VERSIONING`, `PUBLIC_READ`,
+`CORS_ORIGINS` and `CORS_METHODS` (`PUBLIC_READ` alone means true; a single origin may be a bare
+string) and refuses other keys that reach its callback. The framework omits options whose
+expressions evaluate to NULL, including unknown keys; standalone S3 functions and direct callbacks
+reject explicitly supplied NULL settings. Reconfigure a registered bucket with `s3_update_bucket`.
+
 ## Tests
 
 ```shell
@@ -69,10 +100,15 @@ deletes; other AWS calls use AWS's documented example key pair and are expected 
 
 - `s3.test` reads the fixture object through an S3 secret.
 - `s3_functions_aws.test` lists and inspects the fixture bucket, then creates
-  `$AWS_S3_BUCKET-fn`, reconfigures it, fills it and cascade-deletes it.
+  `$AWS_S3_BUCKET-fn`, reconfigures and fills it, makes it world-readable and private again,
+  then cascade-deletes it.
 - `s3_resource_aws.test` checks that `DESTROY` preserves objects and versions in tagged
   `$AWS_S3_BUCKET-res` and `$AWS_S3_BUCKET-adopt` buckets, then explicitly cascade-deletes them.
-  It also adopts and destroys the empty `$AWS_S3_BUCKET-empty` bucket.
+  It also adopts and destroys the empty `$AWS_S3_BUCKET-empty` bucket, and provisions and reads
+  the public `$AWS_S3_BUCKET-pub` bucket before explicitly cascade-deleting it.
+
+The public-read tests require account- and organization-level settings that permit public
+policies and anonymous reads. `BlockPublicAcls` and `IgnorePublicAcls` can remain enabled.
 
 If a run dies midway, remove the leftovers by hand before the next run:
 `FROM s3_delete_bucket('<bucket>', cascade := true);`. S3 can refuse to re-create a just-deleted
@@ -241,7 +277,7 @@ unset S3_TEST_AVAILABLE
 
 Cleanup verifies account, region, tags and versioning, refuses unrelated objects,
 then deletes only the two named objects and the bucket. It does not recursively
-empty a bucket, and it does not know about the `-fn`, `-res`, `-adopt` and `-empty` buckets the
+empty a bucket, and it does not know about the `-fn`, `-res`, `-pub`, `-adopt` and `-empty` buckets the
 AWS-backed tests create; those tests delete their own, see [Tests](#tests) for the
 manual fallback. Once the test object is gone, cleanup removes a matching generated
 environment file even if a later step fails. Already-sourced shells retain their
@@ -260,8 +296,17 @@ read the fixture; `s3:ListBucket` is useful for missing-key diagnostics.
 The function tests need more, since they create and delete their own buckets:
 `s3:ListAllMyBuckets`, `s3:CreateBucket`, `s3:ListBucket`, `s3:GetBucketTagging`,
 `s3:PutBucketTagging`, `s3:GetBucketVersioning`, `s3:PutBucketVersioning`,
-`s3:GetBucketPublicAccessBlock`, `s3:PutBucketPublicAccessBlock`, `s3:ListBucketVersions`,
-`s3:PutObject`, `s3:DeleteObject`, `s3:DeleteObjectVersion` and `s3:DeleteBucket`.
+`s3:GetBucketPublicAccessBlock`, `s3:PutBucketPublicAccessBlock`, `s3:GetBucketPolicy`,
+`s3:PutBucketPolicy`, `s3:DeleteBucketPolicy`, `s3:GetBucketPolicyStatus`, `s3:GetBucketCORS`,
+`s3:PutBucketCORS`, `s3:ListBucketVersions`, `s3:PutObject`, `s3:DeleteObject`,
+`s3:DeleteObjectVersion` and `s3:DeleteBucket`. `s3_get_bucket` alone reads the policy status and
+the CORS rules, so it needs `s3:GetBucketPolicyStatus` and `s3:GetBucketCORS` next to the
+versioning and public-access-block reads.
+
+Billable anonymous GET requests and data transfer out are charged to the bucket owner. The
+extension provides no per-reader quota. CloudTrail does not record these reads unless S3 data
+events are enabled, which are charged separately. S3 server access logging has no additional
+feature charge, but log storage and applicable requests are billed.
 
 Data is encrypted at rest and AWS traffic uses TLS. Storage, requests and data
 transfer incur [S3 charges](https://aws.amazon.com/s3/pricing/) until cleanup.

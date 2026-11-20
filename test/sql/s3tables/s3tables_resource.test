@@ -53,6 +53,13 @@ CREATE EXTERNAL RESOURCE 'aws.s3tables.bucket' AS bucket_x (REGION 'eu-central-1
 ----
 <REGEX>:.*__aws__s3tables__bucket__create.*
 
+# A table bucket cannot be made public and has no CORS, so the aws.s3.bucket permission options are
+# refused rather than ignored, like any key the recipe does not read.
+statement error
+CREATE EXTERNAL RESOURCE 'aws.s3tables.bucket' AS bucket_x (REGION 'eu-central-1', PUBLIC_READ);
+----
+<REGEX>:.*unknown option 'public_read'; the options are name, region, namespace.*
+
 # Adoption of an existing bucket goes through status, not create.
 statement error
 REGISTER EXTERNAL RESOURCE 'aws.s3tables.bucket' AS bucket_y
