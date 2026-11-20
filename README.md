@@ -474,12 +474,16 @@ type directly instead.
 | `arn:aws:rds:<region>:<account>:db:<instance-id>` | `rds`, this extension's RDS-over-Postgres attach | |
 | `arn:aws:redshift:<region>:<account>:namespace:<id>` | `redshift`, the redshift extension from aws.amazon.com | `TYPE redshift_postgres` |
 | `arn:aws:redshift-serverless:<region>:<account>:workgroup/<id>` or `namespace/<id>` | `redshift` | `TYPE redshift_postgres` |
+| `arn:aws:athena:<region>:<account>:<resource>` | `athena`, the athena extension from aws.amazon.com | |
 
-`TYPE redshift` is served by the extension that `aws.amazon.com` publishes: it has to be installed from there first
-(`CREATE EXTENSION REPOSITORY aws.amazon.com; INSTALL redshift FROM aws.amazon.com;`), and is loaded on first use; an
-ATTACH without it fails saying so. `TYPE redshift_postgres` is this extension's own attach, which resolves the cluster,
-workgroup or namespace through the Redshift APIs and hands a connection string to the postgres extension. Both take a
-bare identifier as well: `ATTACH '<cluster-id>' AS db (TYPE redshift_postgres, REGION '<region>')`.
+`TYPE redshift` and `TYPE athena` are served by the extensions that `aws.amazon.com` publishes: each has to be installed
+from there first (`CREATE EXTENSION REPOSITORY aws.amazon.com; INSTALL redshift FROM aws.amazon.com;`, likewise for
+`athena`), and is loaded on first use; an ATTACH without it fails saying so. An athena ARN is handed to the athena
+extension as given, together with the other ATTACH options; the short `ATTACH 'arn:aws:athena'`, with region, account
+and resource left out, is one too. `TYPE redshift_postgres` is this extension's own attach,
+which resolves the cluster, workgroup or namespace through the Redshift APIs and hands a connection string to the
+postgres extension. Both Redshift types take a bare identifier as well:
+`ATTACH '<cluster-id>' AS db (TYPE redshift_postgres, REGION '<region>')`.
 
 The redshift extension makes no AWS call of its own, so it cannot turn the namespace or workgroup ID in these Redshift
 ARNs into the endpoint it names. For an ARN without `TYPE`, this extension first looks the target up, in the ARN's

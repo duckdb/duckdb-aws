@@ -55,6 +55,7 @@ static const case_insensitive_map_t<ArnService> &ArnServices() {
 	    // redshift:// path to it instead (see redshift_storage.cpp)
 	    {"redshift", ArnService {"redshift", false, {}, Redshift::ResolveArnById}},
 	    {"redshift-serverless", ArnService {"redshift", false, {}, Redshift::ResolveArnById}},
+	    {"athena", ArnService {"athena", false, {}}},
 	};
 	return services;
 }
@@ -157,21 +158,22 @@ public:
 //===--------------------------------------------------------------------===//
 // A storage type served by an extension from a repository host
 //
-// `TYPE redshift` names the redshift extension that aws.amazon.com publishes. Core's own autoload cannot reach it: a
-// bare LOAD never resolves a user-provided repository, since its keys are not core's. So this extension registers
-// the type as a stand-in that, when attached, requires the extension to be installed from that host (INSTALL redshift
-// FROM aws.amazon.com), loads it from there, and hands the ATTACH to the type the extension registered under the same
-// name - registering a type replaces the stand-in, so from then on the extension answers directly.
+// Some types are served by extensions published through an extension repository, which core's autoload cannot reach.
+// Each is registered as a stand-in that, when attached, loads the extension from its host and hands the ATTACH to the
+// type the extension registered under the same name; from then on the extension answers directly.
 //===--------------------------------------------------------------------===//
 
-//! What the stand-in stands for: the type it is registered as, and the extension from a host that really serves it
+//! What the stand-in stands for: the type it is registered as, the extension from a host that really serves it, and
+//! the other way to proceed, if any, named by the not-installed error
 struct HostExtensionInfo : public StorageExtensionInfo {
-	HostExtensionInfo(string type_name_p, string extension_name, string host)
-	    : type_name(std::move(type_name_p)), extension(std::move(extension_name), std::move(host)) {
+	HostExtensionInfo(string type_name_p, string extension_name, string host, string alternative_p)
+	    : type_name(std::move(type_name_p)), extension(std::move(extension_name), std::move(host)),
+	      alternative(std::move(alternative_p)) {
 	}
 
 	string type_name;
 	HostExtension extension;
+	string alternative;
 
 	//! Whether the registered type is still this stand-in
 	bool IsSelf(optional_ptr<StorageExtension> registered) const {
@@ -185,9 +187,7 @@ struct HostExtensionInfo : public StorageExtensionInfo {
 		if (registered && !IsSelf(registered)) {
 			return registered;
 		}
-		extension.Load(context, StringUtil::Format("Attaching '%s'", path),
-		               StringUtil::Format("use TYPE %s_postgres for the Postgres-based attach of this extension",
-		                                  extension.extension_name));
+		extension.Load(context, StringUtil::Format("Attaching '%s'", path), alternative);
 		registered = StorageExtension::Find(config, type_name);
 		if (!registered || IsSelf(registered)) {
 			throw InvalidConfigurationException("The '%s' extension from %s was loaded but did not register a '%s' "
@@ -236,11 +236,11 @@ static unique_ptr<TransactionManager> HostCreateTransactionManager(optional_ptr<
 
 class HostExtensionStorageExtension : public StorageExtension {
 public:
-	HostExtensionStorageExtension(string type_name, string extension_name, string host) {
+	HostExtensionStorageExtension(string type_name, string extension_name, string host, string alternative) {
 		attach = HostAttach;
 		create_transaction_manager = HostCreateTransactionManager;
-		storage_info =
-		    make_shared_ptr<HostExtensionInfo>(std::move(type_name), std::move(extension_name), std::move(host));
+		storage_info = make_shared_ptr<HostExtensionInfo>(std::move(type_name), std::move(extension_name),
+		                                                  std::move(host), std::move(alternative));
 	}
 };
 
@@ -259,21 +259,28 @@ private:
 	shared_ptr<StorageExtension> stand_in;
 };
 
+//! Registers `type` as a stand-in for the extension of the same name from `host`, unless something serves the type
+//! already (the extension itself, when loaded before this one)
+static void RegisterHostExtensionType(DBConfig &config, const string &type, const string &host,
+                                      const string &alternative = string()) {
+	if (StorageExtension::Find(config, type)) {
+		return;
+	}
+	shared_ptr<StorageExtension> stand_in =
+	    make_shared_ptr<HostExtensionStorageExtension>(type, type, host, alternative);
+	ExtensionCallback::Register(config, make_shared_ptr<HostExtensionKeepAlive>(stand_in));
+	StorageExtension::Register(config, type, std::move(stand_in));
+}
+
 void ArnStorage::RegisterStorageExtension(ExtensionLoader &loader) {
 	auto &config = DBConfig::GetConfig(loader.GetDatabaseInstance());
 	// Core derives the db type from the 'arn:' path prefix, so a bare
 	// `ATTACH '<arn>'` looks for a storage type named 'arn'. Registering it here
 	// serves that form without a core arn->aws extension alias.
 	StorageExtension::Register(config, "arn", make_shared_ptr<ArnStorageExtension>());
-	// `TYPE redshift`, and the default for redshift ARNs: the redshift extension from aws.amazon.com. Registering a
-	// type replaces what is there, so the stand-in only goes in while nothing serves the type yet: when that extension
-	// was loaded before this one, its registration stays
-	if (!StorageExtension::Find(config, "redshift")) {
-		shared_ptr<StorageExtension> redshift =
-		    make_shared_ptr<HostExtensionStorageExtension>("redshift", "redshift", "aws.amazon.com");
-		ExtensionCallback::Register(config, make_shared_ptr<HostExtensionKeepAlive>(redshift));
-		StorageExtension::Register(config, "redshift", std::move(redshift));
-	}
+	RegisterHostExtensionType(config, "redshift", "aws.amazon.com",
+	                          "use TYPE redshift_postgres for the Postgres-based attach of this extension");
+	RegisterHostExtensionType(config, "athena", "aws.amazon.com");
 }
 
 } // namespace duckdb

@@ -10,17 +10,19 @@ bool ParsedArn::IsArn(const string &path) {
 }
 
 ParsedArn ParsedArn::Parse(const string &arn) {
-	string fields[5];
+	// Sections after the service may be left out; the resource keeps its own ':'.
+	//! NOTE: we can't use StringUtil::Split because it doesn't keep empty items
+	string fields[6];
 	idx_t field = 0;
 	idx_t start = 0;
-	//! NOTE: we can't use StringUtil::Split because it doesn't keep empty items
 	for (idx_t i = 0; i < arn.size() && field < 5; i++) {
 		if (arn[i] == ':') {
 			fields[field++] = arn.substr(start, i - start);
 			start = i + 1;
 		}
 	}
-	if (field < 5 || fields[0] != "arn") {
+	fields[field] = arn.substr(start);
+	if (field < 2 || fields[0] != "arn") {
 		throw InvalidInputException(
 		    "Expected an AWS ARN of the form 'arn:<partition>:<service>:<region>:<account>:<resource>', got '%s'", arn);
 	}
@@ -36,7 +38,7 @@ ParsedArn ParsedArn::Parse(const string &arn) {
 	result.service = StringUtil::Lower(fields[2]);
 	result.region = fields[3];
 	result.account_id = fields[4];
-	result.resource = arn.substr(start);
+	result.resource = fields[5];
 	return result;
 }
 
