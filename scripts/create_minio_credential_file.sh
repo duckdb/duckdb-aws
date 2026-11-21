@@ -19,6 +19,14 @@ aws_secret_access_key=minio_duckdb_user_password
 aws_access_key_id=minio_duckdb_user_2
 aws_secret_access_key=minio_duckdb_user_2_password
 
+[s3-endpoint-services]
+aws_access_key_id=minio_duckdb_user
+aws_secret_access_key=minio_duckdb_user_password
+
+[s3-endpoint-global]
+aws_access_key_id=minio_duckdb_user
+aws_secret_access_key=minio_duckdb_user_password
+
 [minio-testing-invalid]
 aws_access_key_id=minio_duckdb_user_invalid
 aws_secret_access_key=thispasswordiscompletelywrong
@@ -33,12 +41,32 @@ aws_session_token=
 # Write the credentials configuration to the file
 echo "$credentials_str" > "$credentials_file"
 
+# Keep endpoint configuration in dedicated profiles so existing tests retain
+# their defaults. Match the HTTP/HTTPS setting of the shared S3 test server.
+endpoint_scheme=http
+if [[ "${DUCKDB_S3_USE_SSL:-false}" == "true" ]]; then
+    endpoint_scheme=https
+fi
+endpoint_url="${endpoint_scheme}://${DUCKDB_S3_ENDPOINT:-duckdb-minio.com:9000}/"
+
 # Create the credentials configuration
 config_str="[default]
 region=eu-west-1
 
 [profile minio-testing-2]
 region=eu-west-1
+
+[profile s3-endpoint-services]
+region=eu-west-1
+services=s3-test-services
+
+[profile s3-endpoint-global]
+region=eu-west-1
+endpoint_url=$endpoint_url
+
+[services s3-test-services]
+s3 =
+  endpoint_url = $endpoint_url
 
 [profile minio-testing-invalid]
 region=the-moon-123
