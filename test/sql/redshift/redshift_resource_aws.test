@@ -1,0 +1,44 @@
+# name: test/sql/redshift/redshift_resource_aws.test
+# description: redshift_clusters and the aws.redshift.cluster type against the test cluster; read-only
+# group: [redshift]
+
+# Needs `source test/sql/redshift/redshift.env` (see README.md).
+
+require aws
+
+require httpfs
+
+require-env AWS_ACCESS_KEY_ID
+
+require-env AWS_SECRET_ACCESS_KEY
+
+require-env AWS_REGION
+
+require-env AWS_REDSHIFT_CLUSTER_NAME
+
+require-env AWS_REDSHIFT_ARN
+
+statement ok
+CREATE SECRET redshift_resource_credentials (TYPE aws, PROVIDER credential_chain, CHAIN 'env', REGION '{AWS_REGION}');
+
+query III
+SELECT namespace_arn, endpoint_port IS NOT NULL, error
+FROM redshift_clusters(region := '{AWS_REGION}') WHERE cluster_identifier = '{AWS_REDSHIFT_CLUSTER_NAME}';
+----
+{AWS_REDSHIFT_ARN}	true	NULL
+
+query II
+SELECT name, state FROM (SHOW ALL EXTERNAL RESOURCES WITH TYPE 'aws.redshift.cluster') WHERE reference = '{AWS_REDSHIFT_ARN}';
+----
+{AWS_REDSHIFT_CLUSTER_NAME}	ready
+
+statement ok
+REGISTER EXTERNAL RESOURCE 'aws.redshift.cluster' AS test_cluster FROM MAP {'arn': '{AWS_REDSHIFT_ARN}'};
+
+query II
+SELECT uri, attached_db_type FROM duckdb_external_resources() WHERE name = 'test_cluster';
+----
+{AWS_REDSHIFT_ARN}	arn
+
+statement ok
+DESTROY EXTERNAL RESOURCE test_cluster;

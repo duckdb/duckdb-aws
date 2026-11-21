@@ -1,0 +1,129 @@
+# name: test/sql/redshift/redshift_resource.test
+# description: the redshift_* listing functions and the aws.redshift.cluster and aws.redshift-serverless.workgroup external-resource types, without AWS
+# group: [redshift]
+
+require no_extension_autoloading "EXPECTED: Test relies on explicit INSTALL and LOAD"
+
+require httpfs
+
+require aws
+
+# Nothing here reaches AWS: the listing functions are replaced by macros below. Pin the identity to the AWS
+# documentation's example key pair anyway, so no statement can use real credentials from the environment.
+statement ok
+CREATE SECRET example_credentials (TYPE aws, KEY_ID 'AKIAIOSFODNN7EXAMPLE', SECRET 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY', REGION 'us-east-1');
+
+statement ok
+PREPARE list_clusters AS SELECT * FROM redshift_clusters();
+
+statement error
+SELECT * FROM redshift_clusters(region := NULL);
+----
+redshift_clusters: region must not be NULL or empty
+
+statement error
+SELECT * FROM redshift_serverless_workgroups(secret := '');
+----
+redshift_serverless_workgroups: secret must not be NULL or empty
+
+query IIIIII
+SELECT name, kind, create_function, status_function, destroy_function, list_function
+FROM duckdb_external_resource_types() WHERE name LIKE 'aws.redshift%' ORDER BY name;
+----
+aws.redshift-serverless.workgroup	catalog	__aws__redshift_serverless__workgroup__create	__aws__redshift_serverless__workgroup__status	NULL	__aws__redshift_serverless__workgroup__list
+aws.redshift.cluster	catalog	__aws__redshift__cluster__create	__aws__redshift__cluster__status	NULL	__aws__redshift__cluster__list
+
+statement error
+CREATE EXTERNAL RESOURCE 'aws.redshift.cluster' AS new_cluster (REGION 'us-east-1');
+----
+this extension does not create Redshift clusters
+
+# A cluster is handled by its namespace ARN; anything else is refused before any AWS call.
+statement error
+SELECT * FROM __aws__redshift__cluster__status(MAP {'arn': 'arn:aws:redshift:us-east-1:123456789012:cluster:warehouse'});
+----
+expected an ARN of the form 'arn:<partition>:redshift:<region>:<account>:namespace:<id>'
+
+# The callbacks are SQL over the listing functions, so persistent macros of the same name stand in for AWS (the
+# callbacks run on a separate connection, which does not see temporary ones).
+statement ok
+CREATE TABLE workgroup_rows AS SELECT * FROM (VALUES
+    ('us-east-1', 'analytics', 'arn:aws:redshift-serverless:us-east-1:123456789012:workgroup/00000000-0000-0000-0000-000000000001', 'AVAILABLE', NULL),
+    ('us-east-1', 'staging', 'arn:aws:redshift-serverless:us-east-1:123456789012:workgroup/00000000-0000-0000-0000-000000000002', 'MODIFYING', NULL),
+    ('eu-west-3', NULL, NULL, NULL, 'Redshift Serverless ListWorkgroups failed in region ''eu-west-3'': AccessDeniedException - denied')
+) t(region, workgroup_name, arn, status, error);
+
+statement ok
+CREATE MACRO redshift_serverless_workgroups(region := NULL, secret := NULL) AS TABLE
+SELECT w.* FROM workgroup_rows w WHERE region IS NULL OR w.region = region;
+
+statement ok
+CREATE TABLE cluster_rows AS SELECT * FROM (VALUES
+    ('us-east-1', 'warehouse', 'arn:aws:redshift:us-east-1:123456789012:namespace:00000000-0000-0000-0000-000000000003', 'available', NULL),
+    ('eu-central-1', 'paused-warehouse', 'arn:aws:redshift:eu-central-1:123456789012:namespace:00000000-0000-0000-0000-000000000004', 'paused', NULL)
+) t(region, cluster_identifier, namespace_arn, status, error);
+
+statement ok
+CREATE MACRO redshift_clusters(region := NULL, secret := NULL) AS TABLE
+SELECT c.* FROM cluster_rows c WHERE region IS NULL OR c.region = region;
+
+# A row is named by its workgroup name or cluster identifier and references the ARN that attaches it; the region that
+# could not be listed is left out.
+query IIII
+SELECT name, reference, state, handle FROM __aws__redshift_serverless__workgroup__list(MAP {}::MAP(VARCHAR, VARCHAR));
+----
+analytics	arn:aws:redshift-serverless:us-east-1:123456789012:workgroup/00000000-0000-0000-0000-000000000001	ready	{arn='arn:aws:redshift-serverless:us-east-1:123456789012:workgroup/00000000-0000-0000-0000-000000000001'}
+staging	arn:aws:redshift-serverless:us-east-1:123456789012:workgroup/00000000-0000-0000-0000-000000000002	modifying	{arn='arn:aws:redshift-serverless:us-east-1:123456789012:workgroup/00000000-0000-0000-0000-000000000002'}
+
+query IIIII
+SELECT name, type, managed, state, reference FROM (SHOW ALL EXTERNAL RESOURCES WITH TYPE 'aws.redshift.cluster');
+----
+paused-warehouse	aws.redshift.cluster	false	paused	arn:aws:redshift:eu-central-1:123456789012:namespace:00000000-0000-0000-0000-000000000004
+warehouse	aws.redshift.cluster	false	ready	arn:aws:redshift:us-east-1:123456789012:namespace:00000000-0000-0000-0000-000000000003
+
+# Status attaches the ARN through the 'arn' storage type, and does not wait for a paused cluster.
+query II
+SELECT state, result FROM __aws__redshift__cluster__status(MAP {'arn': 'arn:aws:redshift:eu-central-1:123456789012:namespace:00000000-0000-0000-0000-000000000004'});
+----
+ready	{uri='arn:aws:redshift:eu-central-1:123456789012:namespace:00000000-0000-0000-0000-000000000004', attached_db_type=arn}
+
+statement ok
+REGISTER EXTERNAL RESOURCE 'aws.redshift-serverless.workgroup' AS wg
+FROM MAP {'arn': 'arn:aws:redshift-serverless:us-east-1:123456789012:workgroup/00000000-0000-0000-0000-000000000001'};
+
+# A registered workgroup is shown once, as managed, under its local name.
+query IIII
+SELECT name, managed, uri, attached_db_type
+FROM duckdb_external_resources(discover := true, type := 'aws.redshift-serverless.workgroup') ORDER BY name;
+----
+staging	false	NULL	NULL
+wg	true	arn:aws:redshift-serverless:us-east-1:123456789012:workgroup/00000000-0000-0000-0000-000000000001	arn
+
+statement error
+REGISTER EXTERNAL RESOURCE 'aws.redshift-serverless.workgroup' AS gone
+FROM MAP {'arn': 'arn:aws:redshift-serverless:us-east-1:123456789012:workgroup/00000000-0000-0000-0000-000000000009'};
+----
+no workgroup with ARN
+
+# Attaching goes the way `ATTACH '<arn>'` does, to the redshift extension, which is not installed here.
+statement error
+ATTACH TO EXTERNAL RESOURCE wg AS rs;
+----
+requires the 'redshift' extension from aws.amazon.com, which is not installed
+
+# There is no destroy callback: DESTROY only removes the registration.
+statement ok
+DESTROY EXTERNAL RESOURCE wg;
+
+query I
+SELECT count(*) FROM duckdb_external_resources();
+----
+0
+
+statement ok
+SET enable_external_access = false;
+
+statement error
+EXECUTE list_clusters;
+----
+redshift_clusters: listing Redshift clusters is disabled through configuration

@@ -492,6 +492,32 @@ region with the secret `SECRET` names (or, without `SECRET`, the AWS secret it w
 `DATABASE` naming the target's default database when neither `DATABASE` nor `DBNAME` was given, so that a database
 given there wins. The other ATTACH options are passed on as given; the redshift extension decides which it takes.
 
+## Redshift clusters and workgroups
+
+Provisioned Redshift clusters and Redshift Serverless workgroups are the external resource types `aws.redshift.cluster`
+and `aws.redshift-serverless.workgroup`. They are listed, not created: the reference shown is the ARN `ATTACH` takes
+(for a cluster, its namespace ARN), and attaching goes through the redshift extension as
+[above](#attaching-aws-resources-by-arn).
+
+```sql
+SHOW ALL EXTERNAL RESOURCES WITH TYPE 'aws.redshift-serverless.workgroup';
+ATTACH 'arn:aws:redshift-serverless:us-east-1:123456789012:workgroup/00000000-0000-0000-0000-000000000000' AS rs;
+
+REGISTER EXTERNAL RESOURCE 'aws.redshift.cluster' AS warehouse
+    FROM MAP {'arn': 'arn:aws:redshift:us-east-1:123456789012:namespace:00000000-0000-0000-0000-000000000000'};
+ATTACH TO EXTERNAL RESOURCE warehouse AS rc;
+DESTROY EXTERNAL RESOURCE warehouse;   -- forgets the registration and detaches rc; the cluster is left as it is
+
+FROM redshift_clusters(region := 'us-east-1');   -- and redshift_serverless_workgroups(); without region, every default region
+```
+
+`SHOW ALL EXTERNAL RESOURCES` lists what the default-region sweep could read: a region that fails (denied, for
+example) is left out, and `FROM redshift_clusters()` or `redshift_serverless_workgroups()` shows each failing region's
+error. Opt-in regions are listed only with `region :=`. Listing needs `redshift:DescribeClusters` and
+`redshift-serverless:ListWorkgroups`; both list without a resource to scope to, so grant them on Resource `*`.
+`REGISTER` and `ATTACH TO EXTERNAL RESOURCE` use the single AWS secret or the default credential chain; with several
+AWS secrets, use `ATTACH '<arn>' AS rs (SECRET <name>)`.
+
 ## AWS system tables
 
 AWS services publish inventories and logs as Apache Iceberg tables in AWS-managed S3 table buckets, one bucket per

@@ -8,6 +8,8 @@
 #include "s3_resource.hpp"
 #include "rds/rds_utils.hpp"
 #include "cloudformation_stack_resource.hpp"
+#include "redshift/redshift_functions.hpp"
+#include "redshift/redshift_resource.hpp"
 #include "redshift/redshift_utils.hpp"
 #include "s3_metadata_functions.hpp"
 #include "s3tables_functions.hpp"
@@ -87,6 +89,10 @@ static void LoadInternal(ExtensionLoader &loader) {
 	S3MetadataFunctions::Register(loader);
 	SystemTablesFunctions::Register(loader);
 	SystemTablesResource::Register(loader);
+
+	// Listing over the Redshift control planes, and the external-resource types built on it.
+	RedshiftFunctions::Register(loader);
+	RedshiftResource::Register(loader);
 }
 
 void AwsExtension::Load(ExtensionLoader &loader) {
