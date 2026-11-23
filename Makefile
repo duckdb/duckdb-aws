@@ -10,6 +10,13 @@ DEFAULT_TEST_EXTENSION_DEPS=httpfs;tpch;json;
 FULL_TEST_EXTENSION_DEPS=
 
 
+# Only run this repository's tests. extension-ci-tools' build workflow sets the test selection to
+# "complete", which turns the pattern into "*" and also picks up the test suites of the test
+# dependency extensions (httpfs, ...) via their absolute paths under build/<type>/_deps/. Those
+# paths exceed MAX_PATH on the Windows runners once a test creates its temp directory. Same
+# approach as duckdb-httpfs; `make test T=...` still overrides this.
+T ?= "test/*"
+
 # Include the Makefile from extension-ci-tools
 include extension-ci-tools/makefiles/duckdb_extension.Makefile
 
