@@ -143,29 +143,70 @@ static unique_ptr<KeyValueSecret> ConstructBaseS3Secret(vector<string> &prefix_p
 	return return_value;
 }
 
+static bool TryLoadProfileFromFile(const Aws::String &file_path, const bool use_profile_prefix,
+                                   const std::string &profile_name, Aws::Config::Profile &out_profile) {
+	Aws::Config::AWSConfigFileProfileConfigLoader loader(file_path, use_profile_prefix);
+	if (!loader.Load()) {
+		return false;
+	}
+	const auto &profiles = loader.GetProfiles();
+	auto entry = profiles.find(profile_name);
+	if (entry == profiles.end()) {
+		return false;
+	}
+	out_profile = entry->second;
+	return true;
+}
+
 Aws::Config::Profile GetAwsProfile(const std::string &profile_name, const bool require_profile) {
-	Aws::Config::Profile selected_profile;
-	// get file path where aws config is stored.
-	// comes from AWS_CONFIG_FILE
+	// A profile can live in the config file (AWS_CONFIG_FILE, default ~/.aws/config), the shared
+	// credentials file (AWS_SHARED_CREDENTIALS_FILE, default ~/.aws/credentials), or both — the
+	// credentials-file-only layout is what the CLI/boto3 write by default. The SDK's own providers
+	// consult both, so validation must too; on conflict the config file wins, except for the access
+	// keys themselves, where a non-empty credentials-file entry is authoritative (it is the file the
+	// SDK's ProfileConfigFileAWSCredentialsProvider actually reads keys from).
 	auto config_file_path = Aws::Auth::GetConfigProfileFilename();
-	// get the profile from within that file
-	Aws::Map<Aws::String, Aws::Config::Profile> profiles;
-	Aws::Config::AWSConfigFileProfileConfigLoader loader(config_file_path, true);
-	if (loader.Load()) {
-		profiles = loader.GetProfiles();
-		for (const auto &entry : profiles) {
-			const Aws::String &profileName = entry.first;
-			if (profileName == profile_name) {
-				selected_profile = entry.second;
-				return selected_profile;
-			}
+	auto credentials_file_path = Aws::Auth::ProfileConfigFileAWSCredentialsProvider::GetCredentialsProfileFilename();
+
+	Aws::Config::Profile config_profile;
+	Aws::Config::Profile credentials_profile;
+	bool in_config = TryLoadProfileFromFile(config_file_path, true, profile_name, config_profile);
+	bool in_credentials = TryLoadProfileFromFile(credentials_file_path, false, profile_name, credentials_profile);
+
+	if (in_config && in_credentials) {
+		auto merged = config_profile;
+		if (!credentials_profile.GetCredentials().IsEmpty()) {
+			merged.SetCredentials(credentials_profile.GetCredentials());
 		}
+		if (merged.GetRegion().empty()) {
+			merged.SetRegion(credentials_profile.GetRegion());
+		}
+		if (merged.GetRoleArn().empty()) {
+			merged.SetRoleArn(credentials_profile.GetRoleArn());
+		}
+		if (merged.GetExternalId().empty()) {
+			merged.SetExternalId(credentials_profile.GetExternalId());
+		}
+		if (merged.GetSourceProfile().empty()) {
+			merged.SetSourceProfile(credentials_profile.GetSourceProfile());
+		}
+		if (merged.GetCredentialProcess().empty()) {
+			merged.SetCredentialProcess(credentials_profile.GetCredentialProcess());
+		}
+		return merged;
+	}
+	if (in_config) {
+		return config_profile;
+	}
+	if (in_credentials) {
+		return credentials_profile;
 	}
 	if (require_profile) {
-		throw InvalidConfigurationException("Secret Validation Failure: no profile '%s' found in config file %s",
-		                                    profile_name, config_file_path);
+		throw InvalidConfigurationException(
+		    "Secret Validation Failure: no profile '%s' found in config file %s or credentials file %s", profile_name,
+		    config_file_path, credentials_file_path);
 	}
-	return selected_profile; // empty profile
+	return Aws::Config::Profile(); // empty profile
 }
 
 //! Generate a custom credential provider chain for authentication
