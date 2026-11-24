@@ -27,8 +27,10 @@ BuildAwsCredentialsProvider(DatabaseInstance &db, const std::string &chain, bool
                             const std::string &profile = "", const std::string &assume_role_arn = "",
                             const std::string &external_id = "", const std::string &web_identity_token_file = "",
                             const std::string &session_name = "");
-//! Load a named profile from the AWS config file (as located by AWS_CONFIG_FILE). Returns an
-//! empty profile when it does not exist, unless `require_profile` is set, in which case it throws.
+//! Load a named profile from the AWS config file (AWS_CONFIG_FILE) and the shared credentials
+//! file (AWS_SHARED_CREDENTIALS_FILE), merged with the config file winning on conflict. Returns
+//! an empty profile when it exists in neither, unless `require_profile` is set, in which case it
+//! throws.
 Aws::Config::Profile GetAwsProfile(const std::string &profile_name, bool require_profile);
 
 } // namespace duckdb
