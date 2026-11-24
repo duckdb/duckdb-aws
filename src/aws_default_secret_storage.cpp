@@ -14,11 +14,14 @@
 namespace duckdb {
 
 static constexpr const char *DEFAULT_CREDENTIALS_SETTING = "aws_default_credentials";
+//! Testing only: treats the resolved default credentials as expired, so the next lookup resolves the chain again.
+//! Credentials expire after minutes to hours, which a test cannot wait for.
+static constexpr const char *DEBUG_EXPIRED_SETTING = "debug_aws_default_credentials_expired";
 
-static CreateSecretInput DefaultSecretInput(const string &type, const string &name, const string &provider) {
+static CreateSecretInput DefaultSecretInput(const string &type, const string &name, const Identifier &provider) {
 	CreateSecretInput input;
 	input.type = Identifier(type);
-	input.provider = Identifier(provider);
+	input.provider = provider;
 	input.name = Identifier(name);
 	input.storage_type = Identifier(AwsDefaultSecretStorage::STORAGE_NAME);
 	input.persist_type = SecretPersistType::TEMPORARY;
@@ -28,7 +31,7 @@ static CreateSecretInput DefaultSecretInput(const string &type, const string &na
 
 static unique_ptr<const BaseSecret> SecretWithoutCredentials(const string &type, const string &name,
                                                              const string &provider) {
-	return CreateAWSSecretWithoutCredentials(DefaultSecretInput(type, name, provider));
+	return CreateAWSSecretWithoutCredentials(DefaultSecretInput(type, name, Identifier(provider)));
 }
 
 AwsDefaultSecretStorage::AwsDefaultSecretStorage() : SecretStorage(STORAGE_NAME, TIE_BREAK_OFFSET) {
@@ -42,6 +45,10 @@ void AwsDefaultSecretStorage::Register(ExtensionLoader &loader) {
 	config.AddExtensionOption(DEFAULT_CREDENTIALS_SETTING,
 	                          "Use the credentials the default AWS credential chain finds when no secret matches",
 	                          LogicalType::BOOLEAN, Value::BOOLEAN(true));
+	config.AddExtensionOption(DEBUG_EXPIRED_SETTING,
+	                          "Treat the default AWS credentials as expired, so the next lookup resolves the "
+	                          "credential chain again (testing only)",
+	                          LogicalType::BOOLEAN, Value::BOOLEAN(false), nullptr, SetScope::SESSION, true);
 	SecretManager::Get(db).LoadSecretStorage(make_uniq<AwsDefaultSecretStorage>());
 }
 
@@ -58,10 +65,16 @@ unique_ptr<SecretEntry> AwsDefaultSecretStorage::GetDefaultAwsSecret(ClientConte
 	return std::move(match.secret_entry);
 }
 
+static bool BooleanSetting(ClientContext &context, const char *name, bool default_value) {
+	Value value;
+	if (context.TryGetCurrentSetting(name, value) && !value.IsNull()) {
+		return value.GetValue<bool>();
+	}
+	return default_value;
+}
+
 static bool DefaultCredentialsEnabled(ClientContext &context) {
-	Value enabled;
-	if (context.TryGetCurrentSetting(DEFAULT_CREDENTIALS_SETTING, enabled) && !enabled.IsNull() &&
-	    !enabled.GetValue<bool>()) {
+	if (!BooleanSetting(context, DEFAULT_CREDENTIALS_SETTING, true)) {
 		return false;
 	}
 	// the credential chain reads files and the environment outside of the file systems of DuckDB
@@ -86,30 +99,33 @@ unique_ptr<SecretEntry> AwsDefaultSecretStorage::MakeEntry(const BaseSecret &sec
 	return entry;
 }
 
-void AwsDefaultSecretStorage::SetSecrets(unique_ptr<const BaseSecret> resolved_s3) {
-	// the identity and region only: the endpoint and URL style keep coming from the settings
-	auto &resolved_kv = resolved_s3->Cast<KeyValueSecret>();
-	auto s3 = make_uniq<KeyValueSecret>(resolved_kv);
-	s3->secret_map.erase(Identifier("endpoint"));
-	s3->secret_map.erase(Identifier("url_style"));
-	auto &s3_kv = *s3;
-	auto aws = make_uniq<KeyValueSecret>(vector<string> {""}, Identifier("aws"), s3_kv.GetProvider(),
-	                                     Identifier(AWS_SECRET_NAME));
-	aws->redact_keys = s3_kv.redact_keys;
-	// the identity, without what only applies to S3 requests
-	for (auto &entry : s3_kv.secret_map) {
+//! One of the two default secrets, holding the identity the chain resolved to: the type decides the scope. It keeps
+//! the identity and the region only, the endpoint and URL style keep coming from the settings. It also keeps the
+//! refresh_info, which is what a consumer replays to rebuild the secret on an expired-token error.
+static unique_ptr<const BaseSecret> ViewOfIdentity(const KeyValueSecret &identity, const string &type,
+                                                   const string &name) {
+	auto secret = CreateAWSSecretWithoutCredentials(DefaultSecretInput(type, name, identity.GetProvider()));
+	auto &kv = secret->Cast<KeyValueSecret>();
+	kv.redact_keys = identity.redact_keys;
+	for (auto &entry : identity.secret_map) {
 		auto &key = entry.first.GetIdentifierName();
-		if (key != "endpoint" && key != "url_style" && key != "refresh_info") {
-			aws->secret_map[entry.first] = entry.second;
+		if (key != "endpoint" && key != "url_style") {
+			kv.secret_map[entry.first] = entry.second;
 		}
 	}
-	aws_secret = std::move(aws);
-	s3_secret = std::move(s3);
+	return std::move(secret);
 }
 
-//! Whether the credentials the chain resolved to are past the expiry it recorded (temporary credentials
-//! from STS, SSO or a container: see expiration_epoch_ms in CreateAWSSecretFromCredentialChain). A minute of
-//! margin, so a call that starts just before the deadline does not fail with them mid-flight.
+void AwsDefaultSecretStorage::SetSecrets(unique_ptr<const BaseSecret> identity) {
+	auto &identity_kv = identity->Cast<KeyValueSecret>();
+	s3_secret = ViewOfIdentity(identity_kv, "s3", S3_SECRET_NAME);
+	aws_secret = ViewOfIdentity(identity_kv, "aws", AWS_SECRET_NAME);
+}
+
+//! Whether the credentials the chain resolved to are past the expiry it recorded (see expiration_epoch_ms in
+//! CreateAWSSecretFromCredentialChain: the expiry temporary credentials report, or DEFAULT_CREDS_LOAD_FREQ_SECONDS
+//! from now for credentials that report none, such as the keys in a profile file). A minute of margin, so a call that
+//! starts just before the deadline does not fail with them mid-flight. Without credentials there is no expiry.
 static bool CredentialsExpired(const BaseSecret &secret) {
 	auto &kv = secret.Cast<KeyValueSecret>();
 	auto expiration = kv.TryGetValue("expiration_epoch_ms");
@@ -129,7 +145,7 @@ void AwsDefaultSecretStorage::EnsureResolved(ClientContext &context) {
 	}
 	// Temporary credentials expire; the chain is where fresh ones come from (a renewed SSO login, the
 	// container or instance metadata, a rotated profile), so resolve it again rather than keep failing.
-	if (s3_secret && CredentialsExpired(*s3_secret)) {
+	if (s3_secret && (CredentialsExpired(*s3_secret) || BooleanSetting(context, DEBUG_EXPIRED_SETTING, false))) {
 		DUCKDB_LOG_DEBUG(context, "aws.DefaultCredentials: the default credentials expired, resolving the chain again");
 		Resolve(context);
 	}
@@ -137,7 +153,7 @@ void AwsDefaultSecretStorage::EnsureResolved(ClientContext &context) {
 
 void AwsDefaultSecretStorage::Resolve(ClientContext &context) {
 	resolved = true;
-	auto input = DefaultSecretInput("s3", S3_SECRET_NAME, "credential_chain");
+	auto input = DefaultSecretInput("s3", S3_SECRET_NAME, Identifier("credential_chain"));
 	input.options["validation"] = Value("none");
 	input.options["refresh"] = Value("auto");
 	try {
@@ -193,15 +209,20 @@ SecretMatch AwsDefaultSecretStorage::LookupSecret(const string &path, const stri
 unique_ptr<SecretEntry> AwsDefaultSecretStorage::StoreSecret(unique_ptr<const BaseSecret> secret,
                                                              OnCreateConflict on_conflict,
                                                              optional_ptr<CatalogTransaction> transaction) {
-	// only the refresh of the S3 secret is stored here, which replaces both
-	if (secret->GetName() != Identifier(S3_SECRET_NAME) || on_conflict != OnCreateConflict::REPLACE_ON_CONFLICT) {
+	// Only a refresh of one of the two secrets is stored here: a consumer that gets an expired-token error replays
+	// the refresh_info of the secret it used (httpfs for the S3 one; Iceberg or Glue for the AWS one) as a
+	// replacement of that secret. Whichever of the two was refreshed sets both, so they stay views of one identity.
+	auto &name = secret->GetName();
+	auto refresh_of_s3 = name == Identifier(S3_SECRET_NAME) && secret->GetType() == Identifier("s3");
+	auto refresh_of_aws = name == Identifier(AWS_SECRET_NAME) && secret->GetType() == Identifier("aws");
+	if ((!refresh_of_s3 && !refresh_of_aws) || on_conflict != OnCreateConflict::REPLACE_ON_CONFLICT) {
 		throw InvalidInputException("Secrets cannot be created in the '%s' secret storage", STORAGE_NAME);
 	}
 	lock_guard<mutex> guard(lock);
 	resolved = true;
 	dropped = false;
 	SetSecrets(std::move(secret));
-	return MakeEntry(*s3_secret);
+	return MakeEntry(refresh_of_s3 ? *s3_secret : *aws_secret);
 }
 
 vector<SecretEntry> AwsDefaultSecretStorage::AllSecrets(optional_ptr<CatalogTransaction> transaction) {
