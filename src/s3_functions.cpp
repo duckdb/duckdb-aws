@@ -232,7 +232,7 @@ struct S3Access {
 };
 
 //! Credentials resolve exactly as for the other control-plane functions, so listing, creating and
-//! deleting never disagree about who is acting; see FindAwsSecret for the ambiguity rules.
+//! deleting never disagree about who is acting; see FindAwsSecret for the resolution rules.
 S3Access ResolveAccess(ClientContext &context, const string &secret_name, const string &explicit_region) {
 	auto entry = FindAwsSecret(context, secret_name);
 	auto &secret = entry->secret->Cast<KeyValueSecret>();

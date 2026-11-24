@@ -99,8 +99,8 @@ TableBucketArn ParseTableBucketArn(const string &arn, const string &fn_name) {
 
 //! Credentials for an S3 Tables call, resolved exactly as the cloudformation_* functions and ATTACH
 //! of an s3tables ARN do, so browsing and attaching never disagree: a named `secret` must resolve;
-//! unnamed, the single explicit AWS secret, else the default credential-chain secret. FindAwsSecret
-//! throws when that is ambiguous or finds nothing.
+//! unnamed, the explicit AWS secret whose scope matches, else the default credential-chain secret.
+//! FindAwsSecret throws when it finds nothing.
 std::shared_ptr<Aws::Auth::AWSCredentialsProvider> ResolveProvider(ClientContext &context, const string &secret_name) {
 	auto entry = FindAwsSecret(context, secret_name);
 	return CredentialsProviderFromSecret(entry->secret->Cast<KeyValueSecret>(), "S3Tables");
@@ -653,8 +653,8 @@ unique_ptr<FunctionData> CreateBucketBind(ClientContext &context, TableFunctionB
 		result->region = ResolveAwsRegion(context, "", "");
 	}
 	if (result->region.empty()) {
-		throw InvalidInputException(
-		    "s3tables_create_table_bucket: no region — pass region := or set s3_region / AWS_REGION");
+		throw InvalidInputException("s3tables_create_table_bucket: no region — pass region := (the REGION option of an "
+		                            "'aws.s3tables.bucket' external resource) or set s3_region / AWS_REGION");
 	}
 
 	names.emplace_back("handle");
