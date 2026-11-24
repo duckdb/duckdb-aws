@@ -1,0 +1,53 @@
+# name: test/sql/s3tables/s3tables_resource_region.test
+# description: the REGION create param of aws.s3tables.bucket reaches s3tables_create_table_bucket, whatever its case
+# group: [s3tables]
+
+require no_extension_autoloading "EXPECTED: Test relies on explicit INSTALL and LOAD"
+
+require httpfs
+
+require aws
+
+# No ambient credentials: the recipe callbacks run on their own connections, so the lazy default
+# secrets are disabled globally. Every unnamed secret lookup then fails deterministically, before
+# any network call.
+statement ok
+SET GLOBAL aws_default_credentials=false;
+
+# The REGION param reaches the create function, so the failure is the missing credentials — not
+# "no region". Create params go before the alias; keys match in any case.
+statement error
+ATTACH TO NEW TEMPORARY EXTERNAL RESOURCE aws.s3tables.bucket (REGION 'eu-central-1') AS region_upper;
+----
+<REGEX>:.*No AWS credentials found.*
+
+statement error
+ATTACH TO NEW TEMPORARY EXTERNAL RESOURCE aws.s3tables.bucket (region 'eu-central-1') AS region_lower;
+----
+<REGEX>:.*No AWS credentials found.*
+
+statement error
+CREATE EXTERNAL RESOURCE 'aws.s3tables.bucket' AS created_upper (REGION 'eu-central-1');
+----
+<REGEX>:.*No AWS credentials found.*
+
+# Shadowing the create function pins down exactly what the create callback forwards, with no AWS
+# or environment involved: a region the callback dropped would come back as a NULL-region ARN.
+statement ok
+CREATE MACRO s3tables_create_table_bucket(name, region := NULL, tags := NULL) AS TABLE
+SELECT MAP {'arn': 'arn:aws:s3tables:' || region || ':123456789012:bucket/' || name} AS handle;
+
+query T
+SELECT handle FROM __aws__s3tables__bucket__create(MAP {'NAME': 'upper', 'REGION': 'ap-northeast-3'});
+----
+{arn='arn:aws:s3tables:ap-northeast-3:123456789012:bucket/upper', namespace=default}
+
+query T
+SELECT handle FROM __aws__s3tables__bucket__create(MAP {'Name': 'mixed', 'Region': 'ap-northeast-3'});
+----
+{arn='arn:aws:s3tables:ap-northeast-3:123456789012:bucket/mixed', namespace=default}
+
+query T
+SELECT handle FROM __aws__s3tables__bucket__create(MAP {'name': 'lower', 'region': 'ap-northeast-3'});
+----
+{arn='arn:aws:s3tables:ap-northeast-3:123456789012:bucket/lower', namespace=default}

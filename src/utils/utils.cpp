@@ -6,6 +6,7 @@
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/common/error_data.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/limits.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/database.hpp"
@@ -118,24 +119,41 @@ unique_ptr<SecretEntry> FindAwsSecret(ClientContext &context, const string &secr
 		return secret_entry;
 	}
 
+	// Resolve by scope, the way the rest of DuckDB picks a secret: score each secret against the type's
+	// root path, so an unscoped secret matches (longest scope wins) while one scoped to specific buckets
+	// or paths does not claim these account-level calls. Only a genuine tie — several secrets with
+	// equally specific matching scopes — is ambiguous and refused. The default secrets only apply when
+	// no explicit one matches, so they stay out of this pass.
 	auto all_secrets = secret_manager.AllSecrets(transaction);
 	for (const auto &wanted_type : AwsSecretTypes()) {
-		vector<const SecretEntry *> matches;
+		const string root_path = wanted_type == "s3" ? "s3://" : "";
+		vector<const SecretEntry *> best_matches;
+		int64_t best_score = NumericLimits<int64_t>::Minimum();
 		for (const auto &entry : all_secrets) {
-			// the default secrets only apply when there is no explicit one
 			if (AwsDefaultSecretStorage::IsDefaultSecret(entry)) {
 				continue;
 			}
-			if (entry.secret->GetType().GetIdentifierName() == wanted_type) {
-				matches.push_back(&entry);
+			if (entry.secret->GetType().GetIdentifierName() != wanted_type) {
+				continue;
+			}
+			auto score = entry.secret->MatchScore(root_path);
+			if (score == NumericLimits<int64_t>::Minimum()) {
+				continue;
+			}
+			if (best_matches.empty() || score > best_score) {
+				best_matches = {&entry};
+				best_score = score;
+			} else if (score == best_score) {
+				best_matches.push_back(&entry);
 			}
 		}
-		if (matches.size() > 1) {
-			throw BinderException("Found %d secrets of type \"%s\"; name the one to use with a SECRET option",
-			                      matches.size(), wanted_type);
+		if (best_matches.size() > 1) {
+			throw BinderException("Found %d secrets of type \"%s\" with equally specific scopes; name the one to "
+			                      "use with a SECRET option",
+			                      best_matches.size(), wanted_type);
 		}
-		if (matches.size() == 1) {
-			return make_uniq<SecretEntry>(*matches[0]);
+		if (best_matches.size() == 1) {
+			return make_uniq<SecretEntry>(*best_matches[0]);
 		}
 	}
 	auto default_secret = DefaultAwsSecretWithCredentials(context);

@@ -38,14 +38,15 @@ unique_ptr<GlobalTableFunctionState> AdapterInit(ClientContext &, TableFunctionI
 	return make_uniq<AdapterState>();
 }
 
-//! Read one key out of a params/handle MAP; "" when absent or NULL.
+//! Read one key out of a params/handle MAP; "" when absent or NULL. Keys compare case-insensitively:
+//! create params arrive with the casing the user wrote (REGION 'x' and region 'x' are the same option).
 string MapLookup(const Value &map_value, const string &key) {
 	if (map_value.IsNull()) {
 		return string();
 	}
 	for (auto &entry : MapValue::GetChildren(map_value)) {
 		auto &kv = StructValue::GetChildren(entry);
-		if (!kv[0].IsNull() && StringValue::Get(kv[0]) == key) {
+		if (!kv[0].IsNull() && StringUtil::CIEquals(StringValue::Get(kv[0]), key)) {
 			return kv[1].IsNull() ? string() : StringValue::Get(kv[1]);
 		}
 	}
