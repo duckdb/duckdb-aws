@@ -522,16 +522,21 @@ unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &context
 		result->secret_map["region"] = region;
 	}
 
-	// Only auto is supported
-	string refresh = TryGetStringParam(input, "refresh");
-
-	// We have sneaked in this special handling where if you set the STS chain, you automatically enable refresh
-	// TODO: remove this once refresh is set to auto by default for all credential_chain provider created secrets.
-	if ((chain == "sts" || chain == "web_identity") && refresh.empty()) {
-		refresh = "auto";
+	// REFRESH defaults to auto: a credential_chain secret can always re-run its chain, and most
+	// chains (instance/container/process/sts/...) hand out temporary credentials that expire
+	// within hours. An explicit REFRESH 'none' (or 'false') opts out.
+	string refresh = StringUtil::Lower(TryGetStringParam(input, "refresh"));
+	bool refresh_enabled;
+	if (refresh.empty() || refresh == "auto" || refresh == "true" || refresh == "on" || refresh == "1") {
+		refresh_enabled = true;
+	} else if (refresh == "none" || refresh == "false" || refresh == "off" || refresh == "0") {
+		refresh_enabled = false;
+	} else {
+		throw InvalidInputException(
+		    "Unknown REFRESH value '%s' for a credential_chain secret: expected 'auto' or 'none'", refresh);
 	}
 
-	if (refresh == "auto") {
+	if (refresh_enabled) {
 		child_list_t<Value> struct_fields;
 		for (const auto &named_param : input.options) {
 			auto lower_name = StringUtil::Lower(named_param.first);
@@ -547,6 +552,14 @@ unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &context
 
 		// Store credential expiration as epoch milliseconds so consumers (e.g., duckdb-iceberg)
 		// can refresh proactively at ~80% TTL instead of guessing with a fixed timer.
+		int64_t now_epoch_ms = Timestamp::GetEpochMs(Timestamp::GetCurrentTimestamp());
+		int64_t fallback_epoch_ms = now_epoch_ms + (Aws::Auth::DEFAULT_CREDS_LOAD_FREQ_SECONDS * 1000LL);
+		// AWSCredentials defaults m_expiration to time_point::max ("never expires"), so a provider
+		// that never sets an expiry reports a sentinel in year 294247, not a real one. The instance
+		// chain always lands there: the SDK's IMDS loader drops the Expiration field even though
+		// instance role credentials expire (~6h). DateTime() (the epoch) is equally not a real expiry.
+		const Aws::Utils::DateTime never_expires((std::chrono::time_point<std::chrono::system_clock>::max)());
+		auto expiration = credentials.GetExpiration();
 		if (chain == "sts") {
 			// For the STS chain we cannot read the real expiration from `credentials.GetExpiration()`:
 			// the SDK's STSAssumeRoleCredentialsProvider builds the returned AWSCredentials with the
@@ -554,14 +567,11 @@ unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &context
 			// i.e. year 294247). The true expiry is kept private in the provider's m_expiry and is
 			// never exposed. Since we always request STS credentials with a duration of
 			// DEFAULT_CREDS_LOAD_FREQ_SECONDS, compute the expiration from now() + that duration.
-			int64_t now_epoch_ms = Timestamp::GetEpochMs(Timestamp::GetCurrentTimestamp());
-			int64_t expiration_epoch_ms = now_epoch_ms + (Aws::Auth::DEFAULT_CREDS_LOAD_FREQ_SECONDS * 1000LL);
-			result->secret_map["expiration_epoch_ms"] = Value::BIGINT(expiration_epoch_ms);
+			result->secret_map["expiration_epoch_ms"] = Value::BIGINT(fallback_epoch_ms);
+		} else if (expiration != Aws::Utils::DateTime() && expiration != never_expires) {
+			result->secret_map["expiration_epoch_ms"] = Value::BIGINT(expiration.Millis());
 		} else {
-			auto expiration = credentials.GetExpiration();
-			if (expiration != Aws::Utils::DateTime()) {
-				result->secret_map["expiration_epoch_ms"] = Value::BIGINT(expiration.Millis());
-			}
+			result->secret_map["expiration_epoch_ms"] = Value::BIGINT(fallback_epoch_ms);
 		}
 	}
 

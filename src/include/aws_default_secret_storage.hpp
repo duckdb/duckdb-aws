@@ -40,8 +40,8 @@ private:
 	void Resolve(ClientContext &context);
 	//! Resolves the chain on the first lookup, and again when the credentials it found have expired
 	void EnsureResolved(ClientContext &context);
-	//! Sets both secrets from the S3 secret the chain resolved to
-	void SetSecrets(unique_ptr<const BaseSecret> s3);
+	//! Sets both secrets from the identity the chain resolved to, or that a consumer refreshed: a secret of either type
+	void SetSecrets(unique_ptr<const BaseSecret> identity);
 	optional_ptr<const BaseSecret> SecretOfType(const string &type) const;
 	static unique_ptr<SecretEntry> MakeEntry(const BaseSecret &secret);
 
