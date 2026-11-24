@@ -45,6 +45,45 @@ CREATE EXTERNAL RESOURCE 'aws.s3.bucket' AS bucket_x (REGION 'eu-central-1');
 ----
 <REGEX>:.*__aws__s3__bucket__create.*
 
+# A key the recipe does not read is refused before any AWS call, naming the accepted ones: a
+# misspelt permission option must not quietly produce a private bucket.
+statement error
+CREATE EXTERNAL RESOURCE 'aws.s3.bucket' AS bucket_x (REGION 'eu-central-1', CORS_ORIGIN 'https://app.example');
+----
+<REGEX>:.*unknown option 'cors_origin'; the options are name, region, versioning, public_read, cors_origins, cors_methods.*
+
+# The framework hands every value over as a string; what does not read back as a boolean is refused.
+statement error
+CREATE EXTERNAL RESOURCE 'aws.s3.bucket' AS bucket_x (REGION 'eu-central-1', PUBLIC_READ 'maybe');
+----
+<REGEX>:.*public_read must be true or false, got 'maybe'.*
+
+# The permission options reach s3_create_bucket's own checks: a bare flag is true, a bare string is
+# a one-origin list, and an invalid origin fails as it would in the function.
+statement error
+CREATE EXTERNAL RESOURCE 'aws.s3.bucket' AS bucket_x (REGION 'eu-central-1', PUBLIC_READ, CORS_ORIGINS 'app.example');
+----
+<REGEX>:.*cors_origins entry 'app.example' is not an origin.*
+
+statement error
+CREATE EXTERNAL RESOURCE 'aws.s3.bucket' AS bucket_x (REGION 'eu-central-1', CORS_ORIGINS ['https://app.example'], CORS_METHODS ['PATCH']);
+----
+<REGEX>:.*cors_methods entry 'PATCH' is not one of.*
+
+foreach option versioning public_read cors_origins cors_methods
+
+statement error
+CREATE EXTERNAL RESOURCE 'aws.s3.bucket' AS bucket_x (REGION 'eu-central-1', {option} '');
+----
+must not be empty
+
+statement error
+SELECT * FROM __aws__s3__bucket__create(MAP {'{option}': NULL}::MAP(VARCHAR, VARCHAR));
+----
+must not be NULL
+
+endloop
+
 # Adoption of an existing bucket goes through status, not create.
 statement error
 REGISTER EXTERNAL RESOURCE 'aws.s3.bucket' AS bucket_y
@@ -78,6 +117,23 @@ SELECT CASE
     WHEN EXISTS (SELECT 1 FROM bucket_contents WHERE name = handle['name']) THEN error('BucketNotEmpty')
     ELSE 'deleted'
 END AS status;
+
+# CREATE omits evaluated NULL options before callback validation, including unknown keys.
+foreach option versioning public_read cors_origins cors_methods unknown_option
+
+statement ok
+CREATE EXTERNAL RESOURCE 'aws.s3.bucket' AS null_expression
+    (NAME 'null-option', REGION 'eu-central-1', {option} (NULL::VARCHAR));
+
+query I
+SELECT count(*) FROM duckdb_external_resources() WHERE name = 'null_expression';
+----
+1
+
+statement ok
+DESTROY EXTERNAL RESOURCE null_expression;
+
+endloop
 
 statement ok
 CREATE EXTERNAL RESOURCE 'aws.s3.bucket' AS owned (NAME 'owned', REGION 'eu-central-1');

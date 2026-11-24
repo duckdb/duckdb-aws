@@ -15,16 +15,28 @@
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/main/settings.hpp"
 
+#include <aws/common/byte_buf.h>
+#include <aws/common/host_utils.h>
 #include <aws/core/http/HttpResponse.h>
+#include <aws/core/utils/json/JsonSerializer.h>
+#include <aws/core/utils/memory/stl/AWSStringStream.h>
 #include <aws/s3/S3Client.h>
 #include <aws/s3/model/BucketLocationConstraint.h>
 #include <aws/s3/model/BucketVersioningStatus.h>
+#include <aws/s3/model/CORSConfiguration.h>
+#include <aws/s3/model/CORSRule.h>
 #include <aws/s3/model/CreateBucketConfiguration.h>
 #include <aws/s3/model/CreateBucketRequest.h>
 #include <aws/s3/model/Delete.h>
+#include <aws/s3/model/DeleteBucketCorsRequest.h>
+#include <aws/s3/model/DeleteBucketPolicyRequest.h>
 #include <aws/s3/model/DeleteBucketRequest.h>
 #include <aws/s3/model/DeleteBucketTaggingRequest.h>
 #include <aws/s3/model/DeleteObjectsRequest.h>
+#include <aws/s3/model/DeletePublicAccessBlockRequest.h>
+#include <aws/s3/model/GetBucketCorsRequest.h>
+#include <aws/s3/model/GetBucketPolicyRequest.h>
+#include <aws/s3/model/GetBucketPolicyStatusRequest.h>
 #include <aws/s3/model/GetBucketTaggingRequest.h>
 #include <aws/s3/model/GetBucketVersioningRequest.h>
 #include <aws/s3/model/GetPublicAccessBlockRequest.h>
@@ -34,6 +46,8 @@
 #include <aws/s3/model/ListObjectVersionsRequest.h>
 #include <aws/s3/model/ObjectIdentifier.h>
 #include <aws/s3/model/PublicAccessBlockConfiguration.h>
+#include <aws/s3/model/PutBucketCorsRequest.h>
+#include <aws/s3/model/PutBucketPolicyRequest.h>
 #include <aws/s3/model/PutBucketTaggingRequest.h>
 #include <aws/s3/model/PutBucketVersioningRequest.h>
 #include <aws/s3/model/PutPublicAccessBlockRequest.h>
@@ -41,8 +55,10 @@
 #include <aws/s3/model/Tagging.h>
 #include <aws/s3/model/VersioningConfiguration.h>
 
+#include <algorithm>
 #include <functional>
 #include <map>
+#include <sstream>
 
 namespace duckdb {
 
@@ -119,10 +135,162 @@ optional<bool> BoolOption(TableFunctionBindInput &input, const char *key, const 
 struct BucketSettings {
 	optional<bool> versioning;
 	optional<bool> block_public_access;
+	optional<bool> public_read;
+	//! Origins of the browser CORS rule; an empty list removes the rule.
+	optional<vector<string>> cors_origins;
+	//! Methods of that rule; empty means the GET/HEAD default.
+	vector<string> cors_methods;
 };
 
+optional<vector<string>> ListOption(TableFunctionBindInput &input, const char *key, const char *fn_name) {
+	auto entry = input.named_parameters.find(key);
+	if (entry == input.named_parameters.end()) {
+		return {};
+	}
+	if (entry->second.IsNull()) {
+		throw InvalidInputException("%s: %s must not be NULL", fn_name, key);
+	}
+	vector<string> result;
+	for (auto &child : ListValue::GetChildren(entry->second)) {
+		if (child.IsNull()) {
+			throw InvalidInputException("%s: %s must not contain NULL", fn_name, key);
+		}
+		result.push_back(StringValue::Get(child));
+	}
+	return result;
+}
+
+//! Validate origin patterns at bind so S3's MalformedXML error does not hide the bad entry.
+void CheckCorsOrigin(const string &origin, const char *fn_name) {
+	if (origin == "*") {
+		return;
+	}
+	auto invalid_origin = [&]() {
+		throw InvalidInputException("%s: cors_origins entry '%s' is not an origin; expected http(s)://host[:port] "
+		                            "with at most one '*', or '*'",
+		                            fn_name, origin);
+	};
+	string rest;
+	if (StringUtil::StartsWith(origin, "https://")) {
+		rest = origin.substr(8);
+	} else if (StringUtil::StartsWith(origin, "http://")) {
+		rest = origin.substr(7);
+	}
+	if (rest.empty() || rest.find_first_of("/?#@\\%") != string::npos ||
+	    std::count(origin.begin(), origin.end(), '*') > 1 ||
+	    std::any_of(rest.begin(), rest.end(), [](unsigned char c) { return c <= 0x20 || c == 0x7f; })) {
+		invalid_origin();
+	}
+	string host;
+	string port;
+	if (rest.front() == '[') {
+		auto close = rest.find(']');
+		if (close == string::npos) {
+			invalid_origin();
+		}
+		host = rest.substr(1, close - 1);
+		if (host.empty() || std::any_of(host.begin(), host.end(), [](char c) {
+			    return !StringUtil::CharacterIsHex(c) && c != ':' && c != '.' && c != '*';
+		    })) {
+			invalid_origin();
+		}
+		if (host.find('*') == string::npos) {
+			auto ipv6 = host;
+			auto last_colon = ipv6.rfind(':');
+			if (last_colon != string::npos && ipv6.find('.') != string::npos) {
+				auto ipv4 = ipv6.substr(last_colon + 1);
+				if (!aws_host_utils_is_ipv4(aws_byte_cursor_from_array(ipv4.data(), ipv4.size()))) {
+					invalid_origin();
+				}
+				// An embedded IPv4 address occupies two IPv6 groups.
+				ipv6 = ipv6.substr(0, last_colon + 1) + "0:0";
+			}
+			if (!aws_host_utils_is_ipv6(aws_byte_cursor_from_array(ipv6.data(), ipv6.size()), false)) {
+				invalid_origin();
+			}
+		}
+		if (close + 1 < rest.size()) {
+			if (rest[close + 1] != ':' || close + 2 == rest.size()) {
+				invalid_origin();
+			}
+			port = rest.substr(close + 2);
+		}
+	} else {
+		auto colon = rest.find(':');
+		host = rest.substr(0, colon);
+		if (host.empty() || std::any_of(host.begin(), host.end(), [](char c) {
+			    return !StringUtil::CharacterIsAlphaNumeric(c) && c != '.' && c != '-' && c != '_' && c != '*';
+		    })) {
+			invalid_origin();
+		}
+		if (std::count(host.begin(), host.end(), '.') == 3 &&
+		    std::all_of(host.begin(), host.end(), [](char c) { return StringUtil::CharacterIsDigit(c) || c == '.'; }) &&
+		    !aws_host_utils_is_ipv4(aws_byte_cursor_from_array(host.data(), host.size()))) {
+			invalid_origin();
+		}
+		if (colon != string::npos) {
+			port = rest.substr(colon + 1);
+			if (port.empty()) {
+				invalid_origin();
+			}
+		}
+	}
+	uint32_t port_number = 0;
+	for (auto c : port) {
+		if (c == '*') {
+			continue;
+		}
+		if (!StringUtil::CharacterIsDigit(c)) {
+			invalid_origin();
+		}
+		port_number = port_number * 10 + (c - '0');
+		if (port_number > 65535) {
+			invalid_origin();
+		}
+	}
+}
+
+//! The methods a CORS rule can name; anything else is a PutBucketCors error S3 reports as
+//! MalformedXML, so it is caught here instead.
+string CheckCorsMethod(const string &method, const char *fn_name) {
+	auto upper = StringUtil::Upper(method);
+	for (auto allowed : {"GET", "HEAD", "PUT", "POST", "DELETE"}) {
+		if (upper == allowed) {
+			return upper;
+		}
+	}
+	throw InvalidInputException("%s: cors_methods entry '%s' is not one of GET, HEAD, PUT, POST, DELETE", fn_name,
+	                            method);
+}
+
 BucketSettings SettingsOption(TableFunctionBindInput &input, const char *fn_name) {
-	return {BoolOption(input, "versioning", fn_name), BoolOption(input, "block_public_access", fn_name)};
+	BucketSettings result;
+	result.versioning = BoolOption(input, "versioning", fn_name);
+	result.block_public_access = BoolOption(input, "block_public_access", fn_name);
+	result.public_read = BoolOption(input, "public_read", fn_name);
+	if (result.public_read.value_or(false) && result.block_public_access.value_or(false)) {
+		throw InvalidInputException("%s: public_read := true and block_public_access := true contradict each other",
+		                            fn_name);
+	}
+	result.cors_origins = ListOption(input, "cors_origins", fn_name);
+	if (result.cors_origins) {
+		for (auto &origin : *result.cors_origins) {
+			CheckCorsOrigin(origin, fn_name);
+		}
+	}
+	auto methods = ListOption(input, "cors_methods", fn_name);
+	if (methods) {
+		if (!result.cors_origins || result.cors_origins->empty()) {
+			throw InvalidInputException("%s: cors_methods needs a non-empty cors_origins", fn_name);
+		}
+		for (auto &method : *methods) {
+			result.cors_methods.push_back(CheckCorsMethod(method, fn_name));
+		}
+		if (result.cors_methods.empty()) {
+			throw InvalidInputException("%s: cors_methods must not be empty", fn_name);
+		}
+	}
+	return result;
 }
 
 //! The `tags` MAP option. A NULL value means "remove this key", which only s3_update_bucket can
@@ -375,13 +543,24 @@ Value GetVersioning(Aws::S3::S3Client &client, const string &name) {
 	return Value(FromAws(Aws::S3::Model::BucketVersioningStatusMapper::GetNameForBucketVersioningStatus(status)));
 }
 
-//! All four public-access blocks are set together; partial configurations are deliberately not offered.
-void PutPublicAccessBlock(Aws::S3::S3Client &client, const string &name, bool blocked) {
-	Aws::S3::Model::PublicAccessBlockConfiguration configuration;
-	configuration.SetBlockPublicAcls(blocked);
-	configuration.SetIgnorePublicAcls(blocked);
-	configuration.SetBlockPublicPolicy(blocked);
-	configuration.SetRestrictPublicBuckets(blocked);
+//! The bucket's own public-access block; nullopt when it has none (the account-level setting, if
+//! any, then applies). Buckets created since April 2023 start with all four on.
+optional<Aws::S3::Model::PublicAccessBlockConfiguration> GetPublicAccessBlockConfig(Aws::S3::S3Client &client,
+                                                                                    const string &name) {
+	Aws::S3::Model::GetPublicAccessBlockRequest request;
+	request.SetBucket(name.c_str());
+	auto outcome = client.GetPublicAccessBlock(request);
+	if (!outcome.IsSuccess()) {
+		if (FromAws(outcome.GetError().GetExceptionName()) == "NoSuchPublicAccessBlockConfiguration") {
+			return {};
+		}
+		ThrowAwsError("GetPublicAccessBlock", outcome);
+	}
+	return outcome.GetResult().GetPublicAccessBlockConfiguration();
+}
+
+void PutPublicAccessBlockConfig(Aws::S3::S3Client &client, const string &name,
+                                Aws::S3::Model::PublicAccessBlockConfiguration configuration) {
 	Aws::S3::Model::PutPublicAccessBlockRequest request;
 	request.SetBucket(name.c_str());
 	request.SetPublicAccessBlockConfiguration(std::move(configuration));
@@ -391,21 +570,302 @@ void PutPublicAccessBlock(Aws::S3::S3Client &client, const string &name, bool bl
 	}
 }
 
-//! True only when all four blocks are on; NULL when the bucket has no configuration of its own
-//! (the account-level setting, if any, then applies).
+//! block_public_access sets all four blocks together; only public_read moves two of them (see
+//! SetPolicyBlocks).
+void PutPublicAccessBlock(Aws::S3::S3Client &client, const string &name, bool blocked) {
+	Aws::S3::Model::PublicAccessBlockConfiguration configuration;
+	configuration.SetBlockPublicAcls(blocked);
+	configuration.SetIgnorePublicAcls(blocked);
+	configuration.SetBlockPublicPolicy(blocked);
+	configuration.SetRestrictPublicBuckets(blocked);
+	PutPublicAccessBlockConfig(client, name, std::move(configuration));
+}
+
+//! True only when all four blocks are on; NULL when the bucket has no configuration of its own.
 Value GetPublicAccessBlock(Aws::S3::S3Client &client, const string &name) {
-	Aws::S3::Model::GetPublicAccessBlockRequest request;
-	request.SetBucket(name.c_str());
-	auto outcome = client.GetPublicAccessBlock(request);
-	if (!outcome.IsSuccess()) {
-		if (FromAws(outcome.GetError().GetExceptionName()) == "NoSuchPublicAccessBlockConfiguration") {
-			return Value();
-		}
-		ThrowAwsError("GetPublicAccessBlock", outcome);
+	auto configuration = GetPublicAccessBlockConfig(client, name);
+	if (!configuration) {
+		return Value();
 	}
-	const auto &configuration = outcome.GetResult().GetPublicAccessBlockConfiguration();
-	return Value::BOOLEAN(configuration.GetBlockPublicAcls() && configuration.GetIgnorePublicAcls() &&
-	                      configuration.GetBlockPublicPolicy() && configuration.GetRestrictPublicBuckets());
+	return Value::BOOLEAN(configuration->GetBlockPublicAcls() && configuration->GetIgnorePublicAcls() &&
+	                      configuration->GetBlockPublicPolicy() && configuration->GetRestrictPublicBuckets());
+}
+
+//! public_read changes only policy blocks; legacy buckets without a configuration have no ACL blocks.
+optional<Aws::S3::Model::PublicAccessBlockConfiguration> SetPolicyBlocks(Aws::S3::S3Client &client, const string &name,
+                                                                         bool blocked) {
+	auto previous = GetPublicAccessBlockConfig(client, name);
+	auto configuration = previous.value_or(Aws::S3::Model::PublicAccessBlockConfiguration());
+	if (!previous) {
+		configuration.SetBlockPublicAcls(false);
+		configuration.SetIgnorePublicAcls(false);
+	}
+	configuration.SetBlockPublicPolicy(blocked);
+	configuration.SetRestrictPublicBuckets(blocked);
+	PutPublicAccessBlockConfig(client, name, std::move(configuration));
+	return previous;
+}
+
+//===--------------------------------------------------------------------===//
+// Bucket policy: the duckdb-public-read statement
+//===--------------------------------------------------------------------===//
+
+//! The one statement public_read manages, found again by this Sid. Anything else in the policy is
+//! someone else's and is carried over untouched.
+constexpr const char *PUBLIC_READ_SID = "duckdb-public-read";
+
+//! The policy document, empty when the bucket has none.
+string GetPolicy(Aws::S3::S3Client &client, const string &name) {
+	Aws::S3::Model::GetBucketPolicyRequest request;
+	request.SetBucket(name.c_str());
+	auto outcome = client.GetBucketPolicy(request);
+	if (!outcome.IsSuccess()) {
+		if (FromAws(outcome.GetError().GetExceptionName()) == "NoSuchBucketPolicy") {
+			return string();
+		}
+		ThrowAwsError("GetBucketPolicy", outcome);
+	}
+	std::stringstream document;
+	document << outcome.GetResult().GetPolicy().rdbuf();
+	return document.str();
+}
+
+//! PutBucketPolicy replaces the whole document, and no policy is only expressible as a delete.
+void PutPolicy(Aws::S3::S3Client &client, const string &name, const string &document) {
+	if (document.empty()) {
+		Aws::S3::Model::DeleteBucketPolicyRequest request;
+		request.SetBucket(name.c_str());
+		auto outcome = client.DeleteBucketPolicy(request);
+		if (!outcome.IsSuccess()) {
+			ThrowAwsError("DeleteBucketPolicy", outcome);
+		}
+		return;
+	}
+	auto body = Aws::MakeShared<Aws::StringStream>("duckdb");
+	*body << document;
+	Aws::S3::Model::PutBucketPolicyRequest request;
+	request.SetBucket(name.c_str());
+	request.SetBody(body);
+	request.SetContentType("application/json");
+	auto outcome = client.PutBucketPolicy(request);
+	if (!outcome.IsSuccess()) {
+		ThrowAwsError("PutBucketPolicy", outcome);
+	}
+}
+
+//! S3's own verdict on whether the policy grants public access; a bucket without a policy is not public.
+bool GetPolicyIsPublic(Aws::S3::S3Client &client, const string &name) {
+	Aws::S3::Model::GetBucketPolicyStatusRequest request;
+	request.SetBucket(name.c_str());
+	auto outcome = client.GetBucketPolicyStatus(request);
+	if (!outcome.IsSuccess()) {
+		if (FromAws(outcome.GetError().GetExceptionName()) == "NoSuchBucketPolicy") {
+			return false;
+		}
+		ThrowAwsError("GetBucketPolicyStatus", outcome);
+	}
+	return outcome.GetResult().GetPolicyStatus().GetIsPublic();
+}
+
+//! `document` with the duckdb-public-read statement added or removed; "" when no statement is left,
+//! which PutPolicy turns into a delete. Only s3:GetObject is granted: anonymous callers can read a
+//! key they know, not enumerate the bucket. A `Statement` that is a single object rather than an
+//! array is valid IAM and is handled.
+string WithPublicReadStatement(const string &document, const string &bucket_arn, bool present, const string &name) {
+	using Aws::Utils::Json::JsonValue;
+	using Aws::Utils::Json::JsonView;
+	JsonValue policy = document.empty() ? JsonValue().WithString("Version", "2012-10-17")
+	                                    : JsonValue(Aws::String(document.data(), document.size()));
+	if (!policy.WasParseSuccessful()) {
+		throw IOException("bucket '%s' has a policy this function cannot parse (%s); edit it in AWS instead", name,
+		                  FromAws(policy.GetErrorMessage()));
+	}
+	vector<JsonValue> kept;
+	auto keep_unless_ours = [&](const JsonView &statement) {
+		if (!statement.IsObject() || !statement.KeyExists("Sid") || !statement.GetObject("Sid").IsString() ||
+		    FromAws(statement.GetString("Sid")) != PUBLIC_READ_SID) {
+			kept.push_back(statement.Materialize());
+		}
+	};
+	auto view = policy.View();
+	if (view.KeyExists("Statement")) {
+		auto statements = view.GetObject("Statement");
+		if (statements.IsListType()) {
+			auto array = statements.AsArray();
+			for (size_t i = 0; i < array.GetLength(); i++) {
+				keep_unless_ours(array[i]);
+			}
+		} else {
+			keep_unless_ours(statements);
+		}
+	}
+	if (present) {
+		JsonValue statement;
+		statement.WithString("Sid", PUBLIC_READ_SID)
+		    .WithString("Effect", "Allow")
+		    .WithString("Principal", "*")
+		    .WithString("Action", "s3:GetObject")
+		    .WithString("Resource", Aws::String(bucket_arn + "/*"));
+		kept.push_back(std::move(statement));
+	}
+	if (kept.empty()) {
+		return string();
+	}
+	Aws::Utils::Array<JsonValue> statements(kept.size());
+	for (size_t i = 0; i < kept.size(); i++) {
+		statements[i] = std::move(kept[i]);
+	}
+	policy.WithArray("Statement", std::move(statements));
+	return FromAws(policy.View().WriteCompact());
+}
+
+//! S3 refuses a public policy while BlockPublicPolicy is on, so granting lifts the policy blocks
+//! first. A failed policy write restores the prior configuration best-effort; restoration failures
+//! are reported. Revocation re-enables the blocks only when no foreign public statement remains.
+void SetPublicRead(Aws::S3::S3Client &client, const string &name, const string &region, bool enabled) {
+	auto document = WithPublicReadStatement(GetPolicy(client, name), BucketArn(name, region), enabled, name);
+	if (!enabled) {
+		PutPolicy(client, name, document);
+		if (!GetPolicyIsPublic(client, name)) {
+			SetPolicyBlocks(client, name, true);
+		}
+		return;
+	}
+	auto previous_blocks = SetPolicyBlocks(client, name, false);
+	try {
+		PutPolicy(client, name, document);
+	} catch (std::exception &ex) {
+		ErrorData error(ex);
+		try {
+			if (previous_blocks) {
+				PutPublicAccessBlockConfig(client, name, std::move(*previous_blocks));
+			} else {
+				Aws::S3::Model::DeletePublicAccessBlockRequest request;
+				request.SetBucket(name.c_str());
+				auto outcome = client.DeletePublicAccessBlock(request);
+				if (!outcome.IsSuccess()) {
+					ThrowAwsError("DeletePublicAccessBlock", outcome);
+				}
+			}
+		} catch (std::exception &restore_ex) {
+			ErrorData restore_error(restore_ex);
+			throw IOException("%s; bucket '%s' public-access-block configuration could not be restored (%s); "
+			                  "policy blocks may remain disabled and existing public grants may be active",
+			                  error.RawMessage(), name, restore_error.RawMessage());
+		}
+		throw IOException("%s; for AccessDenied, check s3:PutBucketPolicy permission and account- or "
+		                  "organization-level Block Public Access, which this function cannot change",
+		                  error.RawMessage());
+	}
+}
+
+//===--------------------------------------------------------------------===//
+// CORS: the duckdb-browser rule
+//===--------------------------------------------------------------------===//
+
+//! The one rule cors_origins manages, found again by this ID; other rules are carried over. S3 uses
+//! the first rule matching the origin, method and requested headers, so ours goes last.
+constexpr const char *CORS_RULE_ID = "duckdb-browser";
+
+Aws::Vector<Aws::S3::Model::CORSRule> GetCorsRules(Aws::S3::S3Client &client, const string &name) {
+	Aws::S3::Model::GetBucketCorsRequest request;
+	request.SetBucket(name.c_str());
+	auto outcome = client.GetBucketCors(request);
+	if (!outcome.IsSuccess()) {
+		if (FromAws(outcome.GetError().GetExceptionName()) == "NoSuchCORSConfiguration") {
+			return {};
+		}
+		ThrowAwsError("GetBucketCors", outcome);
+	}
+	return outcome.GetResult().GetCORSRules();
+}
+
+//! PutBucketCors replaces the whole configuration, and none is only expressible as a delete.
+void PutCorsRules(Aws::S3::S3Client &client, const string &name, Aws::Vector<Aws::S3::Model::CORSRule> rules) {
+	if (rules.empty()) {
+		Aws::S3::Model::DeleteBucketCorsRequest request;
+		request.SetBucket(name.c_str());
+		auto outcome = client.DeleteBucketCors(request);
+		if (!outcome.IsSuccess()) {
+			ThrowAwsError("DeleteBucketCors", outcome);
+		}
+		return;
+	}
+	Aws::S3::Model::CORSConfiguration configuration;
+	configuration.SetCORSRules(std::move(rules));
+	Aws::S3::Model::PutBucketCorsRequest request;
+	request.SetBucket(name.c_str());
+	request.SetCORSConfiguration(std::move(configuration));
+	auto outcome = client.PutBucketCors(request);
+	if (!outcome.IsSuccess()) {
+		ThrowAwsError("PutBucketCors", outcome);
+	}
+}
+
+//! The rule a browser-hosted DuckDB needs: any request header (the SDK and httpfs send signing and
+//! range headers), and the response headers range detection reads (duckdb-wasm#2228) plus the
+//! request ids that make a failure traceable.
+Aws::S3::Model::CORSRule BrowserCorsRule(const vector<string> &origins, const vector<string> &methods) {
+	Aws::S3::Model::CORSRule rule;
+	rule.SetID(CORS_RULE_ID);
+	Aws::Vector<Aws::String> allowed_origins;
+	for (auto &origin : origins) {
+		allowed_origins.emplace_back(origin.c_str());
+	}
+	rule.SetAllowedOrigins(std::move(allowed_origins));
+	Aws::Vector<Aws::String> allowed_methods;
+	if (methods.empty()) {
+		allowed_methods = {"GET", "HEAD"};
+	} else {
+		for (auto &method : methods) {
+			allowed_methods.emplace_back(method.c_str());
+		}
+	}
+	rule.SetAllowedMethods(std::move(allowed_methods));
+	rule.SetAllowedHeaders(Aws::Vector<Aws::String> {"*"});
+	rule.SetExposeHeaders(Aws::Vector<Aws::String> {"Accept-Ranges", "Content-Length", "Content-Range", "ETag",
+	                                                "x-amz-request-id", "x-amz-id-2"});
+	rule.SetMaxAgeSeconds(3000);
+	return rule;
+}
+
+void SetBrowserCors(Aws::S3::S3Client &client, const string &name, const vector<string> &origins,
+                    const vector<string> &methods) {
+	Aws::Vector<Aws::S3::Model::CORSRule> rules;
+	for (auto &rule : GetCorsRules(client, name)) {
+		if (FromAws(rule.GetID()) != CORS_RULE_ID) {
+			rules.push_back(rule);
+		}
+	}
+	if (!origins.empty()) {
+		rules.push_back(BrowserCorsRule(origins, methods));
+	}
+	PutCorsRules(client, name, std::move(rules));
+}
+
+//! The origins of the duckdb-browser rule as a VARCHAR[], NULL when the bucket has no such rule.
+Value GetBrowserCorsOrigins(Aws::S3::S3Client &client, const string &name) {
+	for (auto &rule : GetCorsRules(client, name)) {
+		if (FromAws(rule.GetID()) == CORS_RULE_ID) {
+			vector<Value> origins;
+			for (auto &origin : rule.GetAllowedOrigins()) {
+				origins.emplace_back(FromAws(origin));
+			}
+			return Value::LIST(LogicalType::VARCHAR, std::move(origins));
+		}
+	}
+	return Value(LogicalType::LIST(LogicalType::VARCHAR));
+}
+
+Value OriginsValue(const vector<string> &origins) {
+	if (origins.empty()) {
+		return Value(LogicalType::LIST(LogicalType::VARCHAR));
+	}
+	vector<Value> values;
+	for (auto &origin : origins) {
+		values.emplace_back(origin);
+	}
+	return Value::LIST(LogicalType::VARCHAR, std::move(values));
 }
 
 //! Every object version and delete marker, one page at a time. On an unversioned bucket this is
@@ -587,7 +1047,8 @@ void S3BucketsFun(ClientContext &context, TableFunctionInput &input, DataChunk &
 }
 
 //===--------------------------------------------------------------------===//
-// s3_create_bucket(name [, region :=, tags :=, versioning :=, block_public_access :=, secret :=, dry_run :=])
+// s3_create_bucket(name [, region :=, tags :=, versioning :=, block_public_access :=, public_read :=,
+//                  cors_origins :=, cors_methods :=, secret :=, dry_run :=])
 //
 // CreateBucket, then the configuration S3 only accepts as separate calls. The `handle` column is
 // the MAP every `name | handle` function takes in place of the name; it carries the region because
@@ -704,6 +1165,13 @@ void CreateBucketFun(ClientContext &context, TableFunctionInput &input, DataChun
 		if (data.settings.block_public_access) {
 			PutPublicAccessBlock(*client, data.name, *data.settings.block_public_access);
 		}
+		if (data.settings.cors_origins && !data.settings.cors_origins->empty()) {
+			SetBrowserCors(*client, data.name, *data.settings.cors_origins, data.settings.cors_methods);
+		}
+		// Keep the bucket private until the other configuration calls succeed.
+		if (data.settings.public_read.value_or(false)) {
+			SetPublicRead(*client, data.name, region, true);
+		}
 	} catch (std::exception &ex) {
 		// A bucket that exists but is not what was asked for is worse than none, and this one is
 		// empty and ours (see the us-east-1 probe above), so remove it: a retry after fixing the
@@ -729,8 +1197,9 @@ void CreateBucketFun(ClientContext &context, TableFunctionInput &input, DataChun
 //===--------------------------------------------------------------------===//
 // s3_get_bucket(name | handle [, region :=, secret :=])
 //
-// HeadBucket, then versioning and the public-access block, so an s3_update_bucket change can be
-// verified without the console (tags are in s3_bucket_tags).
+// HeadBucket, then versioning, the public-access block, S3's public verdict on the policy and the
+// browser CORS rule, so an s3_update_bucket change can be verified without the console (tags are
+// in s3_bucket_tags).
 //===--------------------------------------------------------------------===//
 
 struct BucketBindData : public S3BindData {
@@ -750,6 +1219,8 @@ unique_ptr<FunctionData> GetBucketBind(ClientContext &, TableFunctionBindInput &
 	AddColumn(return_types, names, "arn", LogicalType::VARCHAR);
 	AddColumn(return_types, names, "versioning", LogicalType::VARCHAR);
 	AddColumn(return_types, names, "block_public_access", LogicalType::BOOLEAN);
+	AddColumn(return_types, names, "public", LogicalType::BOOLEAN);
+	AddColumn(return_types, names, "cors_origins", LogicalType::LIST(LogicalType::VARCHAR));
 	return std::move(result);
 }
 
@@ -771,6 +1242,8 @@ void GetBucketFun(ClientContext &context, TableFunctionInput &input, DataChunk &
 	output.data[2].Append(Value(BucketArn(data.bucket.name, region)));
 	output.data[3].Append(GetVersioning(*client, data.bucket.name));
 	output.data[4].Append(GetPublicAccessBlock(*client, data.bucket.name));
+	output.data[5].Append(Value::BOOLEAN(GetPolicyIsPublic(*client, data.bucket.name)));
+	output.data[6].Append(GetBrowserCorsOrigins(*client, data.bucket.name));
 	output.CheckCardinality(1);
 }
 
@@ -829,13 +1302,15 @@ void BucketTagsFun(ClientContext &context, TableFunctionInput &input, DataChunk 
 }
 
 //===--------------------------------------------------------------------===//
-// s3_update_bucket(name | handle [, tags :=, versioning :=, block_public_access :=, region :=, secret :=, dry_run :=])
+// s3_update_bucket(name | handle [, tags :=, versioning :=, block_public_access :=, public_read :=,
+//                  cors_origins :=, cors_methods :=, region :=, secret :=, dry_run :=])
 //
-// S3 has no UpdateBucket; this is the three Put calls behind the settings s3_create_bucket
-// accepts, in the order tags, versioning, public-access block. A failure stops there and leaves
-// the earlier changes in place; the error names the call that failed. Tags merge into the existing
-// set rather than replace it, so updating one tag does not silently drop the provenance tags; a
-// NULL value removes a key.
+// S3 has no UpdateBucket; this is the Put calls behind the settings s3_create_bucket accepts, in
+// the order tags, versioning, public-access block, CORS, public read. A failure stops there and
+// leaves the earlier changes in place; the error names the call that failed. Tags merge into the
+// existing set rather than replace it, so updating one tag does not silently drop the provenance
+// tags; a NULL value removes a key. The CORS rule and the public-read statement likewise merge
+// into what is there, by ID and Sid.
 //===--------------------------------------------------------------------===//
 
 struct UpdateBucketBindData : public BucketBindData {
@@ -856,9 +1331,11 @@ unique_ptr<FunctionData> UpdateBucketBind(ClientContext &, TableFunctionBindInpu
 	result->settings = SettingsOption(input, fn_name);
 	result->dry_run = BoolOption(input, "dry_run", fn_name).value_or(false);
 
-	if (result->tags.empty() && !result->settings.versioning && !result->settings.block_public_access) {
-		throw InvalidInputException(
-		    "%s: no change requested; pass a non-empty tags :=, versioning := or block_public_access :=", fn_name);
+	if (result->tags.empty() && !result->settings.versioning && !result->settings.block_public_access &&
+	    !result->settings.public_read && !result->settings.cors_origins) {
+		throw InvalidInputException("%s: no change requested; pass a non-empty tags :=, versioning :=, "
+		                            "block_public_access :=, public_read := or cors_origins :=",
+		                            fn_name);
 	}
 
 	AddColumn(return_types, names, "status", LogicalType::VARCHAR);
@@ -867,6 +1344,8 @@ unique_ptr<FunctionData> UpdateBucketBind(ClientContext &, TableFunctionBindInpu
 	AddColumn(return_types, names, "tags", LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
 	AddColumn(return_types, names, "versioning", LogicalType::VARCHAR);
 	AddColumn(return_types, names, "block_public_access", LogicalType::BOOLEAN);
+	AddColumn(return_types, names, "public", LogicalType::BOOLEAN);
+	AddColumn(return_types, names, "cors_origins", LogicalType::LIST(LogicalType::VARCHAR));
 	return std::move(result);
 }
 
@@ -888,6 +1367,8 @@ void UpdateBucketFun(ClientContext &context, TableFunctionInput &input, DataChun
 	Value tags_out(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
 	Value versioning_out;
 	Value block_public_access_out;
+	Value public_out(LogicalType::BOOLEAN);
+	Value cors_origins_out(LogicalType::LIST(LogicalType::VARCHAR));
 
 	if (!data.tags.empty()) {
 		auto tags = GetTags(*client, name);
@@ -914,6 +1395,18 @@ void UpdateBucketFun(ClientContext &context, TableFunctionInput &input, DataChun
 		}
 		block_public_access_out = Value::BOOLEAN(*data.settings.block_public_access);
 	}
+	if (data.settings.cors_origins) {
+		if (!data.dry_run) {
+			SetBrowserCors(*client, name, *data.settings.cors_origins, data.settings.cors_methods);
+		}
+		cors_origins_out = OriginsValue(*data.settings.cors_origins);
+	}
+	if (data.settings.public_read && !data.dry_run) {
+		SetPublicRead(*client, name, region, *data.settings.public_read);
+		// S3's verdict rather than the request: a foreign public statement keeps a bucket public
+		// after public_read := false, and the row should say so.
+		public_out = Value::BOOLEAN(GetPolicyIsPublic(*client, name));
+	}
 
 	output.data[0].Append(Value(data.dry_run ? "dry_run" : "updated"));
 	output.data[1].Append(Value(name));
@@ -921,6 +1414,8 @@ void UpdateBucketFun(ClientContext &context, TableFunctionInput &input, DataChun
 	output.data[3].Append(tags_out);
 	output.data[4].Append(versioning_out);
 	output.data[5].Append(block_public_access_out);
+	output.data[6].Append(public_out);
+	output.data[7].Append(cors_origins_out);
 	output.CheckCardinality(1);
 }
 
@@ -1054,6 +1549,9 @@ void S3Functions::Register(ExtensionLoader &loader) {
 		    .Add("tags", map_vv)
 		    .Add("versioning", LogicalType::BOOLEAN)
 		    .Add("block_public_access", LogicalType::BOOLEAN)
+		    .Add("public_read", LogicalType::BOOLEAN)
+		    .Add("cors_origins", LogicalType::LIST(LogicalType::VARCHAR))
+		    .Add("cors_methods", LogicalType::LIST(LogicalType::VARCHAR))
 		    .Add("secret", LogicalType::VARCHAR)
 		    // Typed BOOLEAN rather than a string: a value that failed to parse would fall through to
 		    // false and create a real bucket.
@@ -1062,8 +1560,10 @@ void S3Functions::Register(ExtensionLoader &loader) {
 	loader.RegisterFunction(Documented(
 	    TableFunction("s3_create_bucket", std::move(create_signature), CreateBucketFun, CreateBucketBind, OnceInit),
 	    "Creates a general-purpose S3 bucket in `region`, tags it with `created-by = duckdb` plus `tags`, and "
-	    "optionally enables versioning and blocks public access. Returns a handle MAP the other s3_* functions "
-	    "accept in place of the name. `dry_run` resolves region and credentials and makes no S3 call.",
+	    "optionally configures versioning, public-access blocks, anonymous object reads (`public_read`) and browser "
+	    "CORS (`cors_origins`, `cors_methods`). Public reads grant GetObject, not bucket listing; other policies can "
+	    "still allow listing or deny reads. Returns a handle MAP the other s3_* functions accept in place of the name. "
+	    "`dry_run` resolves region and credentials and makes no S3 call.",
 	    "FROM s3_create_bucket('my-bucket', region := 'eu-central-1', versioning := true, tags := MAP {'team': "
 	    "'data'})",
 	    category));
@@ -1071,8 +1571,9 @@ void S3Functions::Register(ExtensionLoader &loader) {
 	loader.RegisterFunction(
 	    Documented(BucketFunctionSet("s3_get_bucket", with_region_secret, GetBucketFun, GetBucketBind, OnceInit),
 	               "Returns one row for a bucket given by name or handle: its region as S3 reports it, ARN, "
-	               "versioning status and whether all public access is blocked. Fails with NoSuchBucket when the "
-	               "bucket does not exist.",
+	               "versioning status, `block_public_access` (whether all four bucket blocks are enabled), "
+	               "`public` (S3's policy verdict, not effective anonymous access) and `cors_origins` for the "
+	               "managed browser rule. Fails with NoSuchBucket when the bucket does not exist.",
 	               "FROM s3_get_bucket('my-bucket')", category));
 	loader.RegisterFunction(
 	    Documented(BucketFunctionSet("s3_bucket_tags", with_region_secret, BucketTagsFun, BucketTagsBind, TagsInit),
@@ -1083,15 +1584,22 @@ void S3Functions::Register(ExtensionLoader &loader) {
 		options.Add("tags", map_vv)
 		    .Add("versioning", LogicalType::BOOLEAN)
 		    .Add("block_public_access", LogicalType::BOOLEAN)
+		    .Add("public_read", LogicalType::BOOLEAN)
+		    .Add("cors_origins", LogicalType::LIST(LogicalType::VARCHAR))
+		    .Add("cors_methods", LogicalType::LIST(LogicalType::VARCHAR))
 		    .Add("region", LogicalType::VARCHAR)
 		    .Add("secret", LogicalType::VARCHAR)
 		    .Add("dry_run", LogicalType::BOOLEAN);
 	};
 	loader.RegisterFunction(Documented(
 	    BucketFunctionSet("s3_update_bucket", update_options, UpdateBucketFun, UpdateBucketBind, OnceInit),
-	    "Changes a bucket's tags, versioning and public-access block, in that order; pass non-empty tags or a setting. "
-	    "`tags` merges into the existing set and a NULL value removes a key; `versioning := false` suspends, since "
-	    "S3 cannot disable versioning. `dry_run` reports the result without writing.",
+	    "Changes a bucket's tags, versioning, public-access blocks, browser CORS and public-read statement, in "
+	    "that order. `tags` merges into the existing set and a NULL value removes a key; `versioning := false` "
+	    "suspends, since S3 cannot disable versioning. `cors_origins := []` removes the managed browser rule; "
+	    "`public_read := false` removes the managed grant, not foreign public policies. Policy and CORS updates "
+	    "preserve entries from the read snapshot; serialize configuration writers to avoid lost updates. Earlier "
+	    "changes remain if a later call fails. `dry_run` reports requested changes without writing; `public` stays "
+	    "NULL because S3's verdict on the proposed policy is unknown.",
 	    "FROM s3_update_bucket('my-bucket', tags := MAP {'owner': NULL}, block_public_access := true)", category));
 
 	auto delete_options = [](TypedKwargs &options) {

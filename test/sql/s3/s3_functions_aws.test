@@ -168,6 +168,97 @@ true	Enabled	true
 statement ok
 COPY (SELECT 1 AS i) TO 's3://{AWS_S3_BUCKET}-fn/duckdb-fixture/one.parquet';
 
+#===--------------------------------------------------------------------===#
+# Browser access: the CORS rule and anonymous read
+#===--------------------------------------------------------------------===#
+
+query II
+SELECT public, cors_origins FROM s3_get_bucket('{AWS_S3_BUCKET}-fn');
+----
+false	NULL
+
+query II
+SELECT status, cors_origins
+FROM s3_update_bucket('{AWS_S3_BUCKET}-fn', cors_origins := ['https://app.example', 'http://localhost:8080']);
+----
+updated	[https://app.example, http://localhost:8080]
+
+query I
+SELECT cors_origins FROM s3_get_bucket('{AWS_S3_BUCKET}-fn');
+----
+[https://app.example, http://localhost:8080]
+
+query I
+SELECT cors_origins IS NULL FROM s3_update_bucket('{AWS_S3_BUCKET}-fn', cors_origins := []);
+----
+true
+
+query I
+SELECT cors_origins FROM s3_get_bucket('{AWS_S3_BUCKET}-fn');
+----
+NULL
+
+# public_read lifts only the bucket's policy blocks. Account/organization BlockPublicPolicy
+# can reject this update; RestrictPublicBuckets can instead block the anonymous read below.
+query II
+SELECT status, public FROM s3_update_bucket('{AWS_S3_BUCKET}-fn', public_read := true);
+----
+updated	true
+
+query II
+SELECT block_public_access, public FROM s3_get_bucket('{AWS_S3_BUCKET}-fn');
+----
+false	true
+
+# Anyone can read a key they know: a plain HTTPS GET, no credentials involved.
+query I
+SELECT i FROM read_parquet('https://{AWS_S3_BUCKET}-fn.s3.{AWS_REGION}.amazonaws.com/duckdb-fixture/one.parquet');
+----
+1
+
+# Nobody can enumerate the bucket: only GetObject is granted, so an unsigned glob is refused.
+statement ok
+CREATE TEMPORARY SECRET anonymous (TYPE s3, PROVIDER none, SCOPE 's3://{AWS_S3_BUCKET}-fn/');
+
+statement error
+SELECT i FROM read_parquet('s3://{AWS_S3_BUCKET}-fn/duckdb-fixture/*.parquet');
+----
+<REGEX>:.*403.*
+
+statement ok
+DROP SECRET anonymous;
+
+# A dry run cannot obtain S3's verdict on an unwritten policy and must not claim revocation.
+query I
+SELECT public IS NULL FROM s3_update_bucket('{AWS_S3_BUCKET}-fn', public_read := false, dry_run := true);
+----
+true
+
+query I
+SELECT public FROM s3_get_bucket('{AWS_S3_BUCKET}-fn');
+----
+true
+
+# Revoking removes the statement and, with nothing public left, restores the blocks.
+query II
+SELECT status, public FROM s3_update_bucket('{AWS_S3_BUCKET}-fn', public_read := false);
+----
+updated	false
+
+query II
+SELECT block_public_access, public FROM s3_get_bucket('{AWS_S3_BUCKET}-fn');
+----
+true	false
+
+statement error
+SELECT i FROM read_parquet('https://{AWS_S3_BUCKET}-fn.s3.{AWS_REGION}.amazonaws.com/duckdb-fixture/one.parquet');
+----
+<REGEX>:.*403.*
+
+#===--------------------------------------------------------------------===#
+# Delete
+#===--------------------------------------------------------------------===#
+
 statement error
 SELECT * FROM s3_delete_bucket('{AWS_S3_BUCKET}-fn');
 ----

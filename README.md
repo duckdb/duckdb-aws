@@ -225,7 +225,7 @@ Options:
 FROM s3_create_bucket('my-bucket', region := 'eu-central-1', versioning := true, tags := MAP {'team': 'data'});
 ```
 
-Creates a general-purpose S3 bucket in `region`, tags it with `created-by = duckdb` plus `tags`, and optionally enables versioning and blocks public access. Returns a handle MAP the other s3_* functions accept in place of the name. `dry_run` resolves region and credentials and makes no S3 call.
+Creates a general-purpose S3 bucket in `region`, tags it with `created-by = duckdb` plus `tags`, and optionally configures versioning, public-access blocks, anonymous object reads (`public_read`) and browser CORS (`cors_origins`, `cors_methods`). Public reads grant GetObject, not bucket listing; other policies can still allow listing or deny reads. Returns a handle MAP the other s3_* functions accept in place of the name. `dry_run` resolves region and credentials and makes no S3 call.
 
 Signatures:
 
@@ -237,6 +237,9 @@ Options:
 - `tags := MAP(VARCHAR, VARCHAR)`
 - `versioning := BOOLEAN`
 - `block_public_access := BOOLEAN`
+- `public_read := BOOLEAN`
+- `cors_origins := VARCHAR[]`
+- `cors_methods := VARCHAR[]`
 - `secret := VARCHAR`
 - `dry_run := BOOLEAN`
 
@@ -246,7 +249,7 @@ Options:
 FROM s3_get_bucket('my-bucket');
 ```
 
-Returns one row for a bucket given by name or handle: its region as S3 reports it, ARN, versioning status and whether all public access is blocked. Fails with NoSuchBucket when the bucket does not exist.
+Returns one row for a bucket given by name or handle: its region as S3 reports it, ARN, versioning status, `block_public_access` (whether all four bucket blocks are enabled), `public` (S3's policy verdict, not effective anonymous access) and `cors_origins` for the managed browser rule. Fails with NoSuchBucket when the bucket does not exist.
 
 Signatures:
 
@@ -282,7 +285,7 @@ Options:
 FROM s3_update_bucket('my-bucket', tags := MAP {'owner': NULL}, block_public_access := true);
 ```
 
-Changes a bucket's tags, versioning and public-access block, in that order; pass non-empty tags or a setting. `tags` merges into the existing set and a NULL value removes a key; `versioning := false` suspends, since S3 cannot disable versioning. `dry_run` reports the result without writing.
+Changes a bucket's tags, versioning, public-access blocks, browser CORS and public-read statement, in that order. `tags` merges into the existing set and a NULL value removes a key; `versioning := false` suspends, since S3 cannot disable versioning. `cors_origins := []` removes the managed browser rule; `public_read := false` removes the managed grant, not foreign public policies. Policy and CORS updates preserve entries from the read snapshot; serialize configuration writers to avoid lost updates. Earlier changes remain if a later call fails. `dry_run` reports requested changes without writing; `public` stays NULL because S3's verdict on the proposed policy is unknown.
 
 Signatures:
 
@@ -294,6 +297,9 @@ Options:
 - `tags := MAP(VARCHAR, VARCHAR)`
 - `versioning := BOOLEAN`
 - `block_public_access := BOOLEAN`
+- `public_read := BOOLEAN`
+- `cors_origins := VARCHAR[]`
+- `cors_methods := VARCHAR[]`
 - `region := VARCHAR`
 - `secret := VARCHAR`
 - `dry_run := BOOLEAN`
